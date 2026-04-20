@@ -1,0 +1,54 @@
+import { create } from "zustand";
+import type { PlantGroupKey, ViewMode } from "@/features/editor/lib/plantSelectionDummyData";
+
+export type PlantSelectionFiltersState = {
+    opVoorraad: boolean;
+    inheems: boolean;
+};
+
+type PlantSelectionState = {
+    selectedGroup: PlantGroupKey;
+    viewMode: ViewMode;
+    sortValue: string;
+    filters: PlantSelectionFiltersState;
+    isSummaryOpen: boolean;
+
+    setSelectedGroup: (group: PlantGroupKey) => void;
+    setViewMode: (mode: ViewMode) => void;
+    setSortValue: (value: string) => void;
+    toggleFilter: (key: keyof PlantSelectionFiltersState) => void;
+    clearFilters: () => void;
+    openSummary: () => void;
+    closeSummary: () => void;
+};
+
+export const usePlantSelectionStore = create<PlantSelectionState>((set) => ({
+    selectedGroup: "bodembedekkers",
+    viewMode: "grid",
+    sortValue: "",
+    filters: {
+        opVoorraad: false,
+        inheems: false,
+    },
+    isSummaryOpen: false,
+
+    setSelectedGroup: (group) => set({ selectedGroup: group }),
+    setViewMode: (mode) => set({ viewMode: mode }),
+    setSortValue: (value) => set({ sortValue: value }),
+    toggleFilter: (key) =>
+        set((state) => ({
+            filters: {
+                ...state.filters,
+                [key]: !state.filters[key],
+            },
+        })),
+    clearFilters: () =>
+        set({
+            filters: {
+                opVoorraad: false,
+                inheems: false,
+            },
+        }),
+    openSummary: () => set({ isSummaryOpen: true }),
+    closeSummary: () => set({ isSummaryOpen: false }),
+}));

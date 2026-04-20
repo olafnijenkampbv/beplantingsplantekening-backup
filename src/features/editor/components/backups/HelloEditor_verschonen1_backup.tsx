@@ -1,0 +1,5658 @@
+"use client";
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Stage, Layer, FastLayer, Line, Rect, Group, Shape, Circle, Text } from "react-konva";
+import { Html } from "react-konva-utils";
+import { nanoid } from "nanoid";
+import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX } from "@/state/projectStore";
+import EditorToolbar from "@/features/editor/components/EditorToolbar";
+import LeftObjectsMenu from "@/features/editor/components/LeftObjectsMenu";
+import PlantSidebar from "@/features/editor/components/PlantSidebar";
+import ConfirmModal from "@/features/editor/components/ConfirmModal";
+import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwatch";
+import { APP_NOTIFICATIONS, AppNotificationsRenderer, useAppNotify, useDismissAppNotification } from "@/state/allNotifications";
+import FileMenuDropdown from "@/features/editor/components/FileMenuDropdown";
+import DrawingsDashboardModal from "@/features/editor/components/DrawingsDashboardModal";
+import CreateDrawingModal from "@/features/editor/components/CreateDrawingModal";
+import MeasurementOverlay from "@/features/editor/components/MeasurementOverlay";
+import MeasureToolOverlay from "@/features/editor/components/editor/MeasureToolOverlay";
+import CanvasScaleSummary from "@/features/editor/components/CanvasScaleSummary";
+import { EDITOR_GRID_SIZE } from "@/features/editor/constants/editorGeometry";
+import { formatSquareMeters, getObjectAreaInSquareMeters } from "@/state/areaMetrics";
+import { clamp, estimateTextWidth, snapToGrid, snapPointsToGrid, snapHolesToGrid, snapPolyObjectToGrid, getPointerWorldPos, getPointerWorldPosFromClient, normalizeRect, bboxFromPoints, getObjectsBoundingBox, distPointToSeg, pointToSegmentDistance, rectContainsPoint, rectsOverlap } from "@/features/editor/lib/editorCanvasMath";
+import { pointInPolygon, pointInPolygonInclusive, getPlantbedHitAtWorldPoint, getOrthogonalEdgeOrientation, getEdgeResizeCursor, pointOnPolygonBoundary, canAutoCloseAgainstSameTypeBoundary } from "@/features/editor/lib/editorSelectionMath";
+import { renderTilesPattern, clearTilesPatternGeometryCache } from "@/features/editor/lib/objectPatterns";
+import { DynamicStrokeShape, rotateObjectQuarterTurnClockwise, getTreebedVisual, renderTreebedTrunks, createTreebedPointsFromCircle, createTreebedPointsFromCenterDrag, createTreebedPointsFromCornerDrag, createEspalierPointsFromRotatedCornerDrag, getTreebedResizeCorners } from "@/features/editor/lib/treebedGeometry";
+import {
+    PolygonWithHoles,
+    GridShape,
+    TYPE_LABELS,
+    TREEBED_VARIANT_LABELS,
+    getTreebedLabel,
+    isFenceOrGate,
+    isBuildingType,
+    getViewVisibilityKeyForType,
+    getViewVisibilityLabelForType,
+    getBuildingPatternCanvas,
+    clearBuildingPatternCache,
+    getLineStrokeWidth,
+} from "@/features/editor/lib/editorCanvasPrimitives";
+import {
+    PersistedDrawingSnapshot,
+    PersistedDrawingDocument,
+    DRAWINGS_STORAGE_KEY,
+    DEFAULT_DRAWING_VIEW_VISIBILITY,
+    clonePolyObject,
+    clonePlantbedLinks,
+    createEmptyDrawingSnapshot,
+    cloneDrawingSnapshot,
+    sanitizeDrawingDocument,
+    sanitizePlantbedLinksForObjects,
+    buildPlantbedLinkedCountFromLinks,
+    createDrawingDocument,
+    getCurrentDateTimeLabel,
+    getRelativeUpdatedAtLabel,
+} from "@/features/editor/editorDrawingsPersistence";
+import BaseFillLayer from "@/features/editor/components/editor/BaseFillLayer";
+import BaseStrokeLayer from "@/features/editor/components/editor/BaseStrokeLayer";
+import TypeLabelCard from "@/features/editor/components/editor/TypeLabelCard";
+import { EditorTopLayer } from "@/features/editor/components/editor/EditorTopLayer";
+
+type DrawMode = "draw";
+
+const COLORS = {
+    orange: "#E94E1B",
+    orangeLight: "#FFE5DD",
+    green: "#58694C",
+    greenLight: "#EEF0ED",
+    border: "#E3E2E2",
+    grid: "#d7dcd5",
+};
+
+const BASE_SCALE = 0.6;
+const HEADER_HEIGHT = 56;
+const TOOLBAR_OFFSET = 12;
+const GRID_SIZE = EDITOR_GRID_SIZE;
+const FENCE_GATE_STROKE_WIDTH = 14;
+
+type CompassDirection = "noord" | "oost" | "zuid" | "west";
+const COMPASS_DIRECTIONS: CompassDirection[] = ["noord", "oost", "zuid", "west"];
+
+const TREEBED_DYNAMIC_STROKE = {
+    frequencyPercent: 100,
+    wigglePercent: 50,
+    smoothenPercent: 0,
+    baseStepPx: 6,
+    minStepPx: 2.25,
+    maxWigglePx: 4,
+    minWigglePx: 1.1,
+    sizeReferencePx: 160,
+};
+
+type DynamicStrokePoint = { x: number; y: number };
+
+function hashStringToInt(input: string) {
+    let hash = 2166136261;
+
+    for (let i = 0; i < input.length; i += 1) {
+        hash ^= input.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+
+    return hash >>> 0;
+}
+
+function getDeterministicUnitNoise(seedKey: string, index: number) {
+    const seed = hashStringToInt(`${seedKey}:${index}`);
+    const normalized = (seed % 10000) / 10000;
+    return normalized * 2 - 1;
+}
+
+function getDynamicStrokeSamplePoints(
+    points: number[],
+    seedKey: string,
+    closed = true
+): DynamicStrokePoint[] {
+    if (points.length < 4) return [];
+
+    const source: DynamicStrokePoint[] = [];
+    for (let i = 0; i < points.length; i += 2) {
+        source.push({ x: points[i], y: points[i + 1] });
+    }
+
+    const segmentCount = closed ? source.length : source.length - 1;
+    if (segmentCount <= 0) return source;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const p of source) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+    }
+
+    const shapeSize = Math.max(1, Math.min(maxX - minX, maxY - minY));
+    const sizeScale = clamp(shapeSize / TREEBED_DYNAMIC_STROKE.sizeReferencePx, 0.45, 1);
+
+    const baseStepPx =
+        TREEBED_DYNAMIC_STROKE.baseStepPx *
+        (100 / Math.max(1, TREEBED_DYNAMIC_STROKE.frequencyPercent));
+
+    const stepPx = clamp(
+        baseStepPx * sizeScale,
+        TREEBED_DYNAMIC_STROKE.minStepPx,
+        baseStepPx
+    );
+
+    const baseWigglePx =
+        TREEBED_DYNAMIC_STROKE.maxWigglePx *
+        (TREEBED_DYNAMIC_STROKE.wigglePercent / 100);
+
+    const wigglePx = clamp(
+        baseWigglePx * sizeScale,
+        TREEBED_DYNAMIC_STROKE.minWigglePx,
+        baseWigglePx
+    );
+
+    const sampled: DynamicStrokePoint[] = [];
+
+    for (let segIndex = 0; segIndex < segmentCount; segIndex += 1) {
+        const a = source[segIndex];
+        const b = source[(segIndex + 1) % source.length];
+
+        if (segIndex === 0) {
+            sampled.push(a);
+        }
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+
+        if (len <= 0.0001) {
+            sampled.push(b);
+            continue;
+        }
+
+        const nx = -dy / len;
+        const ny = dx / len;
+        const subdivisions = Math.max(2, Math.round(len / stepPx));
+
+        for (let step = 1; step < subdivisions; step += 1) {
+            const t = step / subdivisions;
+            const baseX = a.x + dx * t;
+            const baseY = a.y + dy * t;
+
+            const envelope = Math.sin(t * Math.PI);
+            const noise = getDeterministicUnitNoise(seedKey, segIndex * 1000 + step);
+            const offset = noise * wigglePx * envelope;
+
+            sampled.push({
+                x: baseX + nx * offset,
+                y: baseY + ny * offset,
+            });
+        }
+
+        sampled.push(b);
+    }
+
+    return sampled;
+}
+
+function rotatePointQuarterTurnClockwise(
+    x: number,
+    y: number,
+    cx: number,
+    cy: number,
+    gridSize: number
+) {
+    const dx = x - cx;
+    const dy = y - cy;
+
+    return {
+        x: snapToGrid(cx - dy, gridSize),
+        y: snapToGrid(cy + dx, gridSize),
+    };
+}
+
+function rotatePointsQuarterTurnClockwise(
+    points: number[],
+    cx: number,
+    cy: number,
+    gridSize: number
+) {
+    const next: number[] = [];
+
+    for (let i = 0; i < points.length; i += 2) {
+        const rotated = rotatePointQuarterTurnClockwise(
+            points[i],
+            points[i + 1],
+            cx,
+            cy,
+            gridSize
+        );
+
+        next.push(rotated.x, rotated.y);
+    }
+
+    return next;
+}
+
+function getPlantbedOutlineSegments(plantbeds: PolyObject[]) {
+    type Segment = [number, number, number, number];
+
+    const round = (n: number) => Math.round(n * 1000) / 1000;
+
+    const horizontals = new Map<number, Array<{ from: number; to: number }>>();
+    const verticals = new Map<number, Array<{ from: number; to: number }>>();
+    const others = new Map<string, Segment>();
+
+    const makeSegmentKey = (ax: number, ay: number, bx: number, by: number) => {
+        const a = `${round(ax)},${round(ay)}`;
+        const b = `${round(bx)},${round(by)}`;
+        return a < b ? `${a}|${b}` : `${b}|${a}`;
+    };
+
+    for (const pb of plantbeds) {
+        const rings = [pb.points, ...(pb.holes ?? [])];
+
+        for (const pts of rings) {
+            if (!pts || pts.length < 6) continue;
+
+            for (let i = 0; i < pts.length; i += 2) {
+                const ax = round(pts[i]);
+                const ay = round(pts[i + 1]);
+                const ni = (i + 2) % pts.length;
+                const bx = round(pts[ni]);
+                const by = round(pts[ni + 1]);
+
+                if (ay === by) {
+                    const y = ay;
+                    const from = Math.min(ax, bx);
+                    const to = Math.max(ax, bx);
+                    if (!horizontals.has(y)) horizontals.set(y, []);
+                    horizontals.get(y)!.push({ from, to });
+                } else if (ax === bx) {
+                    const x = ax;
+                    const from = Math.min(ay, by);
+                    const to = Math.max(ay, by);
+                    if (!verticals.has(x)) verticals.set(x, []);
+                    verticals.get(x)!.push({ from, to });
+                } else {
+                    const key = makeSegmentKey(ax, ay, bx, by);
+                    if (!others.has(key)) {
+                        others.set(key, [ax, ay, bx, by]);
+                    }
+                }
+            }
+        }
+    }
+
+    const result: Segment[] = [];
+
+    for (const [y, ranges] of horizontals.entries()) {
+        const cuts = Array.from(
+            new Set(ranges.flatMap((r) => [r.from, r.to]).map(round))
+        ).sort((a, b) => a - b);
+
+        for (let i = 0; i < cuts.length - 1; i++) {
+            const from = cuts[i];
+            const to = cuts[i + 1];
+            if (to <= from) continue;
+
+            const covered = ranges.some((r) => r.from <= from && r.to >= to);
+            if (covered) {
+                result.push([from, y, to, y]);
+            }
+        }
+    }
+
+    for (const [x, ranges] of verticals.entries()) {
+        const cuts = Array.from(
+            new Set(ranges.flatMap((r) => [r.from, r.to]).map(round))
+        ).sort((a, b) => a - b);
+
+        for (let i = 0; i < cuts.length - 1; i++) {
+            const from = cuts[i];
+            const to = cuts[i + 1];
+            if (to <= from) continue;
+
+            const covered = ranges.some((r) => r.from <= from && r.to >= to);
+            if (covered) {
+                result.push([x, from, x, to]);
+            }
+        }
+    }
+
+    result.push(...Array.from(others.values()));
+
+    return result;
+}
+
+type TreebedLabelBlocker = { x: number; y: number; w: number; h: number };
+type PlantbedNumberLayout = {
+    text: string;
+    fontSize: number;
+    x: number;
+    y: number;
+    width: number;
+
+    areaText: string;
+    areaFontSize: number;
+    areaRotation: 0 | -90;
+    areaX: number;
+    areaY: number;
+};
+
+function buildTreebedLabelBlockers(objects: PolyObject[]) {
+    const circleBlockerFromCenter = (cx: number, cy: number, radius: number, padding = 0) => ({
+        x: cx - radius - padding,
+        y: cy - radius - padding,
+        w: (radius + padding) * 2,
+        h: (radius + padding) * 2,
+    });
+
+    return objects
+        .filter((obj) => obj.type === "treebed" && Array.isArray(obj.points) && obj.points.length >= 8)
+        .flatMap((obj) => {
+            const bbox = bboxFromPoints(obj.points);
+            const cx = bbox.x + bbox.w / 2;
+            const cy = bbox.y + bbox.h / 2;
+
+            const crownBlocker = {
+                x: bbox.x,
+                y: bbox.y,
+                w: bbox.w,
+                h: bbox.h,
+            };
+
+            const trunkRadius = Math.max(4, Math.min(bbox.w, bbox.h) * 0.08);
+            const trunkPadding = Math.max(10, trunkRadius * 1.4);
+
+            if (obj.treebedVariant === "multi_stem") {
+                const clusterOffsetY = -trunkRadius * 0.6;
+                const clusterOffsetX = -trunkRadius * 0.45;
+
+                const mainTrunk = circleBlockerFromCenter(
+                    cx + clusterOffsetX,
+                    cy + clusterOffsetY + trunkRadius * 1.15,
+                    trunkRadius * 1.08,
+                    trunkPadding
+                );
+
+                const leftTrunk = circleBlockerFromCenter(
+                    cx + clusterOffsetX,
+                    cy + clusterOffsetY - trunkRadius * 0.85,
+                    trunkRadius * 0.62,
+                    trunkPadding
+                );
+
+                const rightTrunk = circleBlockerFromCenter(
+                    cx + clusterOffsetX + trunkRadius * 1.85,
+                    cy + clusterOffsetY + trunkRadius * 0.02,
+                    trunkRadius * 0.88,
+                    trunkPadding
+                );
+
+                return [crownBlocker, mainTrunk, leftTrunk, rightTrunk];
+            }
+
+            const singleTrunk = circleBlockerFromCenter(
+                cx,
+                cy,
+                Math.max(trunkRadius, 10),
+                trunkPadding
+            );
+
+            return [crownBlocker, singleTrunk];
+        });
+}
+
+function getTreebedLabelBlockersForPlantbed(
+    points: number[],
+    treebedBlockers: TreebedLabelBlocker[]
+) {
+    const plantbedBox = bboxFromPoints(points);
+    return treebedBlockers.filter((blocker) => rectsOverlap(plantbedBox, blocker));
+}
+
+function bestInsidePoint(
+    points: number[],
+    holes: number[][] = [],
+    step: number,
+    blockers: Array<{ x: number; y: number; w: number; h: number }> = [],
+    labelWidth = 0,
+    labelHeight = 0
+) {
+    const bb = bboxFromPoints(points);
+    const candidates: { x: number; y: number; score: number }[] = [];
+    const blockerPadding = Math.max(6, step * 0.6);
+
+    const isInsideUsableArea = (x: number, y: number) => {
+        if (!pointInPolygon(x, y, points)) return false;
+        return !holes.some((hole) => pointInPolygon(x, y, hole));
+    };
+
+    const rectFitsInUsableArea = (rect: { x: number; y: number; w: number; h: number }) => {
+        const corners = [
+            { x: rect.x, y: rect.y },
+            { x: rect.x + rect.w, y: rect.y },
+            { x: rect.x, y: rect.y + rect.h },
+            { x: rect.x + rect.w, y: rect.y + rect.h },
+        ];
+
+        return corners.every((corner) => isInsideUsableArea(corner.x, corner.y));
+    };
+
+    for (let y = bb.y + step; y < bb.y + bb.h; y += step) {
+        for (let x = bb.x + step; x < bb.x + bb.w; x += step) {
+            if (!isInsideUsableArea(x, y)) continue;
+
+            const labelRect = {
+                x: x - labelWidth / 2,
+                y: y - labelHeight / 2,
+                w: labelWidth,
+                h: labelHeight,
+            };
+
+            if (!rectFitsInUsableArea(labelRect)) continue;
+
+            let minDistOuter = Infinity;
+            for (let i = 0; i < points.length; i += 2) {
+                const x1 = points[i];
+                const y1 = points[i + 1];
+                const x2 = points[(i + 2) % points.length];
+                const y2 = points[(i + 3) % points.length];
+                const dist = pointToSegmentDistance(x, y, x1, y1, x2, y2);
+                minDistOuter = Math.min(minDistOuter, dist);
+            }
+
+            let minDistHole = Infinity;
+            for (const hole of holes) {
+                for (let i = 0; i < hole.length; i += 2) {
+                    const x1 = hole[i];
+                    const y1 = hole[i + 1];
+                    const x2 = hole[(i + 2) % hole.length];
+                    const y2 = hole[(i + 3) % hole.length];
+                    const dist = pointToSegmentDistance(x, y, x1, y1, x2, y2);
+                    minDistHole = Math.min(minDistHole, dist);
+                }
+            }
+
+            const nearestHoleDist = Number.isFinite(minDistHole) ? minDistHole : minDistOuter;
+            const nearestOuterDist = minDistOuter;
+            const minUsableDist = Math.min(nearestOuterDist, nearestHoleDist);
+
+            const overlapsBlocker = blockers.some((blocker) =>
+                rectsOverlap(labelRect, {
+                    x: blocker.x - blockerPadding,
+                    y: blocker.y - blockerPadding,
+                    w: blocker.w + blockerPadding * 2,
+                    h: blocker.h + blockerPadding * 2,
+                })
+            );
+
+            const bbCenterX = bb.x + bb.w / 2;
+            const bbCenterY = bb.y + bb.h / 2;
+            const centerDist = Math.hypot(x - bbCenterX, y - bbCenterY);
+
+            candidates.push({
+                x,
+                y,
+                score: overlapsBlocker
+                    ? minUsableDist - 10000
+                    : minUsableDist * 2.2 + nearestHoleDist * 1.6 - centerDist * 0.04,
+            });
+        }
+    }
+
+    if (candidates.length === 0) {
+        return { x: bb.x + bb.w / 2, y: bb.y + bb.h / 2, score: -Infinity };
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0];
+}
+
+function getPlantbedNumberLayout(
+    points: number[],
+    holes: number[][] = [],
+    plantbedNo: number | string,
+    areaText: string,
+    treebedBlockers: TreebedLabelBlocker[]
+): PlantbedNumberLayout {
+    const text = String(plantbedNo);
+    const bb = bboxFromPoints(points);
+    const relevantTreebedBlockers = getTreebedLabelBlockersForPlantbed(points, treebedBlockers);
+
+    const safeWidth = Math.max(bb.w - GRID_SIZE * 0.45, GRID_SIZE * 0.55);
+    const safeHeight = Math.max(bb.h - GRID_SIZE * 0.45, GRID_SIZE * 0.55);
+
+    const fallbackCenter = { x: bb.x + bb.w / 2, y: bb.y + bb.h / 2 };
+
+    const AREA_GAP = 8;
+    const INNER_MARGIN = 4;
+    const AREA_FONT_CANDIDATES = [16, 14, 12, 10] as const;
+
+    let bestLayout:
+        | {
+            centerX: number;
+            centerY: number;
+            numberFontSize: number;
+            numberTextWidth: number;
+            numberTextHeight: number;
+            compositeWidth: number;
+            compositeHeight: number;
+            areaFontSize: number;
+            areaRotation: 0 | -90;
+            areaTextWidth: number;
+            areaTextHeight: number;
+        }
+        | null = null;
+
+    const estimateNumberWidth = (fontSize: number) =>
+        Math.max(fontSize * 0.9, fontSize * Math.max(1.05, text.length * 0.72));
+
+    const estimateNumberHeight = (fontSize: number) => fontSize * 0.78;
+
+    const initialNumberFontSizeByHeight = safeHeight * 0.32;
+    const initialNumberFontSizeByWidth = safeWidth / Math.max(1, text.length * 0.72);
+    const initialNumberFontSize = Math.round(
+        clamp(Math.min(initialNumberFontSizeByHeight, initialNumberFontSizeByWidth), 4, 28)
+    );
+
+    for (let tryNumberFontSize = initialNumberFontSize; tryNumberFontSize >= 4; tryNumberFontSize -= 1) {
+        const numberTextWidth = estimateNumberWidth(tryNumberFontSize);
+        const numberTextHeight = estimateNumberHeight(tryNumberFontSize);
+
+        for (const areaFontSize of AREA_FONT_CANDIDATES) {
+            const areaTextWidth = estimateTextWidth(areaText, areaFontSize);
+            const areaTextHeight = areaFontSize;
+
+            const candidates = [
+                {
+                    areaRotation: 0 as const,
+                    areaOccupiedWidth: areaTextWidth,
+                    areaOccupiedHeight: areaTextHeight,
+                },
+                {
+                    areaRotation: -90 as const,
+                    areaOccupiedWidth: areaTextHeight,
+                    areaOccupiedHeight: areaTextWidth,
+                },
+            ];
+
+            for (const candidateLayout of candidates) {
+                const compositeWidth = Math.max(numberTextWidth, candidateLayout.areaOccupiedWidth) + INNER_MARGIN * 2;
+                const compositeHeight =
+                    numberTextHeight + AREA_GAP + candidateLayout.areaOccupiedHeight + INNER_MARGIN * 2;
+
+                const fallbackRect = {
+                    x: fallbackCenter.x - compositeWidth / 2,
+                    y: fallbackCenter.y - compositeHeight / 2,
+                    w: compositeWidth,
+                    h: compositeHeight,
+                };
+
+                const fallbackInHole = holes.some((hole) =>
+                    pointInPolygon(fallbackCenter.x, fallbackCenter.y, hole) ||
+                    pointInPolygon(fallbackRect.x, fallbackRect.y, hole) ||
+                    pointInPolygon(fallbackRect.x + fallbackRect.w, fallbackRect.y, hole) ||
+                    pointInPolygon(fallbackRect.x, fallbackRect.y + fallbackRect.h, hole) ||
+                    pointInPolygon(fallbackRect.x + fallbackRect.w, fallbackRect.y + fallbackRect.h, hole)
+                );
+
+                const centerBlockedByTreebed =
+                    relevantTreebedBlockers.length > 0 &&
+                    relevantTreebedBlockers.some((blocker) => rectsOverlap(fallbackRect, blocker));
+
+                const canUseFallbackCenter =
+                    !fallbackInHole &&
+                    !centerBlockedByTreebed &&
+                    holes.length === 0 &&
+                    relevantTreebedBlockers.length === 0 &&
+                    isAxisAlignedRect(points);
+
+                if (canUseFallbackCenter) {
+                    bestLayout = {
+                        centerX: fallbackCenter.x,
+                        centerY: fallbackCenter.y,
+                        numberFontSize: tryNumberFontSize,
+                        numberTextWidth,
+                        numberTextHeight,
+                        compositeWidth,
+                        compositeHeight,
+                        areaFontSize,
+                        areaRotation: candidateLayout.areaRotation,
+                        areaTextWidth,
+                        areaTextHeight,
+                    };
+                    break;
+                }
+
+                const candidate = bestInsidePoint(
+                    points,
+                    holes,
+                    Math.max(2, GRID_SIZE / 5),
+                    relevantTreebedBlockers,
+                    compositeWidth,
+                    compositeHeight
+                );
+
+                if (Number.isFinite(candidate.score)) {
+                    bestLayout = {
+                        centerX: candidate.x,
+                        centerY: candidate.y,
+                        numberFontSize: tryNumberFontSize,
+                        numberTextWidth,
+                        numberTextHeight,
+                        compositeWidth,
+                        compositeHeight,
+                        areaFontSize,
+                        areaRotation: candidateLayout.areaRotation,
+                        areaTextWidth,
+                        areaTextHeight,
+                    };
+                    break;
+                }
+            }
+
+            if (bestLayout) break;
+        }
+
+        if (bestLayout) break;
+    }
+
+    if (!bestLayout) {
+        const fallbackNumberFontSize = 4;
+        const fallbackNumberWidth = estimateNumberWidth(fallbackNumberFontSize);
+        const fallbackNumberHeight = estimateNumberHeight(fallbackNumberFontSize);
+        const fallbackAreaFontSize = 8;
+        const fallbackAreaTextWidth = estimateTextWidth(areaText, fallbackAreaFontSize);
+
+        const compositeTopY =
+            fallbackCenter.y - (fallbackNumberHeight + AREA_GAP + fallbackAreaFontSize) / 2;
+
+        return {
+            text,
+            fontSize: fallbackNumberFontSize,
+            x: fallbackCenter.x - fallbackNumberWidth / 2,
+            y: compositeTopY,
+            width: fallbackNumberWidth,
+            areaText,
+            areaFontSize: fallbackAreaFontSize,
+            areaRotation: 0,
+            areaX: fallbackCenter.x - fallbackAreaTextWidth / 2,
+            areaY: compositeTopY + fallbackNumberHeight + AREA_GAP,
+        };
+    }
+
+    const compositeTopY = bestLayout.centerY - bestLayout.compositeHeight / 2 + INNER_MARGIN;
+    const numberY = compositeTopY;
+    const numberX = bestLayout.centerX - bestLayout.numberTextWidth / 2;
+
+    const areaTopY = compositeTopY + bestLayout.numberTextHeight + AREA_GAP;
+
+    if (bestLayout.areaRotation === 0) {
+        return {
+            text,
+            fontSize: bestLayout.numberFontSize,
+            x: numberX,
+            y: numberY,
+            width: bestLayout.numberTextWidth,
+            areaText,
+            areaFontSize: bestLayout.areaFontSize,
+            areaRotation: 0,
+            areaX: bestLayout.centerX - bestLayout.areaTextWidth / 2,
+            areaY: areaTopY,
+        };
+    }
+
+    return {
+        text,
+        fontSize: bestLayout.numberFontSize,
+        x: numberX,
+        y: numberY,
+        width: bestLayout.numberTextWidth,
+        areaText,
+        areaFontSize: bestLayout.areaFontSize,
+        areaRotation: -90,
+        areaX: bestLayout.centerX,
+        areaY: areaTopY + bestLayout.areaTextWidth / 2,
+    };
+}
+
+const TREEBED_MIN_SIZE = 20;
+const TREEBED_ESPALIER_MIN_HEIGHT = 100;
+const TREEBED_ESPALIER_WIDTH_RATIO = 0.18;
+
+function getTreebedBBox(points: number[]) {
+    return bboxFromPoints(points);
+}
+
+function createTreebedPointsFromRect(
+    x: number,
+    y: number,
+    w: number,
+    h: number
+) {
+    return [
+        x, y,
+        x + w, y,
+        x + w, y + h,
+        x, y + h,
+    ];
+}
+
+function normalizeRotationDeg(rotationDeg: number) {
+    let next = rotationDeg % 360;
+    if (next < 0) next += 360;
+    return next;
+}
+
+function rotatePointAround(
+    x: number,
+    y: number,
+    cx: number,
+    cy: number,
+    rotationDeg: number
+) {
+    const rad = (rotationDeg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    const dx = x - cx;
+    const dy = y - cy;
+
+    return {
+        x: cx + dx * cos - dy * sin,
+        y: cy + dx * sin + dy * cos,
+    };
+}
+
+function getTreebedRectRotationDeg(points: number[]) {
+    if (!points || points.length < 8) return 0;
+
+    const ax = points[0];
+    const ay = points[1];
+    const bx = points[2];
+    const by = points[3];
+
+    return normalizeRotationDeg((Math.atan2(by - ay, bx - ax) * 180) / Math.PI);
+}
+
+function createRotatedTreebedRectPoints(
+    cx: number,
+    cy: number,
+    width: number,
+    height: number,
+    rotationDeg: number
+) {
+    const hw = width / 2;
+    const hh = height / 2;
+
+    const tl = rotatePointAround(cx - hw, cy - hh, cx, cy, rotationDeg);
+    const tr = rotatePointAround(cx + hw, cy - hh, cx, cy, rotationDeg);
+    const br = rotatePointAround(cx + hw, cy + hh, cx, cy, rotationDeg);
+    const bl = rotatePointAround(cx - hw, cy + hh, cx, cy, rotationDeg);
+
+    return [
+        tl.x, tl.y,
+        tr.x, tr.y,
+        br.x, br.y,
+        bl.x, bl.y,
+    ];
+}
+
+function getTreebedRotateCursorForAngleDeg(angleDeg: number) {
+    const normalized = normalizeRotationDeg(angleDeg);
+
+    if (normalized >= 0 && normalized < 90) {
+        return "url(/icons/rotate-0.png) 16 16, auto";
+    }
+
+    if (normalized >= 90 && normalized < 180) {
+        return "url(/icons/rotate-270.png) 16 16, auto";
+    }
+
+    if (normalized >= 180 && normalized < 270) {
+        return "url(/icons/rotate-180.png) 16 16, auto";
+    }
+
+    return "url(/icons/rotate-90.png) 16 16, auto";
+}
+
+function getTreebedRotateCursorFromPoint(
+    cx: number,
+    cy: number,
+    px: number,
+    py: number
+) {
+    const angleDeg = normalizeRotationDeg(
+        (Math.atan2(py - cy, px - cx) * 180) / Math.PI
+    );
+
+    return getTreebedRotateCursorForAngleDeg(angleDeg);
+}
+
+function isAxisAlignedRect(points: number[], eps = 1e-6) {
+    if (points.length < 8) return false;
+
+    const bb = bboxFromPoints(points);
+    const xs: number[] = [];
+    const ys: number[] = [];
+
+    const pushUnique = (arr: number[], v: number) => {
+        for (const a of arr) if (Math.abs(a - v) <= eps) return;
+        arr.push(v);
+    };
+
+    for (let i = 0; i < points.length; i += 2) {
+        const x = points[i];
+        const y = points[i + 1];
+
+        const onMinX = Math.abs(x - bb.x) <= eps;
+        const onMaxX = Math.abs(x - (bb.x + bb.w)) <= eps;
+        const onMinY = Math.abs(y - bb.y) <= eps;
+        const onMaxY = Math.abs(y - (bb.y + bb.h)) <= eps;
+
+        if (!(onMinX || onMaxX || onMinY || onMaxY)) return false;
+
+        pushUnique(xs, x);
+        pushUnique(ys, y);
+
+        if (xs.length > 2 || ys.length > 2) return false;
+    }
+
+    if (bb.w <= eps || bb.h <= eps) return false;
+
+    return true;
+}
+
+function rectsIntersect(
+    a: { x: number; y: number; w: number; h: number },
+    b: { x: number; y: number; w: number; h: number }
+) {
+    return !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
+}
+
+function pointInRect(px: number, py: number, r: { x: number; y: number; w: number; h: number }) {
+    return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+function segSegIntersect(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+    dx: number,
+    dy: number,
+    eps = 1e-9
+) {
+    const orient = (px: number, py: number, qx: number, qy: number, rx: number, ry: number) => {
+        const v = (qy - py) * (rx - qx) - (qx - px) * (ry - qy);
+        if (Math.abs(v) <= eps) return 0;
+        return v > 0 ? 1 : 2;
+    };
+
+    const onSeg = (px: number, py: number, qx: number, qy: number, rx: number, ry: number) => {
+        return (
+            qx <= Math.max(px, rx) + eps &&
+            qx + eps >= Math.min(px, rx) &&
+            qy <= Math.max(py, ry) + eps &&
+            qy + eps >= Math.min(py, ry)
+        );
+    };
+
+    const o1 = orient(ax, ay, bx, by, cx, cy);
+    const o2 = orient(ax, ay, bx, by, dx, dy);
+    const o3 = orient(cx, cy, dx, dy, ax, ay);
+    const o4 = orient(cx, cy, dx, dy, bx, by);
+
+    if (o1 !== o2 && o3 !== o4) return true;
+
+    if (o1 === 0 && onSeg(ax, ay, cx, cy, bx, by)) return true;
+    if (o2 === 0 && onSeg(ax, ay, dx, dy, bx, by)) return true;
+    if (o3 === 0 && onSeg(cx, cy, ax, ay, dx, dy)) return true;
+    if (o4 === 0 && onSeg(cx, cy, bx, by, dx, dy)) return true;
+
+    return false;
+}
+
+function segmentIntersectsRect(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    r: { x: number; y: number; w: number; h: number }
+) {
+    // if either endpoint inside rect => hit
+    if (pointInRect(ax, ay, r) || pointInRect(bx, by, r)) return true;
+
+    // rect corners
+    const x1 = r.x;
+    const y1 = r.y;
+    const x2 = r.x + r.w;
+    const y2 = r.y + r.h;
+
+    // rect edges: (x1,y1)-(x2,y1), (x2,y1)-(x2,y2), (x2,y2)-(x1,y2), (x1,y2)-(x1,y1)
+    if (segSegIntersect(ax, ay, bx, by, x1, y1, x2, y1)) return true;
+    if (segSegIntersect(ax, ay, bx, by, x2, y1, x2, y2)) return true;
+    if (segSegIntersect(ax, ay, bx, by, x2, y2, x1, y2)) return true;
+    if (segSegIntersect(ax, ay, bx, by, x1, y2, x1, y1)) return true;
+
+    return false;
+}
+
+function polyIntersectsRect(points: number[], r: { x: number; y: number; w: number; h: number }) {
+    if (points.length < 6) return false;
+
+    // A) any polygon vertex in rect
+    for (let i = 0; i < points.length; i += 2) {
+        if (pointInRect(points[i], points[i + 1], r)) return true;
+    }
+
+    // B) any rect corner inside polygon
+    const corners = [
+        { x: r.x, y: r.y },
+        { x: r.x + r.w, y: r.y },
+        { x: r.x + r.w, y: r.y + r.h },
+        { x: r.x, y: r.y + r.h },
+    ];
+    for (const c of corners) {
+        if (pointInPolygon(c.x, c.y, points)) return true;
+    }
+
+    // C) any polygon edge intersects rect
+    const n = points.length / 2;
+    for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const ax = points[i * 2];
+        const ay = points[i * 2 + 1];
+        const bx = points[j * 2];
+        const by = points[j * 2 + 1];
+
+        if (segmentIntersectsRect(ax, ay, bx, by, r)) return true;
+    }
+
+    return false;
+}
+
+const ORTHO_GUIDE_TOLERANCE = GRID_SIZE * 0.6;
+const ANGLE_LOCK_STEP = Math.PI / 4;
+
+type ResolvedDrawPreviewPoint = {
+    x: number;
+    y: number;
+    primaryGuidePoints: number[] | null;
+    secondaryGuidePoints: number[] | null;
+};
+
+function shouldShowDraftGuidesForTool(
+    tool: "select" | "draw" | "hand" | "cut" | "measure"
+) {
+    return tool === "draw";
+}
+
+function snapWorldPointAgainstFenceBoundary(
+    rawX: number,
+    rawY: number,
+    _targetType: ObjectType | null | undefined,
+    _objects: PolyObject[]
+) {
+    return {
+        x: snapToGrid(rawX, GRID_SIZE),
+        y: snapToGrid(rawY, GRID_SIZE),
+    };
+}
+
+function getAngleLockedPoint(
+    anchorX: number,
+    anchorY: number,
+    rawX: number,
+    rawY: number
+) {
+    const dx = rawX - anchorX;
+    const dy = rawY - anchorY;
+
+    if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) {
+        return { x: anchorX, y: anchorY };
+    }
+
+    const rawAngle = Math.atan2(dy, dx);
+    const snappedAngle = Math.round(rawAngle / ANGLE_LOCK_STEP) * ANGLE_LOCK_STEP;
+
+    const angleIndex = ((Math.round(snappedAngle / ANGLE_LOCK_STEP) % 8) + 8) % 8;
+    const isDiagonal = angleIndex % 2 === 1;
+
+    const dirX = Math.cos(snappedAngle);
+    const dirY = Math.sin(snappedAngle);
+
+    const projectedDistance = dx * dirX + dy * dirY;
+    const step = isDiagonal ? GRID_SIZE * Math.SQRT2 : GRID_SIZE;
+    const snappedDistance = Math.round(projectedDistance / step) * step;
+
+    const nextX = anchorX + dirX * snappedDistance;
+    const nextY = anchorY + dirY * snappedDistance;
+
+    const roundedX = Math.abs(nextX) < 1e-9 ? 0 : nextX;
+    const roundedY = Math.abs(nextY) < 1e-9 ? 0 : nextY;
+
+    return {
+        x: roundedX,
+        y: roundedY,
+    };
+}
+
+function resolveDrawPreviewPoint(
+    rawX: number,
+    rawY: number,
+    basePoints: number[],
+    shiftKey: boolean,
+    targetType: ObjectType | null | undefined,
+    objects: PolyObject[],
+    options?: {
+        showGuides?: boolean;
+    }
+): ResolvedDrawPreviewPoint {
+    const showGuides = options?.showGuides ?? true;
+    const gridSnapped = snapWorldPointAgainstFenceBoundary(rawX, rawY, targetType, objects);
+
+    if (basePoints.length < 2) {
+        return {
+            x: gridSnapped.x,
+            y: gridSnapped.y,
+            primaryGuidePoints: null,
+            secondaryGuidePoints: null,
+        };
+    }
+
+    const anchorX = basePoints[basePoints.length - 2];
+    const anchorY = basePoints[basePoints.length - 1];
+    const hasStartPoint = basePoints.length >= 4;
+    const startX = hasStartPoint ? basePoints[0] : null;
+    const startY = hasStartPoint ? basePoints[1] : null;
+
+    const buildCornerGuides = (
+        projectedX: number,
+        projectedY: number
+    ): ResolvedDrawPreviewPoint => {
+        let nextX = projectedX;
+        let nextY = projectedY;
+        let primaryGuidePoints: number[] | null =
+            showGuides ? [anchorX, anchorY, projectedX, projectedY] : null;
+        let secondaryGuidePoints: number[] | null = null;
+
+        if (showGuides && startX !== null && startY !== null) {
+            const alignsVerticalWithStart = Math.abs(projectedX - startX) <= ORTHO_GUIDE_TOLERANCE;
+            const alignsHorizontalWithStart = Math.abs(projectedY - startY) <= ORTHO_GUIDE_TOLERANCE;
+
+            if (alignsVerticalWithStart) {
+                nextX = startX;
+                primaryGuidePoints = [anchorX, anchorY, nextX, nextY];
+
+                if (!(anchorX === nextX && anchorY === startY)) {
+                    secondaryGuidePoints = [startX, startY, nextX, nextY];
+                }
+
+                return {
+                    x: nextX,
+                    y: nextY,
+                    primaryGuidePoints,
+                    secondaryGuidePoints,
+                };
+            }
+
+            if (alignsHorizontalWithStart) {
+                nextY = startY;
+                primaryGuidePoints = [anchorX, anchorY, nextX, nextY];
+
+                if (!(anchorX === startX && anchorY === nextY)) {
+                    secondaryGuidePoints = [startX, startY, nextX, nextY];
+                }
+
+                return {
+                    x: nextX,
+                    y: nextY,
+                    primaryGuidePoints,
+                    secondaryGuidePoints,
+                };
+            }
+        }
+
+        return {
+            x: nextX,
+            y: nextY,
+            primaryGuidePoints,
+            secondaryGuidePoints,
+        };
+    };
+
+    if (shiftKey) {
+        const locked = getAngleLockedPoint(anchorX, anchorY, rawX, rawY);
+        return buildCornerGuides(locked.x, locked.y);
+    }
+
+    const rawDx = rawX - anchorX;
+    const rawDy = rawY - anchorY;
+
+    const nearVerticalFromAnchor = Math.abs(rawDx) <= ORTHO_GUIDE_TOLERANCE;
+    const nearHorizontalFromAnchor = Math.abs(rawDy) <= ORTHO_GUIDE_TOLERANCE;
+
+    if (nearVerticalFromAnchor || nearHorizontalFromAnchor) {
+        if (Math.abs(rawDx) <= Math.abs(rawDy)) {
+            return buildCornerGuides(anchorX, gridSnapped.y);
+        }
+
+        return buildCornerGuides(gridSnapped.x, anchorY);
+    }
+
+    return {
+        x: gridSnapped.x,
+        y: gridSnapped.y,
+        primaryGuidePoints: null,
+        secondaryGuidePoints: null,
+    };
+}
+
+function lineIntersection(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+    dx: number,
+    dy: number
+) {
+    const abx = bx - ax;
+    const aby = by - ay;
+    const cdx = dx - cx;
+    const cdy = dy - cy;
+
+    const det = abx * cdy - aby * cdx;
+    if (Math.abs(det) < 1e-9) return null;
+
+    const t = ((cx - ax) * cdy - (cy - ay) * cdx) / det;
+
+    return {
+        x: ax + t * abx,
+        y: ay + t * aby,
+    };
+}
+
+function pointInPolygonWithHoles(px: number, py: number, obj: PolyObject) {
+    const points = obj.points ?? [];
+    if (points.length < 6) return false;
+
+    let inside = false;
+    for (let i = 0, j = points.length - 2; i < points.length; i += 2) {
+        const xi = points[i], yi = points[i + 1];
+        const xj = points[j], yj = points[j + 1];
+
+        const intersect =
+            ((yi > py) !== (yj > py)) &&
+            (px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi);
+
+        if (intersect) inside = !inside;
+        j = i;
+    }
+
+    if (!inside) return false;
+
+    const holes = obj.holes ?? [];
+    for (const hole of holes) {
+        let inHole = false;
+        for (let i = 0, j = hole.length - 2; i < hole.length; i += 2) {
+            const xi = hole[i], yi = hole[i + 1];
+            const xj = hole[j], yj = hole[j + 1];
+
+            const intersect =
+                ((yi > py) !== (yj > py)) &&
+                (px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi);
+
+            if (intersect) inHole = !inHole;
+            j = i;
+        }
+
+        if (inHole) return false;
+    }
+
+    return true;
+}
+
+function inferPolylineRenderSide(
+    points: number[],
+    type: ObjectType,
+    objects: PolyObject[],
+    fallback: 1 | -1 = 1
+): 1 | -1 {
+    if (!points || points.length < 4) return fallback;
+    if (type !== "fence" && type !== "gate") return fallback;
+
+    const blockers = objects.filter(
+        (o) => o.type !== "fence" && o.type !== "gate" && o.points && o.points.length >= 6
+    );
+
+    if (blockers.length === 0) return fallback;
+
+    const sampleOffset = getLineStrokeWidth(type) / 2 + 4;
+
+    let leftScore = 0;
+    let rightScore = 0;
+
+    for (let i = 0; i <= points.length - 4; i += 2) {
+        const ax = points[i];
+        const ay = points[i + 1];
+        const bx = points[i + 2];
+        const by = points[i + 3];
+
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len = Math.hypot(dx, dy);
+
+        if (len < 1e-9) continue;
+
+        const nx = -dy / len;
+        const ny = dx / len;
+
+        const mx = (ax + bx) * 0.5;
+        const my = (ay + by) * 0.5;
+
+        const leftX = mx + nx * sampleOffset;
+        const leftY = my + ny * sampleOffset;
+        const rightX = mx - nx * sampleOffset;
+        const rightY = my - ny * sampleOffset;
+
+        let leftHit = false;
+        let rightHit = false;
+
+        for (const blocker of blockers) {
+            if (!leftHit && pointInPolygonWithHoles(leftX, leftY, blocker)) leftHit = true;
+            if (!rightHit && pointInPolygonWithHoles(rightX, rightY, blocker)) rightHit = true;
+            if (leftHit && rightHit) break;
+        }
+
+        if (leftHit) leftScore += len;
+        if (rightHit) rightScore += len;
+    }
+
+    if (leftScore === rightScore) return fallback;
+
+    return leftScore > rightScore ? -1 : 1;
+}
+
+function getOneSidedPolylineRenderPoints(
+    points: number[],
+    strokeWidth: number,
+    side: 1 | -1 = 1
+) {
+    if (!points || points.length < 4) return points;
+
+    const pointCount = points.length / 2;
+    if (pointCount < 2) return points;
+
+    const offset = (strokeWidth / 2) * side;
+
+    const getPoint = (index: number) => ({
+        x: points[index * 2],
+        y: points[index * 2 + 1],
+    });
+
+    const normals: Array<{ x: number; y: number }> = [];
+
+    for (let i = 0; i < pointCount - 1; i++) {
+        const a = getPoint(i);
+        const b = getPoint(i + 1);
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+
+        if (len < 1e-9) {
+            normals.push({ x: 0, y: 0 });
+            continue;
+        }
+
+        normals.push({
+            x: -dy / len,
+            y: dx / len,
+        });
+    }
+
+    const out: number[] = [];
+
+    for (let i = 0; i < pointCount; i++) {
+        const p = getPoint(i);
+
+        if (i === 0) {
+            const n = normals[0];
+            out.push(p.x + n.x * offset, p.y + n.y * offset);
+            continue;
+        }
+
+        if (i === pointCount - 1) {
+            const n = normals[normals.length - 1];
+            out.push(p.x + n.x * offset, p.y + n.y * offset);
+            continue;
+        }
+
+        const prev = normals[i - 1];
+        const next = normals[i];
+
+        const prevPoint = getPoint(i - 1);
+        const nextPoint = getPoint(i + 1);
+
+        const a1x = prevPoint.x + prev.x * offset;
+        const a1y = prevPoint.y + prev.y * offset;
+        const a2x = p.x + prev.x * offset;
+        const a2y = p.y + prev.y * offset;
+
+        const b1x = p.x + next.x * offset;
+        const b1y = p.y + next.y * offset;
+        const b2x = nextPoint.x + next.x * offset;
+        const b2y = nextPoint.y + next.y * offset;
+
+        const hit = lineIntersection(a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y);
+
+        if (hit) {
+            out.push(hit.x, hit.y);
+            continue;
+        }
+
+        const avgX = (prev.x + next.x) * 0.5;
+        const avgY = (prev.y + next.y) * 0.5;
+        out.push(p.x + avgX * offset, p.y + avgY * offset);
+    }
+
+    return out;
+}
+
+// ==============================
+// ✅ Fence/Gate merge (alleen endpoints)
+// ==============================
+function reversePolylinePoints(points: number[]) {
+    const out: number[] = [];
+    for (let i = points.length - 2; i >= 0; i -= 2) {
+        out.push(points[i], points[i + 1]);
+    }
+    return out;
+}
+
+function samePoint(ax: number, ay: number, bx: number, by: number) {
+    return ax === bx && ay === by;
+}
+
+function mergeFenceOrGateEndpoints(
+    type: "fence" | "gate",
+    newPoints: number[],
+    objects: PolyObject[]
+) {
+    let merged = [...newPoints];
+    const removeIds: string[] = [];
+
+    // herhaal: na 1 merge kan er weer een endpoint-match ontstaan
+    while (true) {
+        const nsx = merged[0], nsy = merged[1];
+        const nex = merged[merged.length - 2], ney = merged[merged.length - 1];
+
+        // zoek 1 match (eerste die past)
+        const hit = objects.find((o) => o.type === type && !removeIds.includes(o.id));
+        if (!hit) break;
+
+        let didMerge = false;
+
+        for (const o of objects) {
+            if (o.type !== type) continue;
+            if (removeIds.includes(o.id)) continue;
+
+            const op = o.points;
+            if (!op || op.length < 4) continue;
+
+            const osx = op[0], osy = op[1];
+            const oex = op[op.length - 2], oey = op[op.length - 1];
+
+            // CASE 1: newEnd == oldStart  => merged = new + old(omit first point)
+            if (samePoint(nex, ney, osx, osy)) {
+                merged = merged.concat(op.slice(2));
+                removeIds.push(o.id);
+                didMerge = true;
+                break;
+            }
+
+            // CASE 2: newEnd == oldEnd    => reverse old, then concat
+            if (samePoint(nex, ney, oex, oey)) {
+                const ro = reversePolylinePoints(op);
+                merged = merged.concat(ro.slice(2));
+                removeIds.push(o.id);
+                didMerge = true;
+                break;
+            }
+
+            // CASE 3: newStart == oldEnd  => merged = old + new(omit first point)
+            if (samePoint(nsx, nsy, oex, oey)) {
+                merged = op.concat(merged.slice(2));
+                removeIds.push(o.id);
+                didMerge = true;
+                break;
+            }
+
+            // CASE 4: newStart == oldStart => reverse old, then old + new
+            if (samePoint(nsx, nsy, osx, osy)) {
+                const ro = reversePolylinePoints(op);
+                merged = ro.concat(merged.slice(2));
+                removeIds.push(o.id);
+                didMerge = true;
+                break;
+            }
+        }
+
+        if (!didMerge) break;
+    }
+
+    return { mergedPoints: merged, removeIds };
+}
+
+function getNextSelectionIdsForToggle(
+    currentSelectedIds: string[],
+    selectedObjectId: string | null,
+    clickedId: string
+) {
+    const baseIds =
+        currentSelectedIds.length > 0
+            ? currentSelectedIds
+            : selectedObjectId
+                ? [selectedObjectId]
+                : [];
+
+    if (baseIds.includes(clickedId)) {
+        return baseIds.filter((id) => id !== clickedId);
+    }
+
+    return [...baseIds, clickedId];
+}
+
+export default function HelloEditor() {
+    const notify = useAppNotify();
+    const dismissNotification = useDismissAppNotification();
+
+    const [isShiftHintDismissed, setIsShiftHintDismissed] = useState(false);
+    const [hasUsedShiftForStraightLine, setHasUsedShiftForStraightLine] = useState(false);
+    const [isRotateShiftHintDismissed, setIsRotateShiftHintDismissed] = useState(false);
+    const [hasUsedShiftForRotateSnap, setHasUsedShiftForRotateSnap] = useState(false);
+    const [isFenceHintDismissed, setIsFenceHintDismissed] = useState(false);
+    const [compassDirection, setCompassDirection] = useState<CompassDirection>("noord");
+
+    const dismissShiftHintForever = useCallback(() => {
+        setIsShiftHintDismissed(true);
+        dismissNotification("draw-shift-hint");
+    }, [dismissNotification]);
+
+    const markShiftHintAsLearned = useCallback(() => {
+        setHasUsedShiftForStraightLine(true);
+        dismissNotification("draw-shift-hint");
+    }, [dismissNotification]);
+
+    const dismissRotateShiftHintForever = useCallback(() => {
+        setIsRotateShiftHintDismissed(true);
+        dismissNotification("rotate-shift-hint");
+    }, [dismissNotification]);
+
+    const markRotateShiftHintAsLearned = useCallback(() => {
+        setHasUsedShiftForRotateSnap(true);
+        dismissNotification("rotate-shift-hint");
+    }, [dismissNotification]);
+
+    const stageRef = useRef<any>(null);
+    const draftLineRef = useRef<any>(null);
+    const draftPreviewLineRef = useRef<any>(null);
+    const draftGuideLineRef = useRef<any>(null);
+    const draftSecondaryGuideLineRef = useRef<any>(null);
+    const lastPointerClientPosRef = useRef<{ x: number; y: number } | null>(null);
+    const leftMenuShellRef = useRef<HTMLDivElement | null>(null);
+
+    const fileMenuRef = useRef<HTMLDivElement | null>(null);
+    const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
+    const [isDrawingsDashboardOpen, setIsDrawingsDashboardOpen] = useState(false);
+    const [isCreateDrawingOpen, setIsCreateDrawingOpen] = useState(false);
+    const [createDrawingOpenSource, setCreateDrawingOpenSource] = useState<"editor" | "dashboard">("editor");
+
+    const exportSnapshotFromStore = useCallback((): PersistedDrawingSnapshot => {
+        const state = useProjectStore.getState() as any;
+        const safeObjects = (state.objects as PolyObject[]).map(clonePolyObject);
+        const safeLinks = sanitizePlantbedLinksForObjects(
+            clonePlantbedLinks(state.plantbedLinks ?? {}),
+            safeObjects
+        );
+
+        return {
+            objects: safeObjects,
+            plantbedLinks: safeLinks,
+            viewVisibility: {
+                ...DEFAULT_DRAWING_VIEW_VISIBILITY,
+                ...(state.viewVisibility ?? {}),
+            },
+            nextPlantbedNo: typeof state.nextPlantbedNo === "number" ? state.nextPlantbedNo : 1,
+            compassDirection,
+        };
+    }, [
+        clonePlantbedLinks,
+        clonePolyObject,
+        sanitizePlantbedLinksForObjects,
+        compassDirection,
+    ]);
+
+    const loadSnapshotIntoStore = useCallback(
+        (snapshot: PersistedDrawingSnapshot | null | undefined) => {
+            const safeSnapshot = snapshot
+                ? cloneDrawingSnapshot(snapshot)
+                : createEmptyDrawingSnapshot();
+
+            const nextObjects = safeSnapshot.objects.map(clonePolyObject);
+            const nextLinks = sanitizePlantbedLinksForObjects(
+                clonePlantbedLinks(safeSnapshot.plantbedLinks),
+                nextObjects
+            );
+            const nextCounts = buildPlantbedLinkedCountFromLinks(nextLinks);
+
+            useProjectStore.setState({
+                objects: nextObjects,
+                plantbedLinks: nextLinks,
+                plantbedLinkedCount: nextCounts,
+                nextPlantbedNo: safeSnapshot.nextPlantbedNo ?? 1,
+                viewVisibility: {
+                    ...DEFAULT_DRAWING_VIEW_VISIBILITY,
+                    ...safeSnapshot.viewVisibility,
+                },
+                selectedObjectId: null,
+                selectedObjectIds: [],
+                undoStack: [],
+                redoStack: [],
+                confirmModal: null,
+            });
+
+            setCompassDirection(safeSnapshot.compassDirection ?? "noord");
+        },
+        [
+            buildPlantbedLinkedCountFromLinks,
+            cloneDrawingSnapshot,
+            clonePlantbedLinks,
+            clonePolyObject,
+            createEmptyDrawingSnapshot,
+            sanitizePlantbedLinksForObjects,
+            setCompassDirection,
+        ]
+    );
+
+    const [editorDrawings, setEditorDrawings] = useState<PersistedDrawingDocument[]>([]);
+    const [activeDrawingId, setActiveDrawingId] = useState<string | null>(null);
+    const [isDrawingsHydrated, setIsDrawingsHydrated] = useState(false);
+    const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved">("saved");
+
+    const autosaveTimerRef = useRef<number | null>(null);
+    const persistToStorageTimerRef = useRef<number | null>(null);
+    const isRestoringDrawingRef = useRef(false);
+
+    const activeDrawing = useMemo(() => {
+        return editorDrawings.find((drawing) => drawing.id === activeDrawingId) ?? null;
+    }, [editorDrawings, activeDrawingId]);
+
+    const handleOpenDrawingsDashboard = useCallback(() => {
+        setIsFileMenuOpen(false);
+        setIsCreateDrawingOpen(false);
+        setIsDrawingsDashboardOpen(true);
+    }, []);
+
+    const handleOpenCreateDrawingModal = useCallback((source: "editor" | "dashboard") => {
+        setCreateDrawingOpenSource(source);
+        setIsFileMenuOpen(false);
+        setIsDrawingsDashboardOpen(false);
+        setIsCreateDrawingOpen(true);
+    }, []);
+
+    const handleCloseDrawingsDashboard = useCallback(() => {
+        setIsDrawingsDashboardOpen(false);
+    }, []);
+
+    const handleOpenDrawingFromDashboard = useCallback((drawingId: string) => {
+        const drawing = editorDrawings.find((item) => item.id === drawingId);
+        if (!drawing) return;
+
+        isRestoringDrawingRef.current = true;
+        loadSnapshotIntoStore(drawing.snapshot);
+        setActiveDrawingId(drawingId);
+        setSaveState("saved");
+        setIsCreateDrawingOpen(false);
+        setIsDrawingsDashboardOpen(false);
+        setIsFileMenuOpen(false);
+    }, [editorDrawings, loadSnapshotIntoStore]);
+
+    const handleCreateDrawingFromDashboard = useCallback((name: string) => {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+
+        const nextDrawing = createDrawingDocument(trimmed);
+
+        setEditorDrawings((prev) => [...prev, nextDrawing]);
+
+        isRestoringDrawingRef.current = true;
+        loadSnapshotIntoStore(nextDrawing.snapshot);
+        setActiveDrawingId(nextDrawing.id);
+        setSaveState("saved");
+        setIsCreateDrawingOpen(false);
+        setIsDrawingsDashboardOpen(false);
+        setIsFileMenuOpen(false);
+    }, [createDrawingDocument, loadSnapshotIntoStore]);
+
+    const handleDuplicateDrawingFromDashboard = useCallback((drawingId: string) => {
+        setEditorDrawings((prev) => {
+            const source = prev.find((drawing) => drawing.id === drawingId);
+            if (!source) return prev;
+
+            const baseName = source.name.trim();
+
+            const escapeRegExp = (value: string) =>
+                value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+            const duplicatePattern = new RegExp(
+                `^${escapeRegExp(baseName)} kopie(?: (\\d+))?$`,
+                "i"
+            );
+
+            const usedNumbers = prev
+                .map((drawing) => {
+                    const match = drawing.name.trim().match(duplicatePattern);
+                    if (!match) return null;
+                    return match[1] ? Number(match[1]) : 1;
+                })
+                .filter((value): value is number => value !== null);
+
+            const nextCopyNumber =
+                usedNumbers.length > 0 ? Math.max(...usedNumbers) + 1 : 1;
+
+            const duplicateName =
+                nextCopyNumber === 1
+                    ? `${baseName} kopie`
+                    : `${baseName} kopie ${nextCopyNumber}`;
+
+            const duplicatedDrawing: PersistedDrawingDocument = {
+                ...source,
+                id: `drawing-${Date.now()}`,
+                name: duplicateName,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                snapshot: cloneDrawingSnapshot(source.snapshot),
+            };
+
+            return [...prev, duplicatedDrawing];
+        });
+    }, [cloneDrawingSnapshot]);
+
+    const handleDeleteDrawingFromDashboard = useCallback((drawingId: string) => {
+        const nextDrawings = editorDrawings.filter((drawing) => drawing.id !== drawingId);
+
+        setEditorDrawings(nextDrawings);
+
+        if (nextDrawings.length === 0) {
+            isRestoringDrawingRef.current = true;
+            loadSnapshotIntoStore(createEmptyDrawingSnapshot());
+            setActiveDrawingId(null);
+            setSaveState("saved");
+            setIsDrawingsDashboardOpen(true);
+            return;
+        }
+
+        if (drawingId === activeDrawingId) {
+            const fallbackDrawing = nextDrawings[0];
+            isRestoringDrawingRef.current = true;
+            loadSnapshotIntoStore(fallbackDrawing.snapshot);
+            setActiveDrawingId(fallbackDrawing.id);
+            setSaveState("saved");
+        }
+    }, [activeDrawingId, createEmptyDrawingSnapshot, editorDrawings, loadSnapshotIntoStore]);
+
+    const handleRenameDrawingFromDashboard = useCallback((drawingId: string, nextName: string) => {
+        const nowIso = new Date().toISOString();
+
+        setEditorDrawings((prev) =>
+            prev.map((drawing) =>
+                drawing.id === drawingId
+                    ? { ...drawing, name: nextName, updatedAt: nowIso }
+                    : drawing
+            )
+        );
+    }, []);
+
+    const handleManualSaveActiveDrawing = useCallback(() => {
+        if (!activeDrawingId) return;
+
+        const nextSnapshot = exportSnapshotFromStore();
+        const nowIso = new Date().toISOString();
+
+        setSaveState("saving");
+
+        setEditorDrawings((prev) =>
+            prev.map((drawing) =>
+                drawing.id === activeDrawingId
+                    ? {
+                        ...drawing,
+                        updatedAt: nowIso,
+                        snapshot: nextSnapshot,
+                    }
+                    : drawing
+            )
+        );
+
+        window.setTimeout(() => {
+            setSaveState("saved");
+        }, 0);
+    }, [activeDrawingId, exportSnapshotFromStore]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        try {
+            const raw = window.localStorage.getItem(DRAWINGS_STORAGE_KEY);
+
+            if (!raw) {
+                isRestoringDrawingRef.current = true;
+                loadSnapshotIntoStore(createEmptyDrawingSnapshot());
+                setEditorDrawings([]);
+                setActiveDrawingId(null);
+                setSaveState("saved");
+                setIsDrawingsDashboardOpen(true);
+                setIsDrawingsHydrated(true);
+                return;
+            }
+
+            const parsed = JSON.parse(raw);
+            const rawDrawings = Array.isArray(parsed?.drawings) ? parsed.drawings : [];
+
+            const nextDrawings: PersistedDrawingDocument[] = rawDrawings
+                .map((item: any) => sanitizeDrawingDocument(item))
+                .filter((item: PersistedDrawingDocument | null): item is PersistedDrawingDocument => item !== null);
+
+            if (nextDrawings.length === 0) {
+                isRestoringDrawingRef.current = true;
+                loadSnapshotIntoStore(createEmptyDrawingSnapshot());
+                setEditorDrawings([]);
+                setActiveDrawingId(null);
+                setSaveState("saved");
+                setIsDrawingsDashboardOpen(true);
+                setIsDrawingsHydrated(true);
+                return;
+            }
+
+            const restoredActiveDrawingId =
+                typeof parsed?.activeDrawingId === "string" &&
+                    nextDrawings.some((drawing: PersistedDrawingDocument) => drawing.id === parsed.activeDrawingId)
+                    ? parsed.activeDrawingId
+                    : nextDrawings[0].id;
+
+            const restoredDrawing =
+                nextDrawings.find((drawing: PersistedDrawingDocument) => drawing.id === restoredActiveDrawingId) ??
+                nextDrawings[0];
+
+            setEditorDrawings(nextDrawings);
+            setActiveDrawingId(restoredDrawing.id);
+
+            isRestoringDrawingRef.current = true;
+            loadSnapshotIntoStore(restoredDrawing.snapshot);
+
+            setSaveState("saved");
+            setIsDrawingsDashboardOpen(false);
+            setIsDrawingsHydrated(true);
+        } catch {
+            isRestoringDrawingRef.current = true;
+            loadSnapshotIntoStore(createEmptyDrawingSnapshot());
+            setEditorDrawings([]);
+            setActiveDrawingId(null);
+            setSaveState("saved");
+            setIsDrawingsDashboardOpen(true);
+            setIsDrawingsHydrated(true);
+        }
+    }, [
+        createEmptyDrawingSnapshot,
+        loadSnapshotIntoStore,
+        sanitizeDrawingDocument,
+    ]);
+
+    useEffect(() => {
+        if (!isDrawingsHydrated || typeof window === "undefined") return;
+
+        if (persistToStorageTimerRef.current !== null) {
+            window.clearTimeout(persistToStorageTimerRef.current);
+        }
+
+        persistToStorageTimerRef.current = window.setTimeout(() => {
+            window.localStorage.setItem(
+                DRAWINGS_STORAGE_KEY,
+                JSON.stringify({
+                    drawings: editorDrawings,
+                    activeDrawingId,
+                })
+            );
+
+            persistToStorageTimerRef.current = null;
+        }, 400);
+
+        return () => {
+            if (persistToStorageTimerRef.current !== null) {
+                window.clearTimeout(persistToStorageTimerRef.current);
+                persistToStorageTimerRef.current = null;
+            }
+        };
+    }, [activeDrawingId, editorDrawings, isDrawingsHydrated]);
+
+    const getPlantbedLinkedCount = useProjectStore((s: any) => s.getPlantbedLinkedCount);
+    const [topLeftNoticeLeft, setTopLeftNoticeLeft] = useState(0);
+
+    // Viewport
+    // Viewport
+    const [stageScale, setStageScale] = useState(BASE_SCALE);
+    const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
+    const PAN_LIMIT = 3000;
+
+    const showCenterButton =
+        Math.abs(stagePos.x) > PAN_LIMIT ||
+        Math.abs(stagePos.y) > PAN_LIMIT;
+
+    // Refs (stale-closure proof)
+    const stageScaleRef = useRef(stageScale);
+    const stagePosRef = useRef(stagePos);
+    useEffect(() => void (stageScaleRef.current = stageScale), [stageScale]);
+    useEffect(() => void (stagePosRef.current = stagePos), [stagePos]);
+
+    const viewportRafRef = useRef<number | null>(null);
+    const pendingViewportRef = useRef<{ scale: number; pos: { x: number; y: number } } | null>(null);
+
+    const flushViewportState = useCallback(() => {
+        viewportRafRef.current = null;
+
+        const next = pendingViewportRef.current;
+        if (!next) return;
+
+        pendingViewportRef.current = null;
+        setStageScale(next.scale);
+        setStagePos(next.pos);
+    }, []);
+
+    const scheduleViewportState = useCallback((next: {
+        scale?: number;
+        pos?: { x: number; y: number };
+    }) => {
+        const resolvedScale = next.scale ?? stageScaleRef.current;
+        const resolvedPos = next.pos ?? stagePosRef.current;
+
+        stageScaleRef.current = resolvedScale;
+        stagePosRef.current = resolvedPos;
+        pendingViewportRef.current = {
+            scale: resolvedScale,
+            pos: resolvedPos,
+        };
+
+        const stage = stageRef.current;
+        if (stage) {
+            stage.scale({ x: resolvedScale, y: resolvedScale });
+            stage.position(resolvedPos);
+            stage.batchDraw();
+        }
+
+        if (!viewportRafRef.current) {
+            viewportRafRef.current = requestAnimationFrame(flushViewportState);
+        }
+    }, [flushViewportState]);
+
+    useEffect(() => {
+        return () => {
+            if (viewportRafRef.current) {
+                cancelAnimationFrame(viewportRafRef.current);
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        const node = leftMenuShellRef.current;
+        if (!node) return;
+
+        const updateLeft = () => {
+            const rect = node.getBoundingClientRect();
+            setTopLeftNoticeLeft(rect.width + 16);
+        };
+
+        updateLeft();
+
+        const ro = new ResizeObserver(() => updateLeft());
+        ro.observe(node);
+
+        window.addEventListener("resize", updateLeft);
+        return () => {
+            window.removeEventListener("resize", updateLeft);
+            ro.disconnect();
+        };
+    }, []);
+    const isShiftPressedRef = useRef(false);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === "Shift") {
+                isShiftPressedRef.current = true;
+            }
+        };
+
+        const handleKeyUp = (e: KeyboardEvent) => {
+            if (e.key === "Shift") {
+                isShiftPressedRef.current = false;
+            }
+        };
+
+        const handleWindowBlur = () => {
+            isShiftPressedRef.current = false;
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        window.addEventListener("keyup", handleKeyUp);
+        window.addEventListener("blur", handleWindowBlur);
+
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown);
+            window.removeEventListener("keyup", handleKeyUp);
+            window.removeEventListener("blur", handleWindowBlur);
+        };
+    }, []);
+
+    // Pan state
+    const [isPanning, setIsPanning] = useState(false);
+    const panStartRef = useRef<{ x: number; y: number } | null>(null);
+    const stagePosStartRef = useRef<{ x: number; y: number } | null>(null);
+
+    const startMiddleMousePan = useCallback((evt: MouseEvent | any) => {
+        evt?.preventDefault?.();
+
+        const clientX = evt?.clientX ?? 0;
+        const clientY = evt?.clientY ?? 0;
+
+        setIsPanning(true);
+        panStartRef.current = { x: clientX, y: clientY };
+        stagePosStartRef.current = { ...stagePosRef.current };
+
+        const st = stageRef.current;
+        if (st) {
+            st.container().style.cursor = "grabbing";
+        }
+    }, []);
+
+    // Mode
+    const [mode] = useState<DrawMode>("draw");
+
+    const objects = useProjectStore((s) => s.objects);
+    const plantbedLinks = useProjectStore((s: any) => s.plantbedLinks);
+    const plants = useProjectStore((s: any) => s.plants);
+    const getPolylineRenderPieces = useProjectStore((s: any) => s.getPolylineRenderPieces);;
+
+    const treebedLabelBlockers = useMemo(() => {
+        return buildTreebedLabelBlockers(objects as PolyObject[]);
+    }, [objects]);
+
+    const plantbedNumberLayouts = useMemo(() => {
+        const layouts = new Map<string, PlantbedNumberLayout>();
+        const plantbeds = (objects as PolyObject[]).filter((obj) => obj.type === "plantbed");
+
+        for (const obj of plantbeds) {
+            layouts.set(
+                obj.id,
+                getPlantbedNumberLayout(
+                    obj.points,
+                    obj.holes ?? [],
+                    obj.plantbedNo ?? 0,
+                    formatSquareMeters(getObjectAreaInSquareMeters(obj)),
+                    treebedLabelBlockers
+                )
+            );
+        }
+
+        return layouts;
+    }, [objects, treebedLabelBlockers]);
+
+    const selectObject = useProjectStore((s) => s.selectObject);
+    const selectObjects = useProjectStore((s) => s.selectObjects);
+    const clearSelection = useProjectStore((s) => s.clearSelection);
+    const duplicateSelected = useProjectStore((s: any) => s.duplicateSelected);
+
+    const handleDuplicateSelection = useCallback(() => {
+        duplicateSelected();
+    }, [duplicateSelected]);
+
+    const handleCenterCanvas = useCallback(() => {
+        scheduleViewportState({
+            scale: BASE_SCALE,
+            pos: { x: 0, y: 0 },
+        });
+    }, [scheduleViewportState]);
+
+    const linkPlantToPlantbed = useProjectStore((s: any) => s.linkPlantToPlantbed);
+    const getPlantById = useProjectStore((s: any) => s.getPlantById);
+    const focusSidebarOnPlantbed = useProjectStore((s: any) => s.focusSidebarOnPlantbed);
+    const canvasFocusRequest = useProjectStore((s: any) => s.canvasFocusRequest);
+    const viewVisibility = useProjectStore((s: any) => s.viewVisibility);
+
+    // ✅ Live box-select throttling (Figma-like)
+    const objectsRef = useRef(objects);
+
+    type DeletePlantbedsModalItem = {
+        plantbedId: string;
+        plantbedNo: number | null;
+        linkedCount: number;
+        plantIds: string[];
+    };
+
+    useEffect(() => {
+        objectsRef.current = objects;
+    }, [objects]);
+
+    // ✅ Drag-over highlight (plantbed)
+    const [dragOverPlantbedId, setDragOverPlantbedId] = useState<string | null>(null);
+    const dragOverPlantbedIdRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        dragOverPlantbedIdRef.current = dragOverPlantbedId;
+    }, [dragOverPlantbedId]);
+
+    const boxSelectRafRef = useRef<number | null>(null);
+    const pendingBoxRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+    const lastBoxIdsKeyRef = useRef<string>("");
+
+    const commitLiveBoxSelection = useCallback(() => {
+        boxSelectRafRef.current = null;
+
+        const rect = pendingBoxRectRef.current;
+        if (!rect) return;
+
+        const objs = objectsRef.current as PolyObject[];
+
+        const ids = objs
+            .filter((o) => rectsIntersect(rect, bboxFromPoints(o.points)))
+            .filter((o) => {
+                if (isFenceOrGate(o.type)) {
+                    const pts = o.points;
+                    if (pts.length < 4) return false;
+
+                    for (let i = 0; i <= pts.length - 4; i += 2) {
+                        const ax = pts[i], ay = pts[i + 1];
+                        const bx = pts[i + 2], by = pts[i + 3];
+                        if (segmentIntersectsRect(ax, ay, bx, by, rect)) return true;
+                    }
+                    return false;
+                }
+
+                return polyIntersectsRect(o.points, rect);
+            })
+            .map((o) => o.id);
+
+        const key = ids.join("|");
+        if (key === lastBoxIdsKeyRef.current) return;
+
+        lastBoxIdsKeyRef.current = key;
+        selectObjects(ids);
+    }, [selectObjects]);
+
+    const selectedObjectId = useProjectStore((s) => s.selectedObjectId);
+    const selectedObjectIds = useProjectStore((s) => s.selectedObjectIds);
+
+    const handleObjectSelection = useCallback(
+        (clickedId: string, evt?: MouseEvent | PointerEvent | KeyboardEvent | any) => {
+            const multi = !!(evt?.ctrlKey || evt?.metaKey);
+
+            if (!multi) {
+                selectObject(clickedId);
+                return;
+            }
+
+            const nextIds = getNextSelectionIdsForToggle(
+                selectedObjectIds,
+                selectedObjectId,
+                clickedId
+            );
+
+            if (nextIds.length === 0) {
+                clearSelection();
+                return;
+            }
+
+            selectObjects(nextIds);
+        },
+        [selectObject, selectObjects, clearSelection, selectedObjectId, selectedObjectIds]
+    );
+
+    const confirmModal = useProjectStore((s: any) => s.confirmModal);
+    const closeConfirmModal = useProjectStore((s: any) => s.closeConfirmModal);
+    const confirmModalPrimaryAction = useProjectStore((s: any) => s.confirmModalPrimaryAction);
+
+    const activeTool = useProjectStore((s) => s.activeTool);
+    const setActiveTool = useProjectStore((s) => s.setActiveTool);
+
+    const activeDrawType = useProjectStore((s) => s.activeDrawType);
+
+    const activeDrawTypeRef = useRef(activeDrawType);
+    const viewVisibilityRef = useRef(viewVisibility);
+    useEffect(() => void (activeDrawTypeRef.current = activeDrawType), [activeDrawType]);
+    useEffect(() => void (viewVisibilityRef.current = viewVisibility), [viewVisibility]);
+    const setActiveDrawType = useProjectStore((s) => s.setActiveDrawType);
+
+    const addObject = useProjectStore((s) => s.addObject);
+    const cutObjectsByPolygon = useProjectStore((s) => s.cutObjectsByPolygon);
+    const moveObjectsBatch = useProjectStore((s) => s.moveObjectsBatch);
+    const moveObjectAndMerge = useProjectStore((s) => s.moveObjectAndMerge);
+    const moveObject = useProjectStore((s) => s.moveObject);
+    const setObjectsWithHistory = useProjectStore((s: any) => s.setObjectsWithHistory);
+
+    const requestChangeObjectType = useProjectStore((s: any) => s.requestChangeObjectType);
+    const changeTreebedVariant = useProjectStore((s: any) => s.changeTreebedVariant);
+
+    const deleteSelected = useProjectStore((s) => s.deleteSelected);
+
+    const undoObject = useProjectStore((s) => s.undo);
+    const redoObject = useProjectStore((s) => s.redo);
+
+    useEffect(() => {
+        if (!isDrawingsHydrated || !activeDrawingId) return;
+
+        if (isRestoringDrawingRef.current) {
+            isRestoringDrawingRef.current = false;
+            return;
+        }
+
+        const nextSnapshot = exportSnapshotFromStore();
+
+        setSaveState((prev) => (prev === "saving" ? prev : "unsaved"));
+
+        if (autosaveTimerRef.current !== null) {
+            window.clearTimeout(autosaveTimerRef.current);
+        }
+
+        autosaveTimerRef.current = window.setTimeout(() => {
+            const nowIso = new Date().toISOString();
+
+            setSaveState("saving");
+
+            setEditorDrawings((prev) =>
+                prev.map((drawing) =>
+                    drawing.id === activeDrawingId
+                        ? {
+                            ...drawing,
+                            updatedAt: nowIso,
+                            snapshot: nextSnapshot,
+                        }
+                        : drawing
+                )
+            );
+
+            window.setTimeout(() => {
+                setSaveState("saved");
+            }, 0);
+
+            autosaveTimerRef.current = null;
+        }, 700);
+
+        return () => {
+            if (autosaveTimerRef.current !== null) {
+                window.clearTimeout(autosaveTimerRef.current);
+                autosaveTimerRef.current = null;
+            }
+        };
+    }, [
+        activeDrawingId,
+        exportSnapshotFromStore,
+        isDrawingsHydrated,
+        objects,
+        plantbedLinks,
+        viewVisibility,
+    ]);
+
+    const saveStatusLabel = useMemo(() => {
+        if (!activeDrawingId) return "Geen actieve tekening";
+        if (saveState === "saving") return "Opslaan...";
+        if (saveState === "unsaved") return "Niet opgeslagen wijzigingen";
+        return "Opgeslagen";
+    }, [activeDrawingId, saveState]);
+
+    // -----------------------------
+    // Fence/Gate helpers + dblclick guard
+    // -----------------------------
+    const isFenceOrGateCb = useCallback((t: any) => isFenceOrGate(t), []);
+
+    // ✅ Eigen, strengere dubbelklik-threshold voor fence/gate
+    // Lager = minder snel per ongeluk afsluiten
+    const FENCE_GATE_DBLCLICK_MS = 180;
+
+    const lastDblClickAtRef = useRef<number>(0);
+    const lastDrawClickAtRef = useRef<number>(0);
+    const lastDrawClickDeltaRef = useRef<number>(Infinity);
+
+    // Draft points (React state alleen bij clicks/undo/redo -> smooth)
+    const [draftPoints, setDraftPoints] = useState<number[]>([]);
+    const draftPointsRef = useRef<number[]>([]);
+    useEffect(() => void (draftPointsRef.current = draftPoints), [draftPoints]);
+    const [draftRedoPoints, setDraftRedoPoints] = useState<number[]>([]);
+    const [treebedDraftPreviewPoint, setTreebedDraftPreviewPoint] = useState<{
+        x: number;
+        y: number;
+    } | null>(null);
+    const [draftMeasurementPreviewPoint, setDraftMeasurementPreviewPoint] = useState<{
+        x: number;
+        y: number;
+    } | null>(null);
+
+    const [measurePoints, setMeasurePoints] = useState<number[]>([]);
+    const measurePointsRef = useRef<number[]>([]);
+    useEffect(() => void (measurePointsRef.current = measurePoints), [measurePoints]);
+    const [measurePreviewPoint, setMeasurePreviewPoint] = useState<{
+        x: number;
+        y: number;
+    } | null>(null);
+    const [measureLines, setMeasureLines] = useState<number[][]>([]);
+    const measureLinesRef = useRef<number[][]>([]);
+    useEffect(() => void (measureLinesRef.current = measureLines), [measureLines]);
+
+    const [measureRedoPoints, setMeasureRedoPoints] = useState<number[]>([]);
+    const measureRedoPointsRef = useRef<number[]>([]);
+    useEffect(() => void (measureRedoPointsRef.current = measureRedoPoints), [measureRedoPoints]);
+
+    const [measureRedoLines, setMeasureRedoLines] = useState<number[][]>([]);
+    const measureRedoLinesRef = useRef<number[][]>([]);
+    useEffect(() => void (measureRedoLinesRef.current = measureRedoLines), [measureRedoLines]);
+
+    const [liveSelectionDragDelta, setLiveSelectionDragDelta] = useState<{
+        x: number;
+        y: number;
+    } | null>(null);
+
+    const [activeTreebedDrawVariant, setActiveTreebedDrawVariant] = useState<TreebedVariant>("standard");
+
+    const translatePoints = useCallback((points: number[], dx: number, dy: number) => {
+        const next: number[] = [];
+        for (let i = 0; i < points.length; i += 2) {
+            next.push(points[i] + dx, points[i + 1] + dy);
+        }
+        return next;
+    }, []);
+
+    const draftRedoPointsRef = useRef<number[]>([]);
+    useEffect(() => void (draftRedoPointsRef.current = draftRedoPoints), [draftRedoPoints]);
+
+    const [cursorCrosshairPoint, setCursorCrosshairPoint] = useState<{
+        x: number;
+        y: number;
+    } | null>(null);
+
+    const shouldShowCursorCrosshair =
+        !isPanning &&
+        (
+            (activeTool === "draw" && activeDrawType !== null) ||
+            activeTool === "cut" ||
+            activeTool === "measure"
+        );
+
+    const clearCursorCrosshair = useCallback(() => {
+        setCursorCrosshairPoint((prev) => (prev === null ? prev : null));
+    }, []);
+
+    const updateCursorCrosshairPoint = useCallback(
+        (rawX: number, rawY: number, targetType: ObjectType | null | undefined) => {
+            const snapped = snapWorldPointAgainstFenceBoundary(
+                rawX,
+                rawY,
+                targetType,
+                objectsRef.current as PolyObject[]
+            );
+
+            setCursorCrosshairPoint((prev) => {
+                if (prev && prev.x === snapped.x && prev.y === snapped.y) {
+                    return prev;
+                }
+
+                return snapped;
+            });
+        },
+        []
+    );
+
+    const updateCursorCrosshairFromStage = useCallback(
+        (stage: any, targetType: ObjectType | null | undefined) => {
+            const world = getPointerWorldPos(stage);
+            if (!world) return;
+
+            updateCursorCrosshairPoint(world.x, world.y, targetType);
+        },
+        [updateCursorCrosshairPoint]
+    );
+
+    const updateCursorCrosshairFromClient = useCallback(
+        (clientX: number, clientY: number, targetType: ObjectType | null | undefined) => {
+            const stage = stageRef.current;
+            if (!stage) return;
+
+            const container = stage.container?.();
+            if (!container) return;
+
+            const rect = container.getBoundingClientRect();
+            const isInsideStage =
+                clientX >= rect.left &&
+                clientX <= rect.right &&
+                clientY >= rect.top &&
+                clientY <= rect.bottom;
+
+            if (!isInsideStage) {
+                clearCursorCrosshair();
+                return;
+            }
+
+            const world = getPointerWorldPosFromClient(stage, clientX, clientY);
+            if (!world) return;
+
+            updateCursorCrosshairPoint(world.x, world.y, targetType);
+        },
+        [clearCursorCrosshair, updateCursorCrosshairPoint]
+    );
+
+    useEffect(() => {
+        if (
+            (activeTool !== "draw" && activeTool !== "cut") ||
+            activeDrawType === "treebed" ||
+            draftPoints.length < 2
+        ) {
+            setDraftMeasurementPreviewPoint(null);
+        }
+    }, [activeTool, activeDrawType, draftPoints.length]);
+
+    useEffect(() => {
+        if (!shouldShowCursorCrosshair) {
+            clearCursorCrosshair();
+            return;
+        }
+
+        const lastPointer = lastPointerClientPosRef.current;
+        if (!lastPointer) return;
+
+        updateCursorCrosshairFromClient(
+            lastPointer.x,
+            lastPointer.y,
+            activeTool === "draw" ? activeDrawType : null
+        );
+    }, [
+        shouldShowCursorCrosshair,
+        activeTool,
+        activeDrawType,
+        clearCursorCrosshair,
+        updateCursorCrosshairFromClient,
+    ]);
+
+    const selectedObjectIdRef = useRef<string | null>(null);
+    useEffect(() => void (selectedObjectIdRef.current = selectedObjectId), [selectedObjectId]);
+
+    // Box select
+    const [isBoxSelecting, setIsBoxSelecting] = useState(false);
+    const boxStartRef = useRef<{ x: number; y: number } | null>(null);
+    const [selectionBox, setSelectionBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+    // ✅ Vertex editing (Figma-like)
+    const [isVertexDragging, setIsVertexDragging] = useState(false);
+    const isVertexDraggingRef = useRef(false);
+    const suppressPlantbedFocusRef = useRef(false);
+
+    const [treebedResizePreview, setTreebedResizePreview] = useState<{
+        objectId: string;
+        points: number[];
+    } | null>(null);
+
+    const treebedResizePreviewRef = useRef<{
+        objectId: string;
+        points: number[];
+    } | null>(null);
+
+    const [treebedRotatePreview, setTreebedRotatePreview] = useState<{
+        objectId: string;
+        points: number[];
+        rotationDeg: number;
+        labelX: number;
+        labelY: number;
+    } | null>(null);
+
+    const treebedRotatePreviewRef = useRef<{
+        objectId: string;
+        points: number[];
+        rotationDeg: number;
+        labelX: number;
+        labelY: number;
+    } | null>(null);
+
+    const treebedResizeRef = useRef<null | {
+        objectId: string;
+        corner: "tl" | "tr" | "br" | "bl";
+        anchorX: number;
+        anchorY: number;
+        treebedVariant: TreebedVariant | undefined;
+        rotationDeg?: number;
+    }>(null);
+
+    const treebedRotateRef = useRef<null | {
+        objectId: string;
+        cx: number;
+        cy: number;
+        startPointerAngleDeg: number;
+        startRotationDeg: number;
+        width: number;
+        height: number;
+    }>(null);
+
+    const isTreebedResizeHandleHoveredRef = useRef(false);
+    const isTreebedRotateHotspotHoveredRef = useRef(false);
+    const treebedRotateCursorRef = useRef<string | null>(null);
+
+    const startTreebedResize = useCallback(
+        (
+            e: any,
+            obj: PolyObject,
+            corner: "tl" | "tr" | "br" | "bl",
+            livePoints?: number[]
+        ) => {
+            e.cancelBubble = true;
+            e.evt?.preventDefault?.();
+
+            const points = livePoints ?? obj.points;
+            const corners = getTreebedResizeCorners(points, obj.treebedVariant);
+            const visual = getTreebedVisual(points, obj.treebedVariant);
+
+            const opposite =
+                corner === "tl"
+                    ? corners.br
+                    : corner === "tr"
+                        ? corners.bl
+                        : corner === "br"
+                            ? corners.tl
+                            : corners.tr;
+
+            treebedResizeRef.current = {
+                objectId: obj.id,
+                corner,
+                anchorX: opposite.x,
+                anchorY: opposite.y,
+                treebedVariant: obj.treebedVariant,
+                rotationDeg:
+                    obj.treebedVariant === "espalier" && visual.shape === "rect"
+                        ? visual.rect.rotationDeg ?? 0
+                        : undefined,
+            };
+
+            const st = stageRef.current;
+            if (st) {
+                st.container().style.cursor =
+                    corner === "tl" || corner === "br" ? "nwse-resize" : "nesw-resize";
+            }
+        },
+        []
+    );
+
+    const updateTreebedResize = useCallback(() => {
+        const active = treebedResizeRef.current;
+        if (!active) return;
+
+        const stage = stageRef.current;
+        if (!stage) return;
+
+        stage.container().style.cursor =
+            active.corner === "tl" || active.corner === "br" ? "nwse-resize" : "nesw-resize";
+
+        const world = getPointerWorldPos(stage);
+        if (!world) return;
+
+        const nextPoints =
+            active.treebedVariant === "espalier"
+                ? createEspalierPointsFromRotatedCornerDrag(
+                    active.anchorX,
+                    active.anchorY,
+                    world.x,
+                    world.y,
+                    active.corner,
+                    active.rotationDeg ?? 0
+                )
+                : createTreebedPointsFromCornerDrag(
+                    active.anchorX,
+                    active.anchorY,
+                    world.x,
+                    world.y,
+                    active.corner,
+                    active.treebedVariant
+                );
+
+        const nextPreview = {
+            objectId: active.objectId,
+            points: nextPoints,
+        };
+
+        treebedResizePreviewRef.current = nextPreview;
+        setTreebedResizePreview(nextPreview);
+    }, []);
+
+    const finishTreebedResize = useCallback(() => {
+        const active = treebedResizeRef.current;
+        if (!active) return;
+
+        const preview = treebedResizePreviewRef.current;
+        treebedResizeRef.current = null;
+        treebedResizePreviewRef.current = null;
+        isTreebedResizeHandleHoveredRef.current = false;
+
+        const st = stageRef.current;
+        if (st) {
+            st.container().style.cursor = isPanning ? "grabbing" : "default";
+        }
+
+        if (!preview || preview.objectId !== active.objectId) {
+            setTreebedResizePreview(null);
+            return;
+        }
+
+        moveObject(active.objectId, preview.points);
+        setTreebedResizePreview(null);
+    }, [isPanning, moveObject]);
+
+    const startTreebedRotate = useCallback((obj: PolyObject) => {
+        if (obj.type !== "treebed" || obj.treebedVariant !== "espalier") return;
+
+        const stage = stageRef.current;
+        if (!stage) return;
+
+        const world = getPointerWorldPos(stage);
+        if (!world) return;
+
+        const visual = getTreebedVisual(obj.points, obj.treebedVariant);
+        if (visual.shape !== "rect") return;
+
+        isTreebedRotateHotspotHoveredRef.current = true;
+
+        const rotateCursor = getTreebedRotateCursorFromPoint(
+            visual.cx,
+            visual.cy,
+            world.x,
+            world.y
+        );
+        treebedRotateCursorRef.current = rotateCursor;
+
+        treebedRotateRef.current = {
+            objectId: obj.id,
+            cx: visual.cx,
+            cy: visual.cy,
+            startPointerAngleDeg: (Math.atan2(world.y - visual.cy, world.x - visual.cx) * 180) / Math.PI,
+            startRotationDeg: visual.rect.rotationDeg ?? 0,
+            width: visual.rect.w,
+            height: visual.rect.h,
+        };
+
+        if (
+            !isShiftPressedRef.current &&
+            !isRotateShiftHintDismissed &&
+            !hasUsedShiftForRotateSnap
+        ) {
+            notify(APP_NOTIFICATIONS.holdShiftForRotateSnap(dismissRotateShiftHintForever));
+        }
+
+        stage.container().style.cursor = rotateCursor;
+    }, [
+        notify,
+        isRotateShiftHintDismissed,
+        hasUsedShiftForRotateSnap,
+        dismissRotateShiftHintForever,
+    ]);
+
+    const updateTreebedRotate = useCallback(() => {
+        const active = treebedRotateRef.current;
+        if (!active) return;
+
+        const stage = stageRef.current;
+        if (!stage) return;
+
+        const world = getPointerWorldPos(stage);
+        if (!world) return;
+
+        const currentPointerAngleDeg =
+            (Math.atan2(world.y - active.cy, world.x - active.cx) * 180) / Math.PI;
+
+        let nextRotationDeg = normalizeRotationDeg(
+            active.startRotationDeg + (currentPointerAngleDeg - active.startPointerAngleDeg)
+        );
+
+        if (isShiftPressedRef.current) {
+            if (!hasUsedShiftForRotateSnap) {
+                markRotateShiftHintAsLearned();
+            }
+
+            const ROTATE_SNAP_STEP = 15;
+            nextRotationDeg = normalizeRotationDeg(
+                Math.round(nextRotationDeg / ROTATE_SNAP_STEP) * ROTATE_SNAP_STEP
+            );
+        }
+
+        const nextPreview = {
+            objectId: active.objectId,
+            points: createRotatedTreebedRectPoints(
+                active.cx,
+                active.cy,
+                active.width,
+                active.height,
+                nextRotationDeg
+            ),
+            rotationDeg: nextRotationDeg,
+            labelX: active.cx,
+            labelY: active.cy + active.height / 2 + 38,
+        };
+        treebedRotatePreviewRef.current = nextPreview;
+        setTreebedRotatePreview(nextPreview);
+
+        const rotateCursor = getTreebedRotateCursorFromPoint(
+            active.cx,
+            active.cy,
+            world.x,
+            world.y
+        );
+        treebedRotateCursorRef.current = rotateCursor;
+        stage.container().style.cursor = rotateCursor;
+    }, [hasUsedShiftForRotateSnap, markRotateShiftHintAsLearned]);
+
+    const finishTreebedRotate = useCallback(() => {
+        const active = treebedRotateRef.current;
+        if (!active) return;
+
+        const preview = treebedRotatePreviewRef.current;
+        treebedRotateRef.current = null;
+        treebedRotatePreviewRef.current = null;
+        isTreebedRotateHotspotHoveredRef.current = false;
+        treebedRotateCursorRef.current = null;
+
+        const st = stageRef.current;
+        if (st) {
+            st.container().style.cursor = isPanning ? "grabbing" : "default";
+        }
+
+        if (!preview || preview.objectId !== active.objectId) {
+            setTreebedRotatePreview(null);
+            return;
+        }
+
+        moveObject(active.objectId, preview.points);
+        setTreebedRotatePreview(null);
+    }, [isPanning, moveObject]);
+
+    useEffect(() => {
+        const handleMouseMove = (e: MouseEvent) => {
+            lastPointerClientPosRef.current = {
+                x: e.clientX,
+                y: e.clientY,
+            };
+
+            if (shouldShowCursorCrosshair) {
+                updateCursorCrosshairFromClient(
+                    e.clientX,
+                    e.clientY,
+                    activeTool === "draw" ? activeDrawType : null
+                );
+            } else {
+                clearCursorCrosshair();
+            }
+
+            if (treebedResizeRef.current) {
+                updateTreebedResize();
+                return;
+            }
+
+            if (treebedRotateRef.current) {
+                updateTreebedRotate();
+            }
+        };
+
+        const handleMouseUp = () => {
+            if (treebedResizeRef.current) {
+                finishTreebedResize();
+                return;
+            }
+
+            if (treebedRotateRef.current) {
+                finishTreebedRotate();
+            }
+        };
+
+        const handleWindowBlur = () => {
+            clearCursorCrosshair();
+        };
+
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+        window.addEventListener("blur", handleWindowBlur);
+
+        return () => {
+            window.removeEventListener("mousemove", handleMouseMove);
+            window.removeEventListener("mouseup", handleMouseUp);
+            window.removeEventListener("blur", handleWindowBlur);
+        };
+    }, [
+        finishTreebedResize,
+        updateTreebedResize,
+        finishTreebedRotate,
+        updateTreebedRotate,
+        shouldShowCursorCrosshair,
+        activeTool,
+        activeDrawType,
+        updateCursorCrosshairFromClient,
+        clearCursorCrosshair,
+    ]);
+
+    // ✅ Force React rerender tijdens vertex-drag (alleen nodig voor fence/gate corridor pieces)
+    const [vertexDragTick, setVertexDragTick] = useState(0);
+    const vertexDragRafRef = useRef<number | null>(null);
+    const requestVertexDragRerender = useCallback(() => {
+        if (vertexDragRafRef.current) return;
+        vertexDragRafRef.current = requestAnimationFrame(() => {
+            vertexDragRafRef.current = null;
+            setVertexDragTick((t) => t + 1);
+        });
+    }, []);
+
+    // ✅ Plantvak “echte klik” detectie (mousedown -> mouseup zonder drag)
+    const pendingPlantbedClickRef = useRef<{
+        id: string;
+        startClientX: number;
+        startClientY: number;
+    } | null>(null);
+
+    const plantbedClickMovedRef = useRef(false);
+    const clickStartPosRef = useRef<{ x: number; y: number } | null>(null);
+
+    const vertexEditRef = useRef<{
+        objectId: string;
+        vertexIndex: number; // index in actieve ring (0..n-2 step 2)
+        holeIndex: number | null; // null = outer ring, anders index in holes[]
+        workingPoints: number[];
+        workingHoles?: number[][];
+    } | null>(null);
+
+    const [isEdgeResizing, setIsEdgeResizing] = useState(false);
+    const isEdgeResizingRef = useRef(false);
+    const isResizeEdgeHoveredRef = useRef(false);
+
+    const edgeResizeRef = useRef<{
+        objectId: string;
+        edgeIndex: number;
+        orientation: "vertical" | "horizontal";
+        holeIndex: number | null; // null = outer ring, anders holes[index]
+        workingPoints: number[];
+        workingHoles?: number[][];
+    } | null>(null);
+
+    // ✅ Force rerender tijdens edge resize zodat outline + vertex bolletjes live meebewegen
+    const [edgeResizeTick, setEdgeResizeTick] = useState(0);
+    const edgeResizeRafRef = useRef<number | null>(null);
+    const requestEdgeResizeRerender = useCallback(() => {
+        if (edgeResizeRafRef.current) return;
+        edgeResizeRafRef.current = requestAnimationFrame(() => {
+            edgeResizeRafRef.current = null;
+            setEdgeResizeTick((t) => t + 1);
+        });
+    }, []);
+
+    const livePrimaryMeasurementObject = useMemo<PolyObject | null>(() => {
+        if (!selectedObjectId) return null;
+
+        const baseObject =
+            (objects as PolyObject[]).find((object) => object.id === selectedObjectId) ?? null;
+
+        if (!baseObject) return null;
+
+        if (
+            treebedRotatePreview?.objectId === baseObject.id &&
+            Array.isArray(treebedRotatePreview.points) &&
+            treebedRotatePreview.points.length >= 6
+        ) {
+            return {
+                ...baseObject,
+                points: treebedRotatePreview.points,
+            };
+        }
+
+        if (
+            treebedResizePreview?.objectId === baseObject.id &&
+            Array.isArray(treebedResizePreview.points) &&
+            treebedResizePreview.points.length >= 6
+        ) {
+            return {
+                ...baseObject,
+                points: treebedResizePreview.points,
+            };
+        }
+
+        if (
+            isVertexDraggingRef.current &&
+            vertexEditRef.current?.objectId === baseObject.id &&
+            Array.isArray(vertexEditRef.current.workingPoints) &&
+            vertexEditRef.current.workingPoints.length >= 6
+        ) {
+            return {
+                ...baseObject,
+                points: [...vertexEditRef.current.workingPoints],
+                holes: (vertexEditRef.current.workingHoles ?? baseObject.holes ?? []).map((hole) => [...hole]),
+            };
+        }
+
+        if (
+            isEdgeResizingRef.current &&
+            edgeResizeRef.current?.objectId === baseObject.id &&
+            Array.isArray(edgeResizeRef.current.workingPoints) &&
+            edgeResizeRef.current.workingPoints.length >= 6
+        ) {
+            return {
+                ...baseObject,
+                points: [...edgeResizeRef.current.workingPoints],
+                holes: (edgeResizeRef.current.workingHoles ?? baseObject.holes ?? []).map((hole) => [...hole]),
+            };
+        }
+
+        return baseObject;
+    }, [
+        objects,
+        selectedObjectId,
+        treebedResizePreview,
+        treebedRotatePreview,
+        vertexDragTick,
+        edgeResizeTick,
+    ]);
+
+    const livePlantbedNumberLayouts = useMemo(() => {
+        const layouts = new Map(plantbedNumberLayouts);
+
+        if (livePrimaryMeasurementObject?.type !== "plantbed") {
+            return layouts;
+        }
+
+        layouts.set(
+            livePrimaryMeasurementObject.id,
+            getPlantbedNumberLayout(
+                livePrimaryMeasurementObject.points,
+                livePrimaryMeasurementObject.holes ?? [],
+                livePrimaryMeasurementObject.plantbedNo ?? 0,
+                formatSquareMeters(getObjectAreaInSquareMeters(livePrimaryMeasurementObject)),
+                treebedLabelBlockers
+            )
+        );
+
+        return layouts;
+    }, [plantbedNumberLayouts, livePrimaryMeasurementObject, treebedLabelBlockers]);
+
+    const selectedLineRefs = useRef<Record<string, any>>({});
+    const vertexHandleRefs = useRef<Record<string, Record<string, any>>>({});
+    const activeVertexIndexRef = useRef<number | null>(null);
+
+    const NOTICE_FADE_MS = 250;
+
+    // ==============================
+    // ✅ Fence/Gate hint blijft lokaal, want dit is geen algemene app-notificatie
+    // ==============================
+    const [fenceHint, setFenceHint] = useState<{ msg: string; dismissible?: boolean } | null>(null);
+    const [fenceHintVisible, setFenceHintVisible] = useState(false);
+
+    const fenceHintTimerRef = useRef<number | null>(null);
+    const fenceHintRaf1Ref = useRef<number | null>(null);
+    const fenceHintRaf2Ref = useRef<number | null>(null);
+
+    const lastFenceHintMsgRef = useRef<string>("");
+
+    const showFenceHint = useCallback((msg: string) => {
+        setFenceHint({ msg, dismissible: true });
+        setFenceHintVisible(false);
+
+        if (fenceHintTimerRef.current) window.clearTimeout(fenceHintTimerRef.current);
+        if (fenceHintRaf1Ref.current) cancelAnimationFrame(fenceHintRaf1Ref.current);
+        if (fenceHintRaf2Ref.current) cancelAnimationFrame(fenceHintRaf2Ref.current);
+
+        fenceHintRaf1Ref.current = requestAnimationFrame(() => {
+            fenceHintRaf2Ref.current = requestAnimationFrame(() => {
+                setFenceHintVisible(true);
+                fenceHintRaf2Ref.current = null;
+            });
+            fenceHintRaf1Ref.current = null;
+        });
+    }, []);
+
+    const hideFenceHint = useCallback(() => {
+        setFenceHintVisible(false);
+
+        if (fenceHintTimerRef.current) window.clearTimeout(fenceHintTimerRef.current);
+
+        fenceHintTimerRef.current = window.setTimeout(() => {
+            setFenceHint(null);
+        }, NOTICE_FADE_MS);
+    }, []);
+
+    const dismissFenceHintForever = useCallback(() => {
+        setIsFenceHintDismissed(true);
+        lastFenceHintMsgRef.current = "";
+        hideFenceHint();
+    }, [hideFenceHint]);
+
+    useEffect(() => {
+        const isDrawingFence =
+            activeTool === "draw" &&
+            (activeDrawType === "fence" || activeDrawType === "gate") &&
+            draftPoints.length >= 2 &&
+            !isFenceHintDismissed;
+
+        if (isDrawingFence) {
+            const label = activeDrawType === "gate" ? "hek" : "schutting";
+            const msg = `Dubbelklik om de ${label} te voltooien`;
+
+            if (lastFenceHintMsgRef.current !== msg) {
+                lastFenceHintMsgRef.current = msg;
+                showFenceHint(msg);
+            }
+            return;
+        }
+
+        if (lastFenceHintMsgRef.current) {
+            lastFenceHintMsgRef.current = "";
+            hideFenceHint();
+        }
+    }, [activeTool, activeDrawType, draftPoints.length, isFenceHintDismissed, showFenceHint, hideFenceHint]);
+
+    useEffect(() => {
+        const shouldShowShiftHint =
+            activeTool === "draw" &&
+            !!activeDrawType &&
+            !isFenceOrGate(activeDrawType) &&
+            activeDrawType !== "treebed" &&
+            draftPoints.length >= 2 &&
+            !isShiftHintDismissed &&
+            !hasUsedShiftForStraightLine;
+
+        if (shouldShowShiftHint) {
+            notify(APP_NOTIFICATIONS.holdShiftForStraightLines(dismissShiftHintForever));
+            return;
+        }
+
+        dismissNotification("draw-shift-hint");
+    }, [
+        activeTool,
+        activeDrawType,
+        draftPoints.length,
+        isShiftHintDismissed,
+        hasUsedShiftForStraightLine,
+        notify,
+        dismissNotification,
+        dismissShiftHintForever,
+    ]);
+
+    useEffect(() => {
+        const shouldShowDuplicateHint =
+            activeTool === "select" &&
+            selectedObjectIds.length > 1;
+
+        if (shouldShowDuplicateHint) {
+            notify(
+                APP_NOTIFICATIONS.duplicatedSelection(() => {
+                    handleDuplicateSelection();
+                })
+            );
+            return;
+        }
+
+        dismissNotification("duplicate-selection-hint");
+    }, [activeTool, selectedObjectIds.length, notify, dismissNotification, handleDuplicateSelection]);
+
+    useEffect(() => {
+        if (showCenterButton) {
+            notify(
+                APP_NOTIFICATIONS.centeredCanvas(() => {
+                    handleCenterCanvas();
+                })
+            );
+            return;
+        }
+
+        dismissNotification("center-canvas-hint");
+    }, [showCenterButton, notify, dismissNotification, handleCenterCanvas]);
+
+    useEffect(() => {
+        const isRotatingTreebed = !!treebedRotateRef.current;
+
+        if (isRotatingTreebed) {
+            return;
+        }
+
+        dismissNotification("rotate-shift-hint");
+    });
+
+    const HINT_MARGIN = 16;
+    // ⚠️ Pas deze aan als jouw linker menu breder/smaller is:
+    const LEFT_MENU_WIDTH = 260;
+
+    useEffect(() => {
+        return () => {
+            dismissNotification("draw-shift-hint");
+            dismissNotification("rotate-shift-hint");
+
+            if (fenceHintTimerRef.current) window.clearTimeout(fenceHintTimerRef.current);
+            if (fenceHintRaf1Ref.current) cancelAnimationFrame(fenceHintRaf1Ref.current);
+            if (fenceHintRaf2Ref.current) cancelAnimationFrame(fenceHintRaf2Ref.current);
+
+            if (vertexDragRafRef.current) cancelAnimationFrame(vertexDragRafRef.current);
+        };
+    }, [dismissNotification]);
+
+    useEffect(() => {
+        return () => {
+            if (boxSelectRafRef.current) cancelAnimationFrame(boxSelectRafRef.current);
+        };
+    }, []);
+
+    // ✅ Drag-over op canvas (HTML5 drag events)
+    useEffect(() => {
+        const stage = stageRef.current;
+        const container: HTMLDivElement | null = stage?.container?.() ?? null;
+        if (!container) return;
+
+        const hasPlantPayloadType = (e: DragEvent) => {
+            const types = Array.from(e.dataTransfer?.types ?? []);
+            return (
+                types.includes("application/x-plant-id") ||
+                types.includes("text/plain")
+            );
+        };
+
+        const getDroppedPlantId = (e: DragEvent) => {
+            const types = Array.from(e.dataTransfer?.types ?? []);
+
+            const rawPlantId =
+                (types.includes("application/x-plant-id")
+                    ? e.dataTransfer?.getData("application/x-plant-id")
+                    : "") ||
+                (types.includes("text/plain")
+                    ? e.dataTransfer?.getData("text/plain")
+                    : "") ||
+                "";
+
+            const plantId = rawPlantId.trim();
+            if (!plantId) return null;
+
+            const plant = useProjectStore.getState().getPlantById(plantId);
+            if (!plant) return null;
+
+            return plantId;
+        };
+
+        const clientToWorld = (clientX: number, clientY: number) => {
+            const rect = container.getBoundingClientRect();
+            const x = clientX - rect.left;
+            const y = clientY - rect.top;
+
+            const scale = stageScaleRef.current;
+            const pos = stagePosRef.current;
+
+            return {
+                x: (x - pos.x) / scale,
+                y: (y - pos.y) / scale,
+            };
+        };
+
+        const clearDragOverPlantbed = () => {
+            dragOverPlantbedIdRef.current = null;
+            setDragOverPlantbedId(null);
+        };
+
+        const onDragOver = (e: DragEvent) => {
+            if (!hasPlantPayloadType(e)) {
+                clearDragOverPlantbed();
+                return;
+            }
+
+            e.preventDefault();
+
+            const world = clientToWorld(e.clientX, e.clientY);
+            const objs = objectsRef.current as PolyObject[];
+            const plantbeds = objs.filter((o) => o.type === "plantbed");
+
+            const hit = getPlantbedHitAtWorldPoint(world.x, world.y, plantbeds);
+            const nextId = hit ? hit.id : null;
+
+            dragOverPlantbedIdRef.current = nextId;
+            setDragOverPlantbedId(nextId);
+        };
+
+        const onDragLeave = (e: DragEvent) => {
+            if (!hasPlantPayloadType(e)) return;
+
+            const rect = container.getBoundingClientRect();
+            const clientX = e.clientX;
+            const clientY = e.clientY;
+
+            const isStillInsideContainer =
+                clientX >= rect.left &&
+                clientX <= rect.right &&
+                clientY >= rect.top &&
+                clientY <= rect.bottom;
+
+            if (isStillInsideContainer) return;
+
+            clearDragOverPlantbed();
+        };
+
+        const onDrop = (e: DragEvent) => {
+            const plantId = getDroppedPlantId(e);
+            if (!plantId) {
+                clearDragOverPlantbed();
+                return;
+            }
+
+            e.preventDefault();
+
+            const world = clientToWorld(e.clientX, e.clientY);
+            const objs = useProjectStore.getState().objects as PolyObject[];
+            const plantbeds = objs.filter((o) => o.type === "plantbed");
+
+            let hit = getPlantbedHitAtWorldPoint(world.x, world.y, plantbeds);
+
+            if (!hit && dragOverPlantbedIdRef.current) {
+                hit =
+                    plantbeds.find((pb) => pb.id === dragOverPlantbedIdRef.current) ??
+                    null;
+            }
+
+            if (!hit) {
+                clearDragOverPlantbed();
+                notify(APP_NOTIFICATIONS.plantsOnlyInPlantbeds());
+                return;
+            }
+
+            const plantbedId = hit.id;
+
+            const state = useProjectStore.getState();
+            const plant = state.getPlantById(plantId);
+
+            if (!plant) {
+                clearDragOverPlantbed();
+                return;
+            }
+
+            const alreadyLinkedIds: string[] = state.plantbedLinks?.[plantbedId] ?? [];
+
+            if (alreadyLinkedIds.includes(plantId)) {
+                const plantbedNo = (hit as any).plantbedNo ?? "?";
+                clearDragOverPlantbed();
+                notify(APP_NOTIFICATIONS.plantAlreadyLinkedToPlantbed(plantbedNo));
+                return;
+            }
+
+            linkPlantToPlantbed(plantId, plantbedId);
+
+            const plantName = plant.latin ?? "Plant";
+            const plantbedNo = (hit as any).plantbedNo ?? "?";
+
+            clearDragOverPlantbed();
+            notify(APP_NOTIFICATIONS.plantLinkedToPlantbed(plantName, plantbedNo));
+        };
+
+        container.addEventListener("dragover", onDragOver);
+        container.addEventListener("dragleave", onDragLeave);
+        container.addEventListener("drop", onDrop);
+
+        return () => {
+            container.removeEventListener("dragover", onDragOver);
+            container.removeEventListener("dragleave", onDragLeave);
+            container.removeEventListener("drop", onDrop);
+        };
+    }, []);
+
+    const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+    const applyViewportWheelRef = useRef<((evt: WheelEvent) => void) | null>(null);
+
+    useEffect(() => {
+        const onWindowWheelCapture = (evt: WheelEvent) => {
+            const wrap = canvasWrapRef.current;
+            if (!wrap) return;
+
+            const target = evt.target as Node | null;
+            if (!target || !wrap.contains(target)) return;
+
+            const isZoomGesture = evt.ctrlKey || evt.metaKey;
+            if (!isZoomGesture) return;
+
+            evt.preventDefault();
+            evt.stopPropagation();
+
+            applyViewportWheelRef.current?.(evt);
+        };
+
+        window.addEventListener("wheel", onWindowWheelCapture, {
+            passive: false,
+            capture: true,
+        });
+
+        return () => {
+            window.removeEventListener("wheel", onWindowWheelCapture, {
+                capture: true,
+            } as EventListenerOptions);
+        };
+    }, []);
+
+    const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
+
+    const bringObjectIntoView = useCallback((objectId: string) => {
+        const target = (objectsRef.current as any[])?.find((o) => o?.id === objectId);
+        if (!target?.points?.length) return;
+
+        const viewportW = canvasSize.w;
+        const viewportH = canvasSize.h;
+        if (!viewportW || !viewportH) return;
+
+        const scale = stageScaleRef.current;
+        const pos = stagePosRef.current;
+
+        const bbox = bboxFromPoints(target.points);
+        const bboxLeft = bbox.x;
+        const bboxTop = bbox.y;
+        const bboxRight = bbox.x + bbox.w;
+        const bboxBottom = bbox.y + bbox.h;
+
+        const visibleLeft = (-pos.x) / scale;
+        const visibleTop = (-pos.y) / scale;
+        const visibleRight = visibleLeft + viewportW / scale;
+        const visibleBottom = visibleTop + viewportH / scale;
+
+        const margin = GRID_SIZE * 6;
+
+        const fullyVisible =
+            bboxLeft >= visibleLeft + margin &&
+            bboxRight <= visibleRight - margin &&
+            bboxTop >= visibleTop + margin &&
+            bboxBottom <= visibleBottom - margin;
+
+        if (fullyVisible) return;
+
+        const targetCenterX = bbox.x + bbox.w / 2;
+        const targetCenterY = bbox.y + bbox.h / 2;
+
+        scheduleViewportState({
+            pos: {
+                x: viewportW / 2 - targetCenterX * scale,
+                y: viewportH / 2 - targetCenterY * scale,
+            },
+        });
+    }, [canvasSize.w, canvasSize.h]);
+
+    useEffect(() => {
+        const objectId = canvasFocusRequest?.objectId;
+        if (!objectId) return;
+
+        requestAnimationFrame(() => {
+            bringObjectIntoView(objectId);
+        });
+    }, [canvasFocusRequest?.nonce, bringObjectIntoView]);
+
+    useEffect(() => {
+        const el = canvasWrapRef.current;
+        if (!el) return;
+
+        const ro = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+            const { width, height } = entry.contentRect;
+            setCanvasSize({ w: Math.max(0, Math.floor(width)), h: Math.max(0, Math.floor(height)) });
+        });
+
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (viewportRafRef.current) {
+                cancelAnimationFrame(viewportRafRef.current);
+                viewportRafRef.current = null;
+            }
+
+            if (previewRafRef.current) {
+                cancelAnimationFrame(previewRafRef.current);
+                previewRafRef.current = null;
+            }
+
+            if (boxSelectRafRef.current) {
+                cancelAnimationFrame(boxSelectRafRef.current);
+                boxSelectRafRef.current = null;
+            }
+
+            if (vertexDragRafRef.current) {
+                cancelAnimationFrame(vertexDragRafRef.current);
+                vertexDragRafRef.current = null;
+            }
+
+            if (edgeResizeRafRef.current) {
+                cancelAnimationFrame(edgeResizeRafRef.current);
+                edgeResizeRafRef.current = null;
+            }
+
+            if (fenceHintRaf1Ref.current) {
+                cancelAnimationFrame(fenceHintRaf1Ref.current);
+                fenceHintRaf1Ref.current = null;
+            }
+
+            if (fenceHintRaf2Ref.current) {
+                cancelAnimationFrame(fenceHintRaf2Ref.current);
+                fenceHintRaf2Ref.current = null;
+            }
+
+            if (fenceHintTimerRef.current) {
+                window.clearTimeout(fenceHintTimerRef.current);
+                fenceHintTimerRef.current = null;
+            }
+
+            if (autosaveTimerRef.current !== null) {
+                window.clearTimeout(autosaveTimerRef.current);
+                autosaveTimerRef.current = null;
+            }
+
+            pendingViewportRef.current = null;
+            pendingPreviewRef.current = null;
+            pendingBoxRectRef.current = null;
+
+            const stage = stageRef.current;
+            if (stage) {
+                stage.destroy();
+                stageRef.current = null;
+            }
+
+            clearTilesPatternGeometryCache();
+        };
+    }, []);
+
+    // Preview segment — ZERO React state updates (imperative Konva update)
+    const previewRafRef = useRef<number | null>(null);
+    const pendingPreviewRef = useRef<ResolvedDrawPreviewPoint | null>(null);
+    const lastPreviewKeyRef = useRef<string>("");
+
+    const commitPreview = useCallback(() => {
+        previewRafRef.current = null;
+
+        const next = pendingPreviewRef.current;
+        pendingPreviewRef.current = null;
+
+        const base = draftPointsRef.current;
+
+        const solid = draftLineRef.current;
+        if (solid) solid.points(base);
+
+        const preview = draftPreviewLineRef.current;
+        const guide = draftGuideLineRef.current;
+        const secondaryGuide = draftSecondaryGuideLineRef.current;
+
+        if (base.length < 2) {
+            setDraftMeasurementPreviewPoint(null);
+
+            if (preview) preview.points([]);
+            if (guide) guide.points([]);
+            if (secondaryGuide) secondaryGuide.points([]);
+
+            const layer =
+                preview?.getLayer?.() ??
+                solid?.getLayer?.() ??
+                guide?.getLayer?.() ??
+                secondaryGuide?.getLayer?.();
+
+            if (layer) layer.batchDraw();
+            return;
+        }
+
+        const lastX = base[base.length - 2];
+        const lastY = base[base.length - 1];
+
+        const fallbackNext = next ?? {
+            x: lastX,
+            y: lastY,
+            primaryGuidePoints: null,
+            secondaryGuidePoints: null,
+        };
+
+        if (activeTool === "draw" && activeDrawType !== "treebed") {
+            setDraftMeasurementPreviewPoint({
+                x: fallbackNext.x,
+                y: fallbackNext.y,
+            });
+        } else {
+            setDraftMeasurementPreviewPoint(null);
+        }
+
+        if (preview) {
+            const previewType = activeDrawType;
+            const rawPreviewPoints = [lastX, lastY, fallbackNext.x, fallbackNext.y];
+
+            const visualPreviewPoints =
+                isFenceOrGate(previewType)
+                    ? getOneSidedPolylineRenderPoints(
+                        rawPreviewPoints,
+                        getLineStrokeWidth(previewType),
+                        inferPolylineRenderSide(rawPreviewPoints, previewType, objects, 1)
+                    )
+                    : rawPreviewPoints;
+
+            preview.points(visualPreviewPoints);
+        }
+
+        if (guide) {
+            guide.points(fallbackNext.primaryGuidePoints ?? []);
+        }
+
+        if (secondaryGuide) {
+            secondaryGuide.points(fallbackNext.secondaryGuidePoints ?? []);
+        }
+
+        const layer =
+            preview?.getLayer?.() ??
+            solid?.getLayer?.() ??
+            guide?.getLayer?.() ??
+            secondaryGuide?.getLayer?.();
+
+        if (layer) layer.batchDraw();
+    }, [activeTool, activeDrawType]);
+
+    // ✅ Undo/Redo callbacks
+    const handleUndo = useCallback(() => {
+        if ((activeTool === "draw" || activeTool === "cut") && draftPointsRef.current.length >= 2) {
+            setDraftPoints((prev) => {
+                if (prev.length < 2) return prev;
+
+                const lastTwo = prev.slice(prev.length - 2);
+                setDraftRedoPoints((redo) => [...redo, ...lastTwo]);
+
+                const next = prev.slice(0, prev.length - 2);
+
+                pendingPreviewRef.current = null;
+                if (!previewRafRef.current) {
+                    previewRafRef.current = requestAnimationFrame(commitPreview);
+                }
+
+                return next;
+            });
+            return;
+        }
+
+        if (activeTool === "measure") {
+            if (measurePointsRef.current.length >= 2) {
+                const removedPoints = measurePointsRef.current.slice();
+
+                setMeasureRedoPoints(removedPoints);
+                setMeasurePoints([]);
+                setMeasurePreviewPoint(null);
+                return;
+            }
+
+            if (measureLinesRef.current.length > 0) {
+                const lastLine = measureLinesRef.current[measureLinesRef.current.length - 1];
+
+                setMeasureLines((prev) => prev.slice(0, -1));
+                setMeasureRedoLines((prev) => [...prev, lastLine]);
+                return;
+            }
+        }
+
+        undoObject();
+
+        pendingPreviewRef.current = null;
+        if (!previewRafRef.current) {
+            previewRafRef.current = requestAnimationFrame(commitPreview);
+        }
+    }, [activeTool, undoObject, commitPreview]);
+
+    const handleRedo = useCallback(() => {
+        if ((activeTool === "draw" || activeTool === "cut") && draftRedoPointsRef.current.length >= 2) {
+            setDraftRedoPoints((redo) => {
+                if (redo.length < 2) return redo;
+
+                const lastTwo = redo.slice(redo.length - 2);
+
+                setDraftPoints((prev) => {
+                    const next = [...prev, ...lastTwo];
+
+                    pendingPreviewRef.current = null;
+                    if (!previewRafRef.current) {
+                        previewRafRef.current = requestAnimationFrame(commitPreview);
+                    }
+
+                    return next;
+                });
+
+                return redo.slice(0, redo.length - 2);
+            });
+            return;
+        }
+
+        if (activeTool === "measure") {
+            if (measureRedoPointsRef.current.length >= 2 && measurePointsRef.current.length === 0) {
+                const restoredPoints = measureRedoPointsRef.current.slice();
+
+                setMeasurePoints(restoredPoints);
+                setMeasurePreviewPoint({
+                    x: restoredPoints[0],
+                    y: restoredPoints[1],
+                });
+                setMeasureRedoPoints([]);
+                return;
+            }
+
+            if (measureRedoLinesRef.current.length > 0) {
+                const restoredLine =
+                    measureRedoLinesRef.current[measureRedoLinesRef.current.length - 1];
+
+                setMeasureRedoLines((prev) => prev.slice(0, -1));
+                setMeasureLines((prev) => [...prev, restoredLine]);
+                return;
+            }
+        }
+
+        redoObject();
+
+        pendingPreviewRef.current = null;
+        if (!previewRafRef.current) {
+            previewRafRef.current = requestAnimationFrame(commitPreview);
+        }
+    }, [activeTool, redoObject, commitPreview]);
+
+    useEffect(() => {
+        if (draftPoints.length >= 2) return;
+
+        lastPreviewKeyRef.current = "";
+
+        if (draftGuideLineRef.current) draftGuideLineRef.current.points([]);
+        if (draftSecondaryGuideLineRef.current) draftSecondaryGuideLineRef.current.points([]);
+        draftGuideLineRef.current?.getLayer()?.batchDraw();
+
+        const layer =
+            draftGuideLineRef.current?.getLayer?.() ??
+            draftSecondaryGuideLineRef.current?.getLayer?.();
+
+        if (layer) layer.batchDraw();
+    }, [draftPoints.length]);
+
+    const applyViewportWheel = useCallback((evt: WheelEvent) => {
+        evt.preventDefault();
+
+        const stage = stageRef.current;
+        if (!stage) return;
+
+        const container = stage.container?.();
+        if (!container) return;
+
+        const isZoomGesture = evt.ctrlKey || evt.metaKey;
+
+        if (isZoomGesture) {
+            const rect = container.getBoundingClientRect();
+            const pointer = {
+                x: evt.clientX - rect.left,
+                y: evt.clientY - rect.top,
+            };
+
+            const oldScale = stageScaleRef.current;
+            const zoomDirection = evt.deltaY > 0 ? -1 : 1;
+            const zoomFactor = 1.22;
+            const newScale = zoomDirection > 0 ? oldScale * zoomFactor : oldScale / zoomFactor;
+            const clamped = clamp(newScale, 0.04, 12);
+
+            const oldPos = stagePosRef.current;
+            const mousePointTo = {
+                x: (pointer.x - oldPos.x) / oldScale,
+                y: (pointer.y - oldPos.y) / oldScale,
+            };
+
+            const newPos = {
+                x: pointer.x - mousePointTo.x * clamped,
+                y: pointer.y - mousePointTo.y * clamped,
+            };
+
+            scheduleViewportState({
+                scale: clamped,
+                pos: newPos,
+            });
+            return;
+        }
+
+        const panSpeed = 1;
+        const dx = evt.shiftKey ? -evt.deltaY * panSpeed : -evt.deltaX * panSpeed;
+        const dy = evt.shiftKey ? 0 : -evt.deltaY * panSpeed;
+
+        const currentPos = stagePosRef.current;
+        scheduleViewportState({
+            pos: {
+                x: currentPos.x + dx,
+                y: currentPos.y + dy,
+            },
+        });
+    }, [scheduleViewportState]);
+
+    useEffect(() => {
+        applyViewportWheelRef.current = applyViewportWheel;
+    }, [applyViewportWheel]);
+
+    const handleWheel = useCallback(
+        (e: any) => {
+            applyViewportWheel(e.evt as WheelEvent);
+        },
+        [applyViewportWheel]
+    );
+
+    const handleMouseDown = useCallback(
+        (e: any) => {
+            const stage = stageRef.current;
+            if (!stage) return;
+
+            const evt = e.evt as MouseEvent;
+
+            if (
+                evt.shiftKey &&
+                activeTool === "draw" &&
+                !!activeDrawType &&
+                !isFenceOrGate(activeDrawType) &&
+                !hasUsedShiftForStraightLine
+            ) {
+                markShiftHintAsLearned();
+            }
+
+            if (pendingPlantbedClickRef.current) {
+                const dx = Math.abs((evt.clientX ?? 0) - pendingPlantbedClickRef.current.startClientX);
+                const dy = Math.abs((evt.clientY ?? 0) - pendingPlantbedClickRef.current.startClientY);
+                if (dx > 3 || dy > 3) {
+                    plantbedClickMovedRef.current = true;
+                }
+            }
+
+            if (evt.button === 0) {
+                clickStartPosRef.current = { x: evt.clientX, y: evt.clientY };
+            }
+
+            if (activeTool === "hand" && evt.button === 0) {
+                setIsPanning(true);
+                panStartRef.current = { x: evt.clientX, y: evt.clientY };
+                stagePosStartRef.current = { ...stagePosRef.current };
+
+                const st = stageRef.current;
+                if (st) st.container().style.cursor = "grabbing";
+
+                return;
+            }
+
+            if (evt.button === 0 && activeTool === "select") {
+                const clickedOnEmpty = e.target === e.target.getStage();
+                if (clickedOnEmpty) {
+                    const world = getPointerWorldPos(stage);
+                    if (!world) return;
+
+                    setIsBoxSelecting(true);
+                    boxStartRef.current = { x: world.x, y: world.y };
+                    setSelectionBox({ x: world.x, y: world.y, w: 0, h: 0 });
+                    clearSelection();
+                    return;
+                }
+                return;
+            }
+
+            if (evt.button === 1) {
+                e.cancelBubble = true;
+                startMiddleMousePan(evt);
+                return;
+            }
+
+            if (evt.button === 0 && mode === "draw" && activeTool === "measure") {
+                const world = getPointerWorldPos(stage);
+                if (!world) return;
+
+                const base = measurePointsRef.current;
+
+                if (base.length === 0) {
+                    const x = snapToGrid(world.x, GRID_SIZE);
+                    const y = snapToGrid(world.y, GRID_SIZE);
+
+                    setMeasurePoints([x, y]);
+                    setMeasurePreviewPoint({ x, y });
+                    setMeasureRedoPoints([]);
+                    setMeasureRedoLines([]);
+                    return;
+                }
+
+                if (base.length === 2) {
+                    const resolved = resolveDrawPreviewPoint(
+                        world.x,
+                        world.y,
+                        base,
+                        evt.shiftKey,
+                        null,
+                        objectsRef.current as PolyObject[],
+                        {
+                            showGuides: false,
+                        }
+                    );
+
+                    setMeasureLines((prev) => [...prev, [base[0], base[1], resolved.x, resolved.y]]);
+                    setMeasurePoints([]);
+                    setMeasurePreviewPoint(null);
+                    setMeasureRedoPoints([]);
+                    setMeasureRedoLines([]);
+                    return;
+                }
+
+                const x = snapToGrid(world.x, GRID_SIZE);
+                const y = snapToGrid(world.y, GRID_SIZE);
+
+                setMeasurePoints([x, y]);
+                setMeasurePreviewPoint({ x, y });
+                setMeasureRedoPoints([]);
+                setMeasureRedoLines([]);
+                return;
+            }
+
+            if (evt.button === 0 && mode === "draw" && (activeTool === "draw" || activeTool === "cut")) {
+                // ✅ Registreer eigen click-timing voor fence/gate
+                const now = performance.now();
+                lastDrawClickDeltaRef.current =
+                    lastDrawClickAtRef.current > 0 ? now - lastDrawClickAtRef.current : Infinity;
+                lastDrawClickAtRef.current = now;
+
+                // Guard: voorkom extra punt rondom een echte dblclick-afronding
+                if (activeTool === "draw") {
+                    if (now - lastDblClickAtRef.current < FENCE_GATE_DBLCLICK_MS) return;
+                    if ((evt as any).detail && (evt as any).detail > 1) return;
+                }
+
+                if (activeTool === "draw") {
+                    const currentDrawType = activeDrawTypeRef.current;
+                    const currentViewVisibility = viewVisibilityRef.current;
+
+                    if (!currentDrawType) {
+                        notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
+                        return;
+                    }
+
+                    const visibilityKey = getViewVisibilityKeyForType(currentDrawType);
+                    if (!currentViewVisibility[visibilityKey]) {
+                        const label = getViewVisibilityLabelForType(currentDrawType);
+                        notify(APP_NOTIFICATIONS.drawingBlockedByViewToggle(label));
+                        return;
+                    }
+                }
+
+                const world = getPointerWorldPos(stage);
+                if (!world) return;
+
+                const resolved = resolveDrawPreviewPoint(
+                    world.x,
+                    world.y,
+                    draftPointsRef.current,
+                    evt.shiftKey,
+                    activeTool === "cut" ? null : activeDrawType,
+                    objectsRef.current as PolyObject[],
+                    {
+                        showGuides:
+                            shouldShowDraftGuidesForTool(activeTool) &&
+                            !isFenceOrGate(activeDrawType),
+                    }
+                );
+
+                const x = resolved.x;
+                const y = resolved.y;
+
+                // ✅ CUT TOOL: zelfde tekenflow, maar commit = uitsnijden
+                if (activeTool === "cut") {
+                    const base = draftPointsRef.current;
+
+                    if (base.length >= 6) {
+                        const firstX = base[0];
+                        const firstY = base[1];
+
+                        if (x === firstX && y === firstY) {
+                            cutObjectsByPolygon(base);
+
+                            setDraftPoints([]);
+                            setDraftRedoPoints([]);
+
+                            lastPreviewKeyRef.current = "";
+                            pendingPreviewRef.current = null;
+                            if (draftLineRef.current) draftLineRef.current.points([]);
+                            if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                            const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                            if (layer) layer.batchDraw();
+
+                            return;
+                        }
+                    }
+
+                    setDraftPoints((prev) => {
+                        if (prev.length >= 2 && prev[prev.length - 2] === x && prev[prev.length - 1] === y) return prev;
+                        return [...prev, x, y];
+                    });
+                    setDraftRedoPoints([]);
+
+                    lastPreviewKeyRef.current = `${x},${y}`;
+                    pendingPreviewRef.current = resolved;
+
+                    if (!previewRafRef.current) {
+                        previewRafRef.current = requestAnimationFrame(commitPreview);
+                    }
+                    return;
+                }
+
+                // ✅ Fence/Gate: alleen punten zetten, NIET sluiten door op eerste punt te klikken
+                if (isFenceOrGate(activeDrawType)) {
+                    if (!activeDrawType) {
+                        notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
+                        return;
+                    }
+
+                    setDraftPoints((prev) => {
+                        if (prev.length >= 2 && prev[prev.length - 2] === x && prev[prev.length - 1] === y) return prev;
+                        return [...prev, x, y];
+                    });
+                    setDraftRedoPoints([]);
+
+                    lastPreviewKeyRef.current = `${x},${y}`;
+                    pendingPreviewRef.current = resolved;
+
+                    if (!previewRafRef.current) {
+                        previewRafRef.current = requestAnimationFrame(commitPreview);
+                    }
+                    return;
+                }
+
+                const base = draftPointsRef.current;
+
+                if (!activeDrawType) {
+                    notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
+                    return;
+                }
+
+                if (activeDrawType === "treebed") {
+                    if (base.length === 0) {
+                        setDraftPoints([x, y]);
+                        setDraftRedoPoints([]);
+                        setTreebedDraftPreviewPoint({ x, y });
+
+                        lastPreviewKeyRef.current = `${x},${y}`;
+                        pendingPreviewRef.current = resolved;
+
+                        if (draftLineRef.current) draftLineRef.current.points([]);
+                        if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                        const layer =
+                            draftLineRef.current?.getLayer?.() ??
+                            draftPreviewLineRef.current?.getLayer?.();
+
+                        if (layer) layer.batchDraw();
+                        return;
+                    }
+
+                    if (base.length === 2) {
+                        const cx = base[0];
+                        const cy = base[1];
+
+                        addObject({
+                            id: nanoid(),
+                            type: activeDrawType,
+                            treebedVariant: activeTreebedDrawVariant,
+                            points: createTreebedPointsFromCenterDrag(
+                                cx,
+                                cy,
+                                x,
+                                y,
+                                activeTreebedDrawVariant
+                            ),
+                        });
+
+                        setDraftPoints([]);
+                        setDraftRedoPoints([]);
+                        setTreebedDraftPreviewPoint(null);
+
+                        lastPreviewKeyRef.current = "";
+                        pendingPreviewRef.current = null;
+                        if (draftLineRef.current) draftLineRef.current.points([]);
+                        if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                        const layer =
+                            draftLineRef.current?.getLayer?.() ??
+                            draftPreviewLineRef.current?.getLayer?.();
+
+                        if (layer) layer.batchDraw();
+
+                        setActiveTool("select");
+                        setActiveDrawType(null);
+                        return;
+                    }
+                }
+
+                const lineOnly = isFenceOrGate(activeDrawType);
+
+                if (!lineOnly && base.length >= 6) {
+                    const firstX = base[0];
+                    const firstY = base[1];
+
+                    if (x === firstX && y === firstY) {
+                        addObject({ id: nanoid(), type: activeDrawType, points: base });
+
+                        setDraftPoints([]);
+                        setDraftRedoPoints([]);
+                        setTreebedDraftPreviewPoint(null);
+
+                        lastPreviewKeyRef.current = "";
+                        pendingPreviewRef.current = null;
+                        if (draftLineRef.current) draftLineRef.current.points([]);
+                        if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                        const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                        if (layer) layer.batchDraw();
+
+                        setActiveTool("select");
+                        setActiveDrawType(null);
+                        return;
+                    }
+
+                    if (
+                        canAutoCloseAgainstSameTypeBoundary(
+                            base,
+                            x,
+                            y,
+                            activeDrawType,
+                            objectsRef.current as PolyObject[]
+                        )
+                    ) {
+                        addObject({
+                            id: nanoid(),
+                            type: activeDrawType,
+                            points: [...base, x, y],
+                        });
+
+                        setDraftPoints([]);
+                        setDraftRedoPoints([]);
+                        setTreebedDraftPreviewPoint(null);
+
+                        lastPreviewKeyRef.current = "";
+                        pendingPreviewRef.current = null;
+                        if (draftLineRef.current) draftLineRef.current.points([]);
+                        if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                        const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                        if (layer) layer.batchDraw();
+
+                        setActiveTool("select");
+                        setActiveDrawType(null);
+                        return;
+                    }
+                }
+
+                setDraftPoints((prev) => [...prev, x, y]);
+                setDraftRedoPoints([]);
+                setTreebedDraftPreviewPoint(null);
+
+                lastPreviewKeyRef.current = `${x},${y}`;
+                pendingPreviewRef.current = resolved;
+
+                if (!previewRafRef.current) {
+                    previewRafRef.current = requestAnimationFrame(commitPreview);
+                }
+            }
+        },
+        [activeTool, clearSelection, mode, commitPreview, activeDrawType, addObject, cutObjectsByPolygon, setActiveTool, setActiveDrawType, notify, startMiddleMousePan]
+    );
+
+    const handleMouseMove = useCallback(
+        (e: any) => {
+            const stage = stageRef.current;
+            if (!stage) return;
+
+            const evt = e.evt as MouseEvent;
+
+            if (treebedRotateRef.current && activeTool === "select") {
+                updateTreebedRotate();
+                return;
+            }
+
+            if (
+                evt.shiftKey &&
+                activeTool === "draw" &&
+                !!activeDrawType &&
+                !isFenceOrGate(activeDrawType) &&
+                !hasUsedShiftForStraightLine
+            ) {
+                markShiftHintAsLearned();
+            }
+
+            if (isEdgeResizingRef.current && activeTool === "select") {
+                const edit = edgeResizeRef.current;
+                const world = getPointerWorldPos(stage);
+                if (!edit || !world) return;
+
+                const editedObj = (objectsRef.current as PolyObject[]).find((o) => o.id === edit.objectId);
+
+                const snapped = snapWorldPointAgainstFenceBoundary(
+                    world.x,
+                    world.y,
+                    editedObj?.type ?? null,
+                    objectsRef.current as PolyObject[]
+                );
+
+                const cx = snapped.x;
+                const cy = snapped.y;
+
+                if (edit.holeIndex !== null) {
+                    const nextHoles = (edit.workingHoles ?? []).map((h) => [...h]);
+                    const ring = nextHoles[edit.holeIndex];
+                    if (!ring || ring.length < 6) return;
+
+                    const pointCount = ring.length / 2;
+                    const aIdx = edit.edgeIndex * 2;
+                    const bIdx = ((edit.edgeIndex + 1) % pointCount) * 2;
+
+                    if (edit.orientation === "vertical") {
+                        ring[aIdx] = cx;
+                        ring[bIdx] = cx;
+                    } else {
+                        ring[aIdx + 1] = cy;
+                        ring[bIdx + 1] = cy;
+                    }
+
+                    edit.workingHoles = nextHoles;
+                    requestEdgeResizeRerender();
+
+                    const line = selectedLineRefs.current[edit.objectId];
+                    const layer = line?.getLayer?.();
+                    if (layer) layer.batchDraw();
+
+                    return;
+                }
+
+                const nextPoints = [...edit.workingPoints];
+                const pointCount = nextPoints.length / 2;
+
+                const aIdx = edit.edgeIndex * 2;
+                const bIdx = ((edit.edgeIndex + 1) % pointCount) * 2;
+
+                if (edit.orientation === "vertical") {
+                    nextPoints[aIdx] = cx;
+                    nextPoints[bIdx] = cx;
+                } else {
+                    nextPoints[aIdx + 1] = cy;
+                    nextPoints[bIdx + 1] = cy;
+                }
+
+                edit.workingPoints = nextPoints;
+                requestEdgeResizeRerender();
+
+                const line = selectedLineRefs.current[edit.objectId];
+                if (line) {
+                    line.points(nextPoints);
+                    const layer = line.getLayer?.();
+                    if (layer) layer.batchDraw();
+                }
+
+                return;
+            }
+
+            if (isVertexDraggingRef.current && activeTool === "select") {
+                const edit = vertexEditRef.current;
+                const vi = activeVertexIndexRef.current;
+
+                const world = getPointerWorldPos(stage);
+                if (!edit || vi === null || !world) return;
+
+                const editedObj = (objectsRef.current as PolyObject[]).find((o) => o.id === edit.objectId);
+
+                const snapped = snapWorldPointAgainstFenceBoundary(
+                    world.x,
+                    world.y,
+                    editedObj?.type ?? null,
+                    objectsRef.current as PolyObject[]
+                );
+
+                const cx = snapped.x;
+                const cy = snapped.y;
+
+                if (edit.holeIndex !== null) {
+                    if (!edit.workingHoles || !edit.workingHoles[edit.holeIndex]) return;
+
+                    const nextHoles = edit.workingHoles.map((hole) => [...hole]);
+                    const nextHole = nextHoles[edit.holeIndex];
+
+                    if (!nextHole) return;
+
+                    nextHole[vi] = cx;
+                    nextHole[vi + 1] = cy;
+                    edit.workingHoles = nextHoles;
+                } else {
+                    const nextPoints = [...edit.workingPoints];
+                    nextPoints[vi] = cx;
+                    nextPoints[vi + 1] = cy;
+                    edit.workingPoints = nextPoints;
+                }
+
+                // ✅ pak de line van het object dat je daadwerkelijk aan het editen bent
+                const line = selectedLineRefs.current[edit.objectId];
+                if (line && edit.holeIndex === null) {
+                    line.points(edit.workingPoints);
+                }
+
+                // ✅ pak de handle van het juiste object
+                const handleIdx = vi / 2;
+                const handleKey =
+                    edit.holeIndex === null ? `${handleIdx}` : `h-${edit.holeIndex}-${handleIdx}`;
+
+                const h = vertexHandleRefs.current[edit.objectId]?.[handleKey];
+                if (h) {
+                    h.position({ x: cx, y: cy });
+                }
+
+                // ✅ Tijdens vertex-drag altijd een throttled React rerender forceren,
+                // zodat ook labels/live afgeleide UI direct meebewegen.
+                requestVertexDragRerender();
+
+                const layer = (line ?? h)?.getLayer?.();
+                if (layer) layer.batchDraw();
+
+                return;
+            }
+
+            if (isBoxSelecting && activeTool === "select") {
+                const start = boxStartRef.current;
+                const world = getPointerWorldPos(stage);
+                if (!start || !world) return;
+
+                const r = normalizeRect(start.x, start.y, world.x, world.y);
+                setSelectionBox(r);
+
+                // ✅ live selection (throttled)
+                pendingBoxRectRef.current = r;
+                if (!boxSelectRafRef.current) {
+                    boxSelectRafRef.current = requestAnimationFrame(commitLiveBoxSelection);
+                }
+
+                return;
+            }
+
+            if (isPanning) {
+                const start = panStartRef.current;
+                const posStart = stagePosStartRef.current;
+                if (!start || !posStart) return;
+
+                const dx = evt.clientX - start.x;
+                const dy = evt.clientY - start.y;
+
+                scheduleViewportState({
+                    pos: {
+                        x: posStart.x + dx,
+                        y: posStart.y + dy,
+                    },
+                });
+                return;
+            }
+
+            if (activeTool === "measure" && measurePointsRef.current.length >= 2 && measurePointsRef.current.length < 4) {
+                const world = getPointerWorldPos(stage);
+                if (!world) return;
+
+                const resolved = resolveDrawPreviewPoint(
+                    world.x,
+                    world.y,
+                    measurePointsRef.current,
+                    evt.shiftKey,
+                    null,
+                    objectsRef.current as PolyObject[],
+                    {
+                        showGuides: false,
+                    }
+                );
+
+                setMeasurePreviewPoint({
+                    x: resolved.x,
+                    y: resolved.y,
+                });
+            }
+
+            if ((activeTool === "draw" || activeTool === "cut") && draftPointsRef.current.length >= 2) {
+                const world = getPointerWorldPos(stage);
+                if (!world) return;
+
+                const resolved = resolveDrawPreviewPoint(
+                    world.x,
+                    world.y,
+                    draftPointsRef.current,
+                    evt.shiftKey,
+                    activeDrawType,
+                    objectsRef.current as PolyObject[],
+                    {
+                        showGuides:
+                            shouldShowDraftGuidesForTool(activeTool) &&
+                            !isFenceOrGate(activeDrawType),
+                    }
+                );
+
+                const previewKey = [
+                    resolved.x,
+                    resolved.y,
+                    evt.shiftKey ? 1 : 0,
+                    resolved.primaryGuidePoints?.join(",") ?? "",
+                    resolved.secondaryGuidePoints?.join(",") ?? "",
+                ].join("|");
+
+                if (activeTool === "draw" && activeDrawType === "treebed" && draftPointsRef.current.length === 2) {
+                    if (previewKey === lastPreviewKeyRef.current) return;
+
+                    lastPreviewKeyRef.current = previewKey;
+                    setDraftMeasurementPreviewPoint(null);
+                    setTreebedDraftPreviewPoint({ x: resolved.x, y: resolved.y });
+                    return;
+                }
+
+                if (previewKey === lastPreviewKeyRef.current) return;
+
+                lastPreviewKeyRef.current = previewKey;
+                pendingPreviewRef.current = resolved;
+
+                if (!previewRafRef.current) {
+                    previewRafRef.current = requestAnimationFrame(commitPreview);
+                }
+            }
+        },
+        [activeTool, isBoxSelecting, isPanning, commitPreview]
+    );
+
+    const handleMouseUp = useCallback(
+        (e: any) => {
+            const evt = e.evt as MouseEvent;
+
+            if (treebedRotateRef.current && evt.button === 0) {
+                finishTreebedRotate();
+                return;
+            }
+
+            // ✅ Plantvak focus alleen bij “echte klik” (geen drag/vertex/boxselect)
+            if (evt.button === 0 && pendingPlantbedClickRef.current) {
+                const pending = pendingPlantbedClickRef.current;
+                pendingPlantbedClickRef.current = null;
+
+                const isRealClick =
+                    !plantbedClickMovedRef.current &&
+                    !suppressPlantbedFocusRef.current &&
+                    activeTool === "select" &&
+                    !isBoxSelecting &&
+                    !isVertexDraggingRef.current;
+
+                plantbedClickMovedRef.current = false;
+
+                if (isRealClick) {
+                    focusSidebarOnPlantbed(pending.id);
+                }
+            }
+            if (evt.button === 0 && clickStartPosRef.current) {
+                const dx = Math.abs(evt.clientX - clickStartPosRef.current.x);
+                const dy = Math.abs(evt.clientY - clickStartPosRef.current.y);
+
+                const moved = dx > 3 || dy > 3;
+
+                // Alleen als er echt bewogen is -> suppress
+                suppressPlantbedFocusRef.current = moved;
+
+                clickStartPosRef.current = null;
+
+                if (!moved) {
+                    // echte klik -> direct vrijgeven
+                    suppressPlantbedFocusRef.current = false;
+                }
+            }
+            if (isEdgeResizingRef.current && evt.button === 0) {
+                const edit = edgeResizeRef.current;
+
+                edgeResizeRef.current = null;
+                isEdgeResizingRef.current = false;
+                setIsEdgeResizing(false);
+
+                if (edit) {
+                    moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
+                }
+
+                requestAnimationFrame(() => {
+                    suppressPlantbedFocusRef.current = false;
+
+                    const st = stageRef.current;
+                    if (st) {
+                        st.container().style.cursor = "default";
+                    }
+                });
+
+                return;
+            }
+
+            if (isVertexDraggingRef.current && evt.button === 0) {
+                const edit = vertexEditRef.current;
+
+                vertexEditRef.current = null;
+                activeVertexIndexRef.current = null;
+
+                isVertexDraggingRef.current = false;
+                setIsVertexDragging(false);
+
+                if (edit) {
+                    moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
+                }
+
+                requestAnimationFrame(() => {
+                    suppressPlantbedFocusRef.current = false;
+                });
+
+                return;
+            }
+
+            if (evt.button === 0 && isBoxSelecting && activeTool === "select") {
+                setIsBoxSelecting(false);
+
+                const box = selectionBox;
+
+                // force last live update (if any) before cleanup
+                if (boxSelectRafRef.current) {
+                    cancelAnimationFrame(boxSelectRafRef.current);
+                    boxSelectRafRef.current = null;
+                }
+
+                if (box && box.w >= 2 && box.h >= 2) {
+                    pendingBoxRectRef.current = box;
+                    commitLiveBoxSelection();
+                }
+
+                // cleanup
+                pendingBoxRectRef.current = null;
+                boxStartRef.current = null;
+                setSelectionBox(null);
+
+                return;
+            }
+
+            if (evt.button === 1 || (activeTool === "hand" && evt.button === 0)) {
+                setIsPanning(false);
+                panStartRef.current = null;
+                stagePosStartRef.current = null;
+
+                const st = stageRef.current;
+                st.container().style.cursor =
+                    activeTool === "hand"
+                        ? "grab"
+                        : activeTool === "select"
+                            ? "default"
+                            : activeTool === "draw" || activeTool === "cut" || activeTool === "measure"
+                                ? "crosshair"
+                                : "default";
+            }
+        },
+        [activeTool, isBoxSelecting, objects, selectionBox, selectObjects, moveObjectAndMerge]
+    );
+
+    // Keyboard
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (mode !== "draw") return;
+
+            if (!e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "v") {
+                setMeasurePoints([]);
+                setMeasurePreviewPoint(null);
+                setMeasureLines([]);
+                setMeasureRedoPoints([]);
+                setMeasureRedoLines([]);
+                setActiveTool("select");
+                setActiveDrawType(null); // ✅ highlight links uit
+                return;
+            }
+            if (!e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "h") {
+                setMeasurePoints([]);
+                setMeasurePreviewPoint(null);
+                setMeasureLines([]);
+                setMeasureRedoPoints([]);
+                setMeasureRedoLines([]);
+                setActiveTool("hand");
+                setActiveDrawType(null); // ✅ highlight links uit
+                return;
+            }
+            if (!e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "c") {
+                clearSelection();
+                setMeasurePoints([]);
+                setMeasurePreviewPoint(null);
+                setMeasureLines([]);
+                setMeasureRedoPoints([]);
+                setMeasureRedoLines([]);
+                setActiveTool("cut");
+                setActiveDrawType(null); // ✅ highlight links uit
+                return;
+            }
+            if (!e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "l") {
+                clearSelection();
+                setDraftPoints([]);
+                setDraftRedoPoints([]);
+                setTreebedDraftPreviewPoint(null);
+                setDraftMeasurementPreviewPoint(null);
+                setMeasurePoints([]);
+                setMeasurePreviewPoint(null);
+                setMeasureLines([]);
+                setMeasureRedoPoints([]);
+                setMeasureRedoLines([]);
+
+                lastPreviewKeyRef.current = "";
+                pendingPreviewRef.current = null;
+                if (draftLineRef.current) draftLineRef.current.points([]);
+                if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                if (layer) layer.batchDraw();
+
+                setActiveTool("measure");
+                setActiveDrawType(null);
+                return;
+            }
+            const key = e.key.toLowerCase();
+            const isUndo = (e.ctrlKey || e.metaKey) && key === "z";
+            const isRedo = (e.ctrlKey || e.metaKey) && key === "y";
+            const isDuplicate = (e.ctrlKey || e.metaKey) && key === "d";
+
+            if (isDuplicate) {
+                e.preventDefault();
+
+                const state = useProjectStore.getState();
+                const hasSelection =
+                    (state.selectedObjectIds && state.selectedObjectIds.length > 0) ||
+                    !!state.selectedObjectId;
+
+                if (!hasSelection) return;
+                if (state.activeTool !== "select") return;
+
+                handleDuplicateSelection();
+                return;
+            }
+
+            const target = e.target as HTMLElement | null;
+            const tagName = target?.tagName?.toLowerCase();
+
+            const isTypingTarget =
+                !!target &&
+                (
+                    tagName === "input" ||
+                    tagName === "textarea" ||
+                    target.isContentEditable
+                );
+
+            if (isTypingTarget) {
+                return;
+            }
+
+            const isDeleteKey = e.key === "Delete" || e.key === "Backspace";
+            if (isDeleteKey) {
+                e.preventDefault();
+                if (!selectedObjectIdRef.current) return;
+
+                useProjectStore.getState().requestDeleteSelected();
+                return;
+            }
+
+            if (!isUndo && !isRedo && e.key === "Enter") {
+                const prev = draftPointsRef.current;
+
+                if (activeTool === "cut") {
+                    if (prev.length < 6) {
+                        notify(APP_NOTIFICATIONS.polygonNeedsAtLeastThreePoints());
+                        return;
+                    }
+
+                    cutObjectsByPolygon(prev);
+
+                    setDraftPoints([]);
+                    setDraftRedoPoints([]);
+
+                    lastPreviewKeyRef.current = "";
+                    pendingPreviewRef.current = null;
+                    if (draftLineRef.current) draftLineRef.current.points([]);
+                    if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                    const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                    if (layer) layer.batchDraw();
+
+                    return;
+                }
+
+                const currentDrawType = activeDrawTypeRef.current;
+                const currentViewVisibility = viewVisibilityRef.current;
+
+                if (!currentDrawType) {
+                    notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
+                    return;
+                }
+
+                const visibilityKey = getViewVisibilityKeyForType(currentDrawType);
+                if (!currentViewVisibility[visibilityKey]) {
+                    const label = getViewVisibilityLabelForType(currentDrawType);
+                    notify(APP_NOTIFICATIONS.drawingBlockedByViewToggle(label));
+                    return;
+                }
+
+                if (currentDrawType === "treebed") {
+                    if (prev.length < 2 || !treebedDraftPreviewPoint) {
+                        notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
+                        return;
+                    }
+
+                    const cx = prev[0];
+                    const cy = prev[1];
+
+                    addObject({
+                        id: nanoid(),
+                        type: currentDrawType,
+                        treebedVariant: activeTreebedDrawVariant,
+                        points: createTreebedPointsFromCenterDrag(
+                            cx,
+                            cy,
+                            treebedDraftPreviewPoint.x,
+                            treebedDraftPreviewPoint.y,
+                            activeTreebedDrawVariant
+                        ),
+                    });
+
+                    setDraftPoints([]);
+                    setDraftRedoPoints([]);
+                    setTreebedDraftPreviewPoint(null);
+
+                    lastPreviewKeyRef.current = "";
+                    pendingPreviewRef.current = null;
+                    if (draftLineRef.current) draftLineRef.current.points([]);
+                    if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                    const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                    if (layer) layer.batchDraw();
+
+                    setActiveTool("select");
+                    setActiveDrawType(null);
+                    return;
+                }
+
+                if (prev.length < 6) {
+                    notify(APP_NOTIFICATIONS.polygonNeedsAtLeastThreePoints());
+                    return;
+                }
+
+                addObject({ id: nanoid(), type: currentDrawType, points: prev });
+
+                setDraftPoints([]);
+                setDraftRedoPoints([]);
+                setTreebedDraftPreviewPoint(null);
+
+                lastPreviewKeyRef.current = "";
+                pendingPreviewRef.current = null;
+                if (draftLineRef.current) draftLineRef.current.points([]);
+                if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                if (layer) layer.batchDraw();
+
+                setActiveTool("select");
+                setActiveDrawType(null);
+                return;
+            }
+
+            if (!isUndo && !isRedo && e.key === "Escape") {
+                setDraftPoints([]);
+                setDraftRedoPoints([]);
+                setTreebedDraftPreviewPoint(null);
+                setDraftMeasurementPreviewPoint(null);
+                setMeasurePoints([]);
+                setMeasurePreviewPoint(null);
+                setMeasureLines([]);
+                setMeasureRedoPoints([]);
+                setMeasureRedoLines([]);
+
+                lastPreviewKeyRef.current = "";
+                pendingPreviewRef.current = null;
+                if (draftLineRef.current) draftLineRef.current.points([]);
+                if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                if (layer) layer.batchDraw();
+
+                setActiveTool("select");
+                setActiveDrawType(null);
+                return;
+            }
+
+            if (!isUndo && !isRedo) return;
+            e.preventDefault();
+
+            if (isUndo) handleUndo();
+            if (isRedo) handleRedo();
+        };
+
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [mode, activeTool, setActiveTool, handleUndo, handleRedo, deleteSelected, activeDrawType, addObject, cutObjectsByPolygon, setActiveDrawType, notify, handleDuplicateSelection, clearSelection]);
+
+    const handleRotateCanvasClockwise = useCallback(() => {
+        const currentObjects = useProjectStore.getState().objects as PolyObject[];
+        if (currentObjects.length === 0) return;
+
+        const worldBounds = getObjectsBoundingBox(currentObjects);
+        if (!worldBounds) return;
+
+        const centerX = worldBounds.x + worldBounds.w / 2;
+        const centerY = worldBounds.y + worldBounds.h / 2;
+
+        const nextObjects = currentObjects.map((obj) =>
+            rotateObjectQuarterTurnClockwise(obj, centerX, centerY, GRID_SIZE)
+        );
+
+        const nextSelectedIds =
+            selectedObjectIds.length > 0
+                ? selectedObjectIds
+                : selectedObjectId
+                    ? [selectedObjectId]
+                    : [];
+
+        setDraftPoints([]);
+        setDraftRedoPoints([]);
+        setTreebedDraftPreviewPoint(null);
+        setDraftMeasurementPreviewPoint(null);
+        setTreebedResizePreview(null);
+        setTreebedRotatePreview(null);
+
+        pendingPreviewRef.current = null;
+        lastPreviewKeyRef.current = "";
+
+        if (draftLineRef.current) draftLineRef.current.points([]);
+        if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+        if (draftGuideLineRef.current) draftGuideLineRef.current.points([]);
+        if (draftSecondaryGuideLineRef.current) draftSecondaryGuideLineRef.current.points([]);
+
+        const draftLayer =
+            draftLineRef.current?.getLayer?.() ??
+            draftPreviewLineRef.current?.getLayer?.() ??
+            draftGuideLineRef.current?.getLayer?.() ??
+            draftSecondaryGuideLineRef.current?.getLayer?.();
+
+        if (draftLayer) {
+            draftLayer.batchDraw();
+        }
+
+        setObjectsWithHistory(nextObjects, nextSelectedIds[0] ?? null);
+
+        if (nextSelectedIds.length > 0) {
+            selectObjects(nextSelectedIds);
+        } else {
+            clearSelection();
+        }
+
+        setCompassDirection((prev) => {
+            const currentIndex = COMPASS_DIRECTIONS.indexOf(prev);
+            const nextIndex = (currentIndex + 1) % COMPASS_DIRECTIONS.length;
+            return COMPASS_DIRECTIONS[nextIndex];
+        });
+    }, [
+        selectedObjectId,
+        selectedObjectIds,
+        setObjectsWithHistory,
+        selectObjects,
+        clearSelection,
+        setDraftPoints,
+        setDraftRedoPoints,
+        setTreebedDraftPreviewPoint,
+        setDraftMeasurementPreviewPoint,
+        setTreebedResizePreview,
+        setTreebedRotatePreview,
+    ]);
+
+    const handleResetView = useCallback(() => {
+        handleCenterCanvas();
+    }, [handleCenterCanvas]);
+
+    const shouldHideHeavySceneDecorations =
+        treebedRotatePreview !== null ||
+        isVertexDragging ||
+        isEdgeResizing;
+
+    const shouldHideAreaLabelsDuringInteraction =
+        treebedRotatePreview !== null ||
+        isVertexDragging ||
+        isEdgeResizing;
+
+    const shouldHideSelectionLabelsForPerformance =
+        isVertexDragging ||
+        isEdgeResizing ||
+        liveSelectionDragDelta !== null ||
+        isPanning ||
+        isBoxSelecting;
+
+    const sceneObjectBuckets = useMemo(() => {
+        const selectedSet = new Set<string>(selectedObjectIds);
+
+        const zSort = (a: PolyObject, b: PolyObject) =>
+            TYPE_Z_INDEX[a.type] - TYPE_Z_INDEX[b.type];
+
+        const visibleObjects = (objects as PolyObject[]).filter((o) => {
+            const key = getViewVisibilityKeyForType(o.type);
+            return viewVisibility[key];
+        });
+
+        const selected = visibleObjects
+            .filter((o) => selectedSet.has(o.id))
+            .sort(zSort);
+
+        const unselected = visibleObjects
+            .filter((o) => !selectedSet.has(o.id))
+            .sort(zSort);
+
+        const unselectedPlantbeds = unselected.filter((o) => o.type === "plantbed");
+        const unselectedNonPlantbeds = unselected.filter((o) => o.type !== "plantbed");
+
+        return {
+            visibleObjects,
+            selected,
+            unselected,
+            unselectedPlantbeds,
+            unselectedNonPlantbeds,
+        };
+    }, [objects, selectedObjectIds, viewVisibility]);
+
+    return (
+        <div className="h-screen w-screen overflow-hidden" style={{ background: COLORS.greenLight }}>
+            {fenceHint && (
+                <div
+                    className="fixed z-[120]"
+                    style={{
+                        top: HEADER_HEIGHT + HINT_MARGIN,
+                        left: LEFT_MENU_WIDTH + HINT_MARGIN,
+                        opacity: fenceHintVisible ? 1 : 0,
+                        transition: `opacity ${NOTICE_FADE_MS}ms ease`,
+                        pointerEvents: "auto",
+                    }}
+                >
+                    <div
+                        style={{
+                            background: COLORS.green,
+                            color: "#ffffff",
+                            borderRadius: 6,
+                            display: "flex",
+                            alignItems: "stretch",
+                            overflow: "hidden",
+                            fontSize: 14,
+                            boxShadow: "0px 2px 6px rgba(0,0,0,0.15)",
+                        }}
+                    >
+                        <div
+                            style={{
+                                padding: "10px 18px",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 10,
+                            }}
+                        >
+                            <img
+                                src="/icons/info.svg"
+                                alt=""
+                                style={{
+                                    width: 16,
+                                    height: 16,
+                                    filter: "brightness(0) invert(1)",
+                                }}
+                            />
+                            <span>{fenceHint.msg}</span>
+                        </div>
+
+                        {fenceHint.dismissible && (
+                            <>
+                                <div
+                                    style={{
+                                        width: 1,
+                                        background: "rgba(255,255,255,0.18)",
+                                    }}
+                                />
+
+                                <button
+                                    type="button"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        dismissFenceHintForever();
+                                    }}
+                                    style={{
+                                        border: "none",
+                                        background: "transparent",
+                                        color: "#ffffff",
+                                        cursor: "pointer",
+                                        fontSize: 16,
+                                        lineHeight: 1,
+                                        width: 36,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                    }}
+                                    aria-label="Sluiten"
+                                >
+                                    ×
+                                </button>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+            {confirmModal && (() => {
+                // ---------- CHANGE TYPE (plantbed -> ander type met gekoppelde planten) ----------
+                if (confirmModal.kind === "change-plantbed-type") {
+                    const plantbedNo = confirmModal.plantbedNo ?? "[nr]";
+                    const plantIds = confirmModal.plantIds ?? [];
+                    const nextType = confirmModal.nextType;
+
+                    const items = plantIds
+                        .map((pid: string) => {
+                            const p = getPlantById(pid);
+                            if (!p) return null;
+                            return {
+                                id: p.id,
+                                nr: p.nr,
+                                title: p.latin,
+                                subtitle: p.dutch,
+                            };
+                        })
+                        .filter(Boolean) as { id: string; nr?: number | string; title: string; subtitle?: string }[];
+
+                    const count = items.length;
+                    const toLabel = TYPE_LABELS[nextType] ?? nextType;
+
+                    const description =
+                        count === 1 ? (
+                            <>
+                                Aan dit plantvak is <strong>1 plant gekoppeld</strong>.<br />
+                                Als u het type wijzigt naar <strong>{toLabel}</strong>, wordt deze koppeling verwijderd.
+                            </>
+                        ) : (
+                            <>
+                                Aan dit plantvak zijn <strong>{count} planten gekoppeld</strong>.<br />
+                                Als u het type wijzigt naar <strong>{toLabel}</strong>, worden deze koppelingen verwijderd.
+                            </>
+                        );
+
+                    return (
+                        <ConfirmModal
+                            open={true}
+                            title={`Plantvak ${plantbedNo} wijzigen naar ${toLabel}?`}
+                            description={description}
+                            items={items}
+                            maxPreviewItems={3}
+                            moreLabel={(n) => `+ ${n} andere`}
+                            lessLabel="Minder weergeven"
+                            cancelText="Nee, behouden"
+                            confirmText="Ja, wijzigen"
+                            onCancel={closeConfirmModal}
+                            onConfirm={() => {
+                                confirmModalPrimaryAction();
+                                closeConfirmModal(); // ✅ veilig: als store 'm al cleared is dit een noop
+                                notify({
+                                    kind: "success",
+                                    placement: "bottom-center",
+                                    message: `Plantvak ${plantbedNo} gewijzigd naar '${toLabel}'`,
+                                });
+                            }}
+                        />
+                    );
+                }
+
+                // ---------- SINGLE ----------
+                if (confirmModal.kind === "delete-plantbed") {
+                    const plantbedNo = confirmModal.plantbedNo ?? "[nr]";
+                    const plantIds = confirmModal.plantIds ?? [];
+
+                    const items = plantIds
+                        .map((pid: string) => {
+                            const p = getPlantById(pid);
+                            if (!p) return null;
+                            return {
+                                id: p.id,
+                                nr: p.nr,
+                                title: p.latin,
+                                subtitle: p.dutch,
+                            };
+                        })
+                        .filter(Boolean) as { id: string; nr?: number | string; title: string; subtitle?: string }[];
+
+                    const count = items.length;
+
+                    const description =
+                        count === 1 ? (
+                            <>
+                                Aan dit plantvak is <strong>1 plant gekoppeld</strong>.<br />
+                                Als u dit plantvak verwijdert, wordt deze koppeling ook verwijderd.
+                            </>
+                        ) : (
+                            <>
+                                Aan dit plantvak zijn <strong>{count} planten gekoppeld</strong>.<br />
+                                Als u dit plantvak verwijdert, worden deze koppelingen ook verwijderd.
+                            </>
+                        );
+
+                    return (
+                        <ConfirmModal
+                            open={true}
+                            title={`Plantvak ${plantbedNo} verwijderen?`}
+                            description={description}
+                            items={items}
+                            maxPreviewItems={3}
+                            moreLabel={(n) => `+ ${n} andere`}
+                            lessLabel="Minder weergeven"
+                            cancelText="Nee, behouden"
+                            confirmText="Ja, verwijderen"
+                            onCancel={closeConfirmModal}
+                            onConfirm={() => {
+                                confirmModalPrimaryAction();
+                                closeConfirmModal(); // ✅ popup sluiten
+                                notify({
+                                    kind: "success",
+                                    placement: "bottom-center",
+                                    message: `Plantvak ${plantbedNo} verwijderd`,
+                                });
+
+                            }}
+                        />
+                    );
+                }
+
+                // ---------- MULTI ----------
+                if (confirmModal.kind === "delete-plantbeds") {
+                    const modalItems: DeletePlantbedsModalItem[] = confirmModal.items ?? [];
+                    const linkedPlantbedCount = modalItems.length;
+                    const totalSelected = confirmModal.totalSelected ?? linkedPlantbedCount;
+
+                    const description =
+                        linkedPlantbedCount === 1 ? (
+                            <>
+                                U staat op het punt <strong>{totalSelected} objecten</strong> te verwijderen.<br />
+                                In <strong>1</strong> plantvak zitten gekoppelde planten. Deze koppelingen worden ook verwijderd.
+                            </>
+                        ) : (
+                            <>
+                                U staat op het punt <strong>{totalSelected} objecten</strong> te verwijderen.<br />
+                                In <strong>{linkedPlantbedCount}</strong> plantvakken zitten gekoppelde planten. Deze koppelingen worden ook verwijderd.
+                            </>
+                        );
+
+                    const items = modalItems.map((it) => ({
+                        id: it.plantbedId,
+                        nr: it.plantbedNo ?? "?",
+                        title: `Plantvak ${it.plantbedNo ?? "?"}`,
+                        subtitle: `${it.linkedCount} gekoppelde planten`,
+                    }));
+
+                    return (
+                        <ConfirmModal
+                            open={true}
+                            title={`Meerdere plantvakken verwijderen?`}
+                            description={description}
+                            items={items}
+                            maxPreviewItems={3}
+                            moreLabel={(n) => `+ ${n} andere`}
+                            lessLabel="Minder weergeven"
+                            cancelText="Nee, behouden"
+                            confirmText="Ja, verwijderen"
+                            onCancel={closeConfirmModal}
+                            onConfirm={() => {
+                                const removedNos = modalItems
+                                    .map((x) => x.plantbedNo)
+                                    .filter((n): n is number => typeof n === "number");
+
+                                confirmModalPrimaryAction();
+                                closeConfirmModal(); // ✅ popup sluiten
+
+                                if (removedNos.length === 1) {
+                                    notify({
+                                        kind: "success",
+                                        placement: "bottom-center",
+                                        message: `Plantvak ${removedNos[0]} verwijderd`,
+                                    });
+
+                                } else if (removedNos.length > 1) {
+                                    notify({
+                                        kind: "success",
+                                        placement: "bottom-center",
+                                        message: `Plantvakken met gekoppelde planten verwijderd (${removedNos.join(", ")})`,
+                                    });
+
+                                } else {
+                                    notify({
+                                        kind: "success",
+                                        placement: "bottom-center",
+                                        message: `Plantvakken verwijderd`,
+                                    });
+
+                                }
+                            }}
+                        />
+                    );
+                }
+
+                return null;
+            })()}
+            <DrawingsDashboardModal
+                isOpen={isDrawingsDashboardOpen}
+                drawings={editorDrawings.map((drawing: PersistedDrawingDocument) => {
+                    const linkedPlantIds = new Set<string>();
+
+                    Object.values(drawing.snapshot.plantbedLinks ?? {}).forEach((plantIds) => {
+                        (plantIds ?? []).forEach((plantId) => linkedPlantIds.add(plantId));
+                    });
+
+                    return {
+                        id: drawing.id,
+                        name: drawing.name,
+                        linkedPlantCount: linkedPlantIds.size,
+                        totalPlantCount: plants.length,
+                        createdAtLabel: getRelativeUpdatedAtLabel(drawing.updatedAt),
+                        previewObjects: drawing.snapshot.objects ?? [],
+                    };
+                })}
+                activeDrawingId={activeDrawingId}
+                onClose={handleCloseDrawingsDashboard}
+                showCloseButton={activeDrawingId !== null}
+                onOpenCreate={() => handleOpenCreateDrawingModal("dashboard")}
+                onOpenDrawing={handleOpenDrawingFromDashboard}
+                onCreateDrawing={handleCreateDrawingFromDashboard}
+                onDuplicateDrawing={handleDuplicateDrawingFromDashboard}
+                onDeleteDrawing={handleDeleteDrawingFromDashboard}
+                onRenameDrawing={handleRenameDrawingFromDashboard}
+            />
+
+            <CreateDrawingModal
+                isOpen={isCreateDrawingOpen}
+                onClose={() => {
+                    setIsCreateDrawingOpen(false);
+                    setIsDrawingsDashboardOpen(createDrawingOpenSource === "dashboard");
+                    setIsFileMenuOpen(false);
+                }}
+                onSubmit={handleCreateDrawingFromDashboard}
+                drawings={editorDrawings.map((drawing: PersistedDrawingDocument) => ({ name: drawing.name }))}
+            />
+
+            <AppNotificationsRenderer topLeftLeftOffset={topLeftNoticeLeft} />
+
+            <div className="w-full relative z-50" style={{ height: HEADER_HEIGHT, background: COLORS.green }}>
+                <FileMenuDropdown
+                    isOpen={isFileMenuOpen}
+                    onToggle={() => setIsFileMenuOpen((prev) => !prev)}
+                    onClose={() => setIsFileMenuOpen(false)}
+                    drawingName={activeDrawing?.name ?? "Nieuwe tekening"}
+                    createdAtLabel={getCurrentDateTimeLabel(activeDrawing?.createdAt ?? null)}
+                    createdByLabel="[account naam]"
+                    onDrawingNameChange={(nextName) => {
+                        if (!activeDrawingId) return false;
+
+                        const duplicateExists = editorDrawings.some(
+                            (drawing) =>
+                                drawing.id !== activeDrawingId &&
+                                drawing.name.trim().toLowerCase() === nextName.trim().toLowerCase()
+                        );
+
+                        if (duplicateExists) {
+                            return false;
+                        }
+
+                        setEditorDrawings((prev) =>
+                            prev.map((drawing) =>
+                                drawing.id === activeDrawingId
+                                    ? {
+                                        ...drawing,
+                                        name: nextName,
+                                        updatedAt: new Date().toISOString(),
+                                    }
+                                    : drawing
+                            )
+                        );
+
+                        return true;
+                    }}
+                    onNew={() => handleOpenCreateDrawingModal("editor")}
+                    onOpen={handleOpenDrawingsDashboard}
+                    onSave={handleManualSaveActiveDrawing}
+                />
+                <div
+                    style={{
+                        position: "absolute",
+                        left: "50%",
+                        top: "50%",
+                        transform: "translate(-50%, -50%)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        color: "#ffffff",
+                        pointerEvents: "none"
+                    }}
+                >
+                    <span
+                        style={{
+                            fontWeight: 600,
+                            fontSize: 16
+                        }}
+                    >
+                        [Projectnaam]
+                    </span>
+
+                    <span
+                        style={{
+                            fontSize: 14,
+                            opacity: 0.85
+                        }}
+                    >
+                        · {activeDrawing?.name ?? "Nieuwe tekening"}
+                    </span>
+                </div>
+
+                <div
+                    style={{
+                        position: "absolute",
+                        right: 16,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        color: "#ffffff",
+                        fontSize: 12,
+                        opacity: 0.9,
+                        pointerEvents: "none",
+                    }}
+                >
+                    {saveStatusLabel}
+                </div>
+            </div>
+
+
+            <div className="flex w-full" style={{ height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
+                <div ref={leftMenuShellRef} className="relative z-40">
+                    <LeftObjectsMenu
+                        activeDrawType={activeDrawType}
+                        activeTreebedVariant={activeTreebedDrawVariant}
+                        onPickDrawType={(t) => {
+                            clearSelection();
+                            setIsBoxSelecting(false);
+                            setSelectionBox(null);
+
+                            setActiveDrawType(t);
+                            setActiveTool("draw");
+
+                            setDraftPoints([]);
+                            setDraftRedoPoints([]);
+                            setTreebedDraftPreviewPoint(null);
+                            setMeasurePoints([]);
+                            setMeasurePreviewPoint(null);
+                            setMeasureLines([]);
+
+                            lastPreviewKeyRef.current = "";
+                            pendingPreviewRef.current = null;
+                            if (draftLineRef.current) draftLineRef.current.points([]);
+                            if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                            const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                            if (layer) layer.batchDraw();
+                        }}
+                        onPickTreebedVariant={(variant) => {
+                            clearSelection();
+                            setIsBoxSelecting(false);
+                            setSelectionBox(null);
+
+                            setActiveTreebedDrawVariant(variant);
+                            setActiveDrawType("treebed");
+                            setActiveTool("draw");
+
+                            setDraftPoints([]);
+                            setDraftRedoPoints([]);
+                            setTreebedDraftPreviewPoint(null);
+                            setMeasurePoints([]);
+                            setMeasurePreviewPoint(null);
+                            setMeasureLines([]);
+
+                            lastPreviewKeyRef.current = "";
+                            pendingPreviewRef.current = null;
+                            if (draftLineRef.current) draftLineRef.current.points([]);
+                            if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                            const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                            if (layer) layer.batchDraw();
+                        }}
+                    />
+                </div>
+
+                <div className="relative flex-1 min-w-0">
+                    <div className="fixed left-1/2 z-50 -translate-x-1/2 flex flex-col items-center gap-2" style={{ top: HEADER_HEIGHT + TOOLBAR_OFFSET }}>
+                        <EditorToolbar
+                            activeTool={activeTool}
+                            onSelectTool={(tool) => {
+                                setActiveTool(tool);
+
+                                if (tool === "cut" || tool === "measure") {
+                                    clearSelection();
+                                }
+
+                                if (tool !== "draw") {
+                                    setActiveDrawType(null);
+                                }
+
+                                if (tool !== "measure") {
+                                    setMeasurePoints([]);
+                                    setMeasurePreviewPoint(null);
+                                    setMeasureLines([]);
+                                    setMeasureRedoPoints([]);
+                                    setMeasureRedoLines([]);
+                                } else {
+                                    setDraftPoints([]);
+                                    setDraftRedoPoints([]);
+                                    setTreebedDraftPreviewPoint(null);
+                                    setDraftMeasurementPreviewPoint(null);
+                                    setMeasurePoints([]);
+                                    setMeasurePreviewPoint(null);
+                                    setMeasureLines([]);
+                                    setMeasureRedoPoints([]);
+                                    setMeasureRedoLines([]);
+
+                                    lastPreviewKeyRef.current = "";
+                                    pendingPreviewRef.current = null;
+                                    if (draftLineRef.current) draftLineRef.current.points([]);
+                                    if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                                    const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                                    if (layer) layer.batchDraw();
+                                }
+                            }}
+                            onUndo={handleUndo}
+                            onRedo={handleRedo}
+                            onZoomIn={() => {
+                                const stage = stageRef.current;
+                                const pointer = stage?.getPointerPosition();
+                                const oldScale = stageScaleRef.current;
+                                const step = 0.1 * BASE_SCALE;
+                                const clamped = clamp(Math.round((oldScale + step) * 1000) / 1000, 0.2, 4);
+
+                                if (!pointer) {
+                                    scheduleViewportState({ scale: clamped });
+                                    return;
+                                }
+
+                                const oldPos = stagePosRef.current;
+                                const mousePointTo = {
+                                    x: (pointer.x - oldPos.x) / oldScale,
+                                    y: (pointer.y - oldPos.y) / oldScale,
+                                };
+
+                                scheduleViewportState({
+                                    scale: clamped,
+                                    pos: {
+                                        x: pointer.x - mousePointTo.x * clamped,
+                                        y: pointer.y - mousePointTo.y * clamped,
+                                    },
+                                });
+                            }}
+                            onZoomOut={() => {
+                                const stage = stageRef.current;
+                                const pointer = stage?.getPointerPosition();
+                                const oldScale = stageScaleRef.current;
+                                const step = 0.1 * BASE_SCALE;
+                                const clamped = clamp(Math.round((oldScale - step) * 1000) / 1000, 0.2, 4);
+
+                                if (!pointer) {
+                                    scheduleViewportState({ scale: clamped });
+                                    return;
+                                }
+
+                                const oldPos = stagePosRef.current;
+                                const mousePointTo = {
+                                    x: (pointer.x - oldPos.x) / oldScale,
+                                    y: (pointer.y - oldPos.y) / oldScale,
+                                };
+
+                                scheduleViewportState({
+                                    scale: clamped,
+                                    pos: {
+                                        x: pointer.x - mousePointTo.x * clamped,
+                                        y: pointer.y - mousePointTo.y * clamped,
+                                    },
+                                });
+                            }}
+                            onResetZoom={handleResetView}
+                            zoomPercent={Math.round((stageScale / BASE_SCALE) * 100)}
+                            onDelete={() => {
+                                if (!selectedObjectId) return;
+                                useProjectStore.getState().requestDeleteSelected();
+                            }}
+                            canDelete={Boolean(selectedObjectId)}
+                        />
+                    </div>
+
+                    <div className="relative z-40">
+                        <PlantSidebar />
+                    </div>
+
+                    <CanvasScaleSummary
+                        leftOffset={topLeftNoticeLeft}
+                        bottomOffset={18}
+                        stageScale={stageScale}
+                        gridSize={GRID_SIZE}
+                        objects={objects}
+                        selectedObjectId={selectedObjectId}
+                        selectedObjectIds={selectedObjectIds}
+                        compassAssetName={`compass-${compassDirection}.svg`}
+                        onCompassClick={handleRotateCanvasClockwise}
+                    />
+
+                    <div
+                        ref={canvasWrapRef}
+                        className="h-full w-full relative z-0 overflow-hidden"
+                        style={{ background: COLORS.greenLight }}
+                    >
+                        <Stage
+                            ref={stageRef}
+                            width={canvasSize.w}
+                            height={canvasSize.h}
+                            scaleX={stageScale}
+                            scaleY={stageScale}
+                            x={stagePos.x}
+                            y={stagePos.y}
+                            onWheel={handleWheel}
+                            onMouseDown={handleMouseDown}
+                            onMouseMove={handleMouseMove}
+                            onMouseUp={handleMouseUp}
+                            onMouseEnter={(e) => {
+                                const evt = e.evt as MouseEvent;
+                                lastPointerClientPosRef.current = {
+                                    x: evt.clientX,
+                                    y: evt.clientY,
+                                };
+
+                                if (!shouldShowCursorCrosshair) return;
+
+                                const stage = stageRef.current;
+                                if (!stage) return;
+
+                                updateCursorCrosshairFromStage(
+                                    stage,
+                                    activeTool === "draw" ? activeDrawTypeRef.current : null
+                                );
+                            }}
+                            onMouseLeave={() => {
+                                clearCursorCrosshair();
+                            }}
+                            onDblClick={(e) => {
+                                // ✅ Alleen fence/gate sluiten met echte dubbelklik
+                                if (activeTool !== "draw") return;
+                                if (!activeDrawType) return;
+                                if (!isFenceOrGate(activeDrawType)) return;
+
+                                // ✅ Native dblclick van browser/Konva is te ruim.
+                                // Daarom alleen afronden als onze eigen click-delta kort genoeg was.
+                                if (lastDrawClickDeltaRef.current > FENCE_GATE_DBLCLICK_MS) {
+                                    return;
+                                }
+
+                                const currentDrawType = activeDrawTypeRef.current;
+                                const currentViewVisibility = viewVisibilityRef.current;
+
+                                if (!currentDrawType) {
+                                    notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
+                                    return;
+                                }
+
+                                const visibilityKey = getViewVisibilityKeyForType(currentDrawType);
+                                if (!currentViewVisibility[visibilityKey]) {
+                                    const label = getViewVisibilityLabelForType(currentDrawType);
+                                    notify(APP_NOTIFICATIONS.drawingBlockedByViewToggle(label));
+                                    return;
+                                }
+
+                                lastDblClickAtRef.current = performance.now();
+
+                                e.cancelBubble = true;
+
+                                const pts = draftPointsRef.current;
+
+                                // minimaal 2 punten (1 segment) om überhaupt iets te kunnen sluiten
+                                if (pts.length < 4) return;
+
+                                // ==============================
+                                // ✅ MERGE op endpoints (fence/gate)
+                                // ==============================
+                                const state = useProjectStore.getState();
+                                const all = (state.objects ?? []) as PolyObject[];
+
+                                const type = activeDrawType as "fence" | "gate";
+
+                                const sameType = all.filter((o) => o.type === type);
+                                const other = all.filter((o) => o.type !== type);
+
+                                const { mergedPoints, removeIds } = mergeFenceOrGateEndpoints(type, pts, sameType);
+
+                                // verwijder gemergde fences + voeg 1 nieuwe toe
+                                const remainingSameType = sameType.filter((o) => !removeIds.includes(o.id));
+                                const mergedObj: PolyObject = {
+                                    id: nanoid(),
+                                    type,
+                                    points: mergedPoints,
+                                } as any;
+
+                                useProjectStore
+                                    .getState()
+                                    .setObjectsWithHistory([...other, ...remainingSameType, mergedObj], mergedObj.id);
+
+                                // reset draft
+                                setDraftPoints([]);
+                                setDraftRedoPoints([]);
+
+                                lastPreviewKeyRef.current = "";
+                                pendingPreviewRef.current = null;
+
+                                if (draftLineRef.current) draftLineRef.current.points([]);
+                                if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                                const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                                if (layer) layer.batchDraw();
+
+                                setActiveTool("select");
+                                setActiveDrawType(null);
+                            }}
+                            style={{
+                                cursor: isPanning
+                                    ? "grabbing"
+                                    : activeTool === "hand"
+                                        ? "grab"
+                                        : activeTool === "select"
+                                            ? "default"
+                                            : activeTool === "draw" || activeTool === "cut" || activeTool === "measure"
+                                                ? "crosshair"
+                                                : mode === "draw"
+                                                    ? "crosshair"
+                                                    : "default",
+                                overflow: "hidden",
+                            }}
+                        >
+
+                            {(() => {
+                                const {
+                                    visibleObjects,
+                                    selected,
+                                    unselected,
+                                    unselectedPlantbeds,
+                                    unselectedNonPlantbeds,
+                                } = sceneObjectBuckets;
+
+                                return (
+                                    <>
+                                        <FastLayer listening={false}>
+                                            <GridShape
+                                                canvasW={canvasSize.w}
+                                                canvasH={canvasSize.h}
+                                                stageScale={stageScale}
+                                                stagePos={stagePos}
+                                                gridSize={GRID_SIZE}
+                                            />
+                                        </FastLayer>
+
+                                        {/* =============== BASE FILL LAYER =============== */}
+                                        <BaseFillLayer
+                                            unselectedNonPlantbeds={unselectedNonPlantbeds}
+                                            unselectedPlantbeds={unselectedPlantbeds}
+                                            objects={objects as PolyObject[]}
+                                            stageRef={stageRef}
+                                            activeTool={activeTool}
+                                            isPanning={isPanning}
+                                            stageScale={stageScale}
+                                            viewVisibility={viewVisibility}
+                                            plantbedNumberLayouts={plantbedNumberLayouts}
+                                            pendingPlantbedClickRef={pendingPlantbedClickRef}
+                                            plantbedClickMovedRef={plantbedClickMovedRef}
+                                            handleObjectSelection={handleObjectSelection}
+                                            getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
+                                            inferPolylineRenderSide={inferPolylineRenderSide}
+                                        />
+
+                                        {/* =============== BASE STROKE LAYER =============== */}
+                                        <BaseStrokeLayer
+                                            unselectedNonPlantbeds={unselectedNonPlantbeds}
+                                            unselectedPlantbeds={unselectedPlantbeds}
+                                            objects={objects as PolyObject[]}
+                                            dragOverPlantbedId={dragOverPlantbedId}
+                                            getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
+                                            inferPolylineRenderSide={inferPolylineRenderSide}
+                                            getPlantbedOutlineSegments={getPlantbedOutlineSegments}
+                                        />
+
+                                        {!shouldHideAreaLabelsDuringInteraction && (
+                                            <Layer listening={false}>
+                                                <MeasurementOverlay
+                                                    unselectedObjects={unselected}
+                                                    selectedObjects={[]}
+                                                    selectedObjectId={null}
+                                                    stageScale={stageScale}
+                                                    activeTool={"select"}
+                                                    activeDrawType={activeDrawType}
+                                                    draftPoints={[]}
+                                                    draftMeasurementPoints={[]}
+                                                    primaryMeasurementObject={null}
+                                                    plantbedNumberLayouts={plantbedNumberLayouts}
+                                                    showSelectedDimensions={false}
+                                                />
+                                            </Layer>
+                                        )}
+
+                                        {/* =============== TOP LAYER (treebeds + selection + draft) =============== */}
+                                        <EditorTopLayer
+                                            unselectedNonPlantbeds={unselectedNonPlantbeds}
+                                            dragOverPlantbedId={dragOverPlantbedId}
+                                            objects={objects}
+                                            selected={selected}
+                                            selectedObjectId={selectedObjectId}
+                                            activeTool={activeTool}
+                                            activeDrawType={activeDrawType}
+                                            draftPoints={draftPoints}
+                                            draftMeasurementPreviewPoint={draftMeasurementPreviewPoint}
+                                            measurePoints={measurePoints}
+                                            measurePreviewPoint={measurePreviewPoint}
+                                            measureLines={measureLines}
+                                            shouldHideHeavySceneDecorations={shouldHideHeavySceneDecorations}
+                                            stageScale={stageScale}
+                                            plantbedNumberLayouts={plantbedNumberLayouts}
+                                            livePlantbedNumberLayouts={livePlantbedNumberLayouts}
+                                            livePrimaryMeasurementObject={livePrimaryMeasurementObject}
+                                            shouldShowCursorCrosshair={shouldShowCursorCrosshair}
+                                            cursorCrosshairPoint={cursorCrosshairPoint}
+                                            stagePos={stagePos}
+                                            canvasSize={canvasSize}
+                                            COLORS={COLORS}
+
+                                            stageRef={stageRef}
+                                            isPanning={isPanning}
+                                            handleObjectSelection={handleObjectSelection}
+                                            selectedObjectIds={selectedObjectIds}
+                                            selectObjects={selectObjects}
+                                            moveObjectAndMerge={moveObjectAndMerge}
+                                            moveObjectsBatch={moveObjectsBatch}
+                                            setLiveSelectionDragDelta={setLiveSelectionDragDelta}
+                                            isVertexDragging={isVertexDragging}
+                                            isEdgeResizing={isEdgeResizing}
+                                            setIsEdgeResizing={setIsEdgeResizing}
+                                            setIsVertexDragging={setIsVertexDragging}
+                                            isBoxSelecting={isBoxSelecting}
+                                            shouldHideSelectionLabelsForPerformance={shouldHideSelectionLabelsForPerformance}
+                                            viewVisibility={viewVisibility}
+
+                                            treebedRotatePreview={treebedRotatePreview}
+                                            treebedResizePreview={treebedResizePreview}
+                                            startMiddleMousePan={startMiddleMousePan}
+                                            suppressPlantbedFocusRef={suppressPlantbedFocusRef}
+                                            GRID_SIZE={GRID_SIZE}
+                                            isEdgeResizingRef={isEdgeResizingRef}
+                                            isResizeEdgeHoveredRef={isResizeEdgeHoveredRef}
+                                            isTreebedResizeHandleHoveredRef={isTreebedResizeHandleHoveredRef}
+                                            isTreebedRotateHotspotHoveredRef={isTreebedRotateHotspotHoveredRef}
+                                            treebedRotateRef={treebedRotateRef}
+                                            treebedResizeRef={treebedResizeRef}
+                                            treebedRotateCursorRef={treebedRotateCursorRef}
+                                            isVertexDraggingRef={isVertexDraggingRef}
+                                            activeVertexIndexRef={activeVertexIndexRef}
+                                            selectedLineRefs={selectedLineRefs}
+                                            vertexHandleRefs={vertexHandleRefs}
+                                            vertexEditRef={vertexEditRef}
+                                            edgeResizeRef={edgeResizeRef}
+                                            pendingPlantbedClickRef={pendingPlantbedClickRef}
+                                            plantbedClickMovedRef={plantbedClickMovedRef}
+                                            startTreebedRotate={startTreebedRotate}
+                                            startTreebedResize={startTreebedResize}
+                                            notify={notify}
+                                            BASE_SCALE={BASE_SCALE}
+                                            getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
+                                            inferPolylineRenderSide={inferPolylineRenderSide}
+                                            getPolylineRenderPieces={getPolylineRenderPieces}
+                                            renderTilesPattern={renderTilesPattern}
+                                            treebedLabelBlockers={treebedLabelBlockers}
+                                            getPlantbedNumberLayout={getPlantbedNumberLayout}
+                                            getPlantbedLinkedCount={getPlantbedLinkedCount}
+                                            handleDuplicateSelection={handleDuplicateSelection}
+                                            requestChangeObjectType={requestChangeObjectType}
+                                            changeTreebedVariant={changeTreebedVariant}
+                                            useProjectStore={useProjectStore}
+                                            activeTreebedDrawVariant={activeTreebedDrawVariant}
+                                            treebedDraftPreviewPoint={treebedDraftPreviewPoint}
+                                            createTreebedPointsFromCenterDrag={createTreebedPointsFromCenterDrag}
+                                            draftGuideLineRef={draftGuideLineRef}
+                                            draftSecondaryGuideLineRef={draftSecondaryGuideLineRef}
+                                            draftPreviewLineRef={draftPreviewLineRef}
+                                            applyViewportWheel={applyViewportWheel}
+                                        />
+                                        <Layer listening={false}>
+                                            {selectionBox && (
+                                                <Rect
+                                                    x={selectionBox.x}
+                                                    y={selectionBox.y}
+                                                    width={selectionBox.w}
+                                                    height={selectionBox.h}
+                                                    stroke={COLORS.orange}
+                                                    strokeWidth={1}
+                                                    dash={[6, 4]}
+                                                    fill={COLORS.orangeLight}
+                                                    opacity={0.35}
+                                                    listening={false}
+                                                />
+                                            )}
+                                        </Layer>
+                                    </>
+                                );
+                            })()}
+                        </Stage>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    );
+}

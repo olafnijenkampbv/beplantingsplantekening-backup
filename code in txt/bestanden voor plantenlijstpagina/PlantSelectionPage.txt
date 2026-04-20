@@ -1,0 +1,189 @@
+"use client";
+
+import React, { useMemo } from "react";
+import RightStepMenuSummaryOverlay from "@/features/editor/components/editor/rightStepMenu/RightStepMenuSummaryOverlay";
+import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
+import { goBackToEditor } from "@/features/editor/lib/editorWorkflowNavigation";
+import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
+import { DUMMY_PLANTS, GROUP_LABELS } from "@/features/editor/lib/plantSelectionDummyData";
+import PlantSelectionProgress from "@/features/editor/components/plantSelection/PlantSelectionProgress";
+import PlantProposalGroupsCard from "@/features/editor/components/plantSelection/PlantProposalGroupsCard";
+import PlantSelectionSummaryCard from "@/features/editor/components/plantSelection/PlantSelectionSummaryCard";
+import PlantSelectionFiltersCard from "@/features/editor/components/plantSelection/PlantSelectionFiltersCard";
+import PlantProposalGrid from "@/features/editor/components/plantSelection/PlantProposalGrid";
+import PlantSelectionListCard from "@/features/editor/components/plantSelection/PlantSelectionListCard";
+
+const COLORS = {
+    pageBg: "#F7F6F4",
+    text: "#111111",
+    orange: "#E94E1B",
+    softText: "#A1A1A1",
+};
+
+export default function PlantSelectionPage() {
+    const step1 = useRightStepMenuStore((s) => s.step1);
+    const step2 = useRightStepMenuStore((s) => s.step2);
+    const step3 = useRightStepMenuStore((s) => s.step3);
+    const step4 = useRightStepMenuStore((s) => s.step4);
+    const isStep1Complete = useRightStepMenuStore((s) => s.isStep1Complete);
+    const isStep2Complete = useRightStepMenuStore((s) => s.isStep2Complete);
+    const isStep3Complete = useRightStepMenuStore((s) => s.isStep3Complete);
+    const isStep4Complete = useRightStepMenuStore((s) => s.isStep4Complete);
+
+    const selectedGroup = usePlantSelectionStore((s) => s.selectedGroup);
+    const viewMode = usePlantSelectionStore((s) => s.viewMode);
+    const sortValue = usePlantSelectionStore((s) => s.sortValue);
+    const filters = usePlantSelectionStore((s) => s.filters);
+    const isSummaryOpen = usePlantSelectionStore((s) => s.isSummaryOpen);
+
+    const setSelectedGroup = usePlantSelectionStore((s) => s.setSelectedGroup);
+    const setViewMode = usePlantSelectionStore((s) => s.setViewMode);
+    const setSortValue = usePlantSelectionStore((s) => s.setSortValue);
+    const toggleFilter = usePlantSelectionStore((s) => s.toggleFilter);
+    const openSummary = usePlantSelectionStore((s) => s.openSummary);
+    const closeSummary = usePlantSelectionStore((s) => s.closeSummary);
+    const clearFilters = usePlantSelectionStore((s) => s.clearFilters);
+
+    const visiblePlants = useMemo(() => {
+        let nextPlants =
+            selectedGroup === "zoek-zelf"
+                ? [...DUMMY_PLANTS]
+                : DUMMY_PLANTS.filter((plant) => plant.group === selectedGroup);
+
+        if (filters.opVoorraad) {
+            nextPlants = nextPlants.filter((plant) =>
+                plant.stockLabel.toLowerCase().includes("op voorraad")
+            );
+        }
+
+        if (sortValue === "meest-geschikt") {
+            const badgePriority: Record<string, number> = {
+                "zeer geschikt": 0,
+                "geschikt": 1,
+                "goede aanvulling": 2,
+            };
+
+            nextPlants = [...nextPlants].sort((a, b) => {
+                const aPriority = badgePriority[a.badge?.toLowerCase() ?? ""] ?? 99;
+                const bPriority = badgePriority[b.badge?.toLowerCase() ?? ""] ?? 99;
+
+                if (aPriority !== bPriority) {
+                    return aPriority - bPriority;
+                }
+
+                return a.name.localeCompare(b.name);
+            });
+        }
+
+        if (sortValue === "alfabetisch-a-z") {
+            nextPlants = [...nextPlants].sort((a, b) => a.name.localeCompare(b.name));
+        }
+
+        if (sortValue === "alfabetisch-z-a") {
+            nextPlants = [...nextPlants].sort((a, b) => b.name.localeCompare(a.name));
+        }
+
+        return nextPlants;
+    }, [filters.opVoorraad, selectedGroup, sortValue]);
+
+    return (
+        <>
+            <main
+                className="min-h-screen"
+                style={{ backgroundColor: COLORS.pageBg }}
+            >
+                <div className="mx-auto w-full max-w-[1460px] px-4 pb-12 pt-8 sm:px-6 lg:px-8 lg:pt-10">
+                    <div className="max-w-[980px]">
+                        <h1
+                            className="text-[28px] font-bold leading-[1.2] sm:text-[34px]"
+                            style={{ color: COLORS.text }}
+                        >
+                            Stel je plantenlijst samen!
+                        </h1>
+
+                        <button
+                            type="button"
+                            onClick={goBackToEditor}
+                            className="group mt-4 inline-flex cursor-pointer items-center gap-3 text-left"
+                            style={{ color: COLORS.text }}
+                        >
+                            <img
+                                src="/icons/arrow-left.svg"
+                                alt=""
+                                className="shrink-0"
+                                style={{ width: 16, height: 16, display: "block" }}
+                            />
+                            <span className="text-[14px] font-medium underline-offset-4 group-hover:underline group-focus-visible:underline">
+                                Terug naar tekening
+                            </span>
+                        </button>
+                    </div>
+
+                    <div className="mt-8">
+                        <PlantSelectionProgress />
+                    </div>
+
+                    <div className="mt-8 grid grid-cols-1 gap-6 xl:grid-cols-[300px_minmax(0,1fr)]">
+                        <div className="space-y-6">
+                            <PlantProposalGroupsCard
+                                selectedGroup={selectedGroup}
+                                onSelectGroup={setSelectedGroup}
+                            />
+
+                            <PlantSelectionSummaryCard onClick={openSummary} />
+
+                            <PlantSelectionFiltersCard
+                                filters={filters}
+                                onToggleFilter={toggleFilter}
+                                onClearFilters={clearFilters}
+                            />
+                        </div>
+
+                        <div className="space-y-6">
+                            <PlantProposalGrid
+                                title={GROUP_LABELS[selectedGroup]}
+                                resultsCount={visiblePlants.length}
+                                plants={visiblePlants}
+                                viewMode={viewMode}
+                                sortValue={sortValue}
+                                onChangeSort={setSortValue}
+                                onChangeViewMode={setViewMode}
+                            />
+
+                            <PlantSelectionListCard />
+
+                            <div
+                                className="text-[12px]"
+                                style={{ color: COLORS.softText }}
+                            >
+                                Ondersteuning nodig?{" "}
+                                <button
+                                    type="button"
+                                    className="underline"
+                                    style={{ color: COLORS.orange }}
+                                >
+                                    Neem contact op
+                                </button>{" "}
+                                met ons team.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            {isSummaryOpen ? (
+                <RightStepMenuSummaryOverlay
+                    step1={step1}
+                    step2={step2}
+                    step3={step3}
+                    step4={step4}
+                    isStep1Complete={isStep1Complete()}
+                    isStep2Complete={isStep2Complete()}
+                    isStep3Complete={isStep3Complete()}
+                    isStep4Complete={isStep4Complete()}
+                    onClose={closeSummary}
+                />
+            ) : null}
+        </>
+    );
+}

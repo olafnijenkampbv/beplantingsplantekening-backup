@@ -1,0 +1,554 @@
+import React, { useMemo } from "react";
+import { Shape } from "react-konva";
+import {
+    PolyObject,
+    TreebedVariant,
+    OBJECT_STYLES,
+    type ObjectType,
+} from "@/state/projectStore";
+import {
+    getAllObjectTypes,
+    getObjectLabel,
+    getObjectVisibilityGroup,
+    isBoundaryObjectType,
+    isBuildingObjectType,
+} from "@/features/editor/components/editor/objectMenuConfig";
+import { EDITOR_GRID_SIZE } from "@/features/editor/constants/editorGeometry";
+import { bboxFromPoints, rectsOverlap } from "@/features/editor/lib/editorCanvasMath";
+
+const COLORS = {
+    orange: "#E94E1B",
+    orangeLight: "#FFE5DD",
+    green: "#58694C",
+    greenLight: "#EEF0ED",
+    border: "#E3E2E2",
+    grid: "#d7dcd5",
+};
+
+const FENCE_GATE_STROKE_WIDTH = 14;
+const GRID_SIZE = EDITOR_GRID_SIZE;
+
+export function PolygonWithHoles(props: {
+    points: number[];
+    holes?: number[][];
+    fill?: string;
+    stroke?: string;
+    strokeWidth?: number;
+    opacity?: number;
+    listening?: boolean;
+    perfectDrawEnabled?: boolean;
+    dash?: number[];
+    dashEnabled?: boolean;
+    lineCap?: CanvasLineCap;
+    lineJoin?: CanvasLineJoin;
+    draggable?: boolean;
+    fillPriority?: "color" | "pattern" | "linear-gradient" | "radial-gradient";
+    fillPatternImage?: HTMLImageElement;
+    fillPatternRepeat?: "repeat" | "repeat-x" | "repeat-y" | "no-repeat";
+    onMouseEnter?: (e: any) => void;
+    onMouseLeave?: (e: any) => void;
+    onMouseDown?: (e: any) => void;
+    onClick?: (e: any) => void;
+}) {
+    const {
+        points,
+        holes = [],
+        fill,
+        stroke,
+        strokeWidth = 2,
+        opacity = 1,
+        listening = true,
+        perfectDrawEnabled = false,
+        dash,
+        dashEnabled,
+        lineCap,
+        lineJoin,
+        draggable = false,
+        fillPriority,
+        fillPatternImage,
+        fillPatternRepeat,
+        onMouseEnter,
+        onMouseLeave,
+        onMouseDown,
+        onClick,
+    } = props;
+
+    return (
+        <Shape
+            fill={fill}
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+            opacity={opacity}
+            listening={listening}
+            perfectDrawEnabled={perfectDrawEnabled}
+            dash={dash}
+            dashEnabled={dashEnabled}
+            lineCap={lineCap}
+            lineJoin={lineJoin}
+            draggable={draggable}
+            fillPriority={fillPriority}
+            fillPatternImage={fillPatternImage}
+            fillPatternRepeat={fillPatternRepeat}
+            fillRule="evenodd"
+            onMouseEnter={onMouseEnter}
+            onMouseLeave={onMouseLeave}
+            onMouseDown={onMouseDown}
+            onClick={onClick}
+            sceneFunc={(ctx, shape) => {
+                if (!points || points.length < 6) return;
+
+                ctx.beginPath();
+
+                // outer
+                ctx.moveTo(points[0], points[1]);
+                for (let i = 2; i < points.length; i += 2) {
+                    ctx.lineTo(points[i], points[i + 1]);
+                }
+                ctx.closePath();
+
+                // holes
+                for (const h of holes) {
+                    if (!h || h.length < 6) continue;
+                    ctx.moveTo(h[0], h[1]);
+                    for (let i = 2; i < h.length; i += 2) {
+                        ctx.lineTo(h[i], h[i + 1]);
+                    }
+                    ctx.closePath();
+                }
+
+                ctx.fillStrokeShape(shape);
+            }}
+        />
+    );
+}
+
+export function GridShape(props: {
+    canvasW: number;
+    canvasH: number;
+    stageScale: number;
+    stagePos: { x: number; y: number };
+    gridSize: number;
+}) {
+    const { canvasW, canvasH, stageScale, stagePos, gridSize } = props;
+
+    const bounds = useMemo(() => {
+        const left = (-stagePos.x) / stageScale;
+        const top = (-stagePos.y) / stageScale;
+        const right = (canvasW - stagePos.x) / stageScale;
+        const bottom = (canvasH - stagePos.y) / stageScale;
+
+        // kleine marge zodat je niet “gaten” ziet aan de randen
+        const pad = gridSize * 2;
+
+        const startX = Math.floor((left - pad) / gridSize) * gridSize;
+        const endX = Math.ceil((right + pad) / gridSize) * gridSize;
+        const startY = Math.floor((top - pad) / gridSize) * gridSize;
+        const endY = Math.ceil((bottom + pad) / gridSize) * gridSize;
+
+        return { startX, endX, startY, endY };
+    }, [canvasW, canvasH, stagePos.x, stagePos.y, stageScale, gridSize]);
+
+    return (
+        <Shape
+            listening={false}
+            perfectDrawEnabled={false}
+            sceneFunc={(ctx, shape) => {
+                ctx.beginPath();
+
+                // Vertical lines
+                for (let x = bounds.startX; x <= bounds.endX; x += gridSize) {
+                    ctx.moveTo(x, bounds.startY);
+                    ctx.lineTo(x, bounds.endY);
+                }
+
+                // Horizontal lines
+                for (let y = bounds.startY; y <= bounds.endY; y += gridSize) {
+                    ctx.moveTo(bounds.startX, y);
+                    ctx.lineTo(bounds.endX, y);
+                }
+
+                ctx.strokeStyle = COLORS.grid;
+                ctx.lineWidth = 1;
+                ctx.stroke();
+
+                ctx.closePath();
+                // @ts-ignore
+                shape.getSceneFunc && shape.getSceneFunc();
+            }}
+        />
+    );
+}
+
+export const TYPE_LABELS: Record<string, string> = Object.fromEntries(
+    getAllObjectTypes().map((type: ObjectType) => [type, getObjectLabel(type)])
+);
+
+export const TREEBED_VARIANT_LABELS: Record<TreebedVariant, string> = {
+    standard: "standaard",
+    multi_stem: "meerstammig",
+    espalier: "leivorm",
+    roof: "dakvorm",
+};
+
+export function getTreebedLabel(obj: Pick<PolyObject, "type" | "treebedVariant">) {
+    if (obj.type !== "treebed") {
+        return TYPE_LABELS[obj.type] ?? obj.type;
+    }
+
+    const variant = obj.treebedVariant ?? "standard";
+    if (variant === "standard") return "Boomvak";
+
+    return `Boomvak (${TREEBED_VARIANT_LABELS[variant]})`;
+}
+
+const BUILDING_TYPES = getAllObjectTypes().filter((type: ObjectType) => isBuildingObjectType(type));
+type BuildingType = ObjectType;
+
+const BUILDING_PATTERN_CACHE = new Map<string, HTMLCanvasElement>();
+const BUILDING_PATTERN_SIZE = 22;
+const BUILDING_PATTERN_SPACING = 22;
+const BUILDING_PATTERN_STROKE_WIDTH = 1;
+
+export function clearBuildingPatternCache() {
+    BUILDING_PATTERN_CACHE.clear();
+}
+
+export function isBoundaryType(t: any): t is ObjectType {
+    return typeof t === "string" && isBoundaryObjectType(t as ObjectType);
+}
+// backward-compatible helper voor bestaande codepaden
+// Let op: naam blijft bewust staan zodat bestaande codepaden blijven werken,
+// maar functioneel geldt dit nu voor alle "draw-as-centerline" boundary types.
+export function isFenceOrGate(t: any): t is ObjectType {
+    return (
+        t === "fence" ||
+        t === "gate" ||
+        t === "poort" ||
+        t === "border_edge" ||
+        t === "wall" ||
+        t === "curb"
+    );
+}
+
+export function isBuildingType(t: any): t is BuildingType {
+    return typeof t === "string" && isBuildingObjectType(t as ObjectType);
+}
+
+export function getBoundaryThickness() {
+    return GRID_SIZE; // EXACT 1 rasterblok
+}
+
+function reversePointPairs(points: number[]) {
+    const out: number[] = [];
+
+    for (let i = points.length - 2; i >= 0; i -= 2) {
+        out.push(points[i], points[i + 1]);
+    }
+
+    return out;
+}
+
+function lineIntersection(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+    dx: number,
+    dy: number
+) {
+    const abx = bx - ax;
+    const aby = by - ay;
+    const cdx = dx - cx;
+    const cdy = dy - cy;
+
+    const det = abx * cdy - aby * cdx;
+    if (Math.abs(det) < 1e-9) return null;
+
+    const t = ((cx - ax) * cdy - (cy - ay) * cdx) / det;
+
+    return {
+        x: ax + t * abx,
+        y: ay + t * aby,
+    };
+}
+
+export function getBoundaryOffsetPolylinePoints(
+    points: number[],
+    thickness: number,
+    side: 1 | -1 = 1
+) {
+    if (!points || points.length < 4) return points;
+
+    const pointCount = points.length / 2;
+    if (pointCount < 2) return points;
+
+    const offset = thickness * side;
+    const MITER_LIMIT_RATIO = 3.0;
+    const CLIP_LINE_EXTENT = 100000;
+
+    const getPoint = (index: number) => ({
+        x: points[index * 2],
+        y: points[index * 2 + 1],
+    });
+
+    const normals: Array<{ x: number; y: number }> = [];
+
+    for (let i = 0; i < pointCount - 1; i++) {
+        const a = getPoint(i);
+        const b = getPoint(i + 1);
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+
+        if (len < 1e-9) {
+            normals.push({ x: 0, y: 0 });
+            continue;
+        }
+
+        normals.push({
+            x: -dy / len,
+            y: dx / len,
+        });
+    }
+
+    const out: number[] = [];
+
+    for (let i = 0; i < pointCount; i++) {
+        const p = getPoint(i);
+
+        if (i === 0) {
+            const n = normals[0];
+            out.push(p.x + n.x * offset, p.y + n.y * offset);
+            continue;
+        }
+
+        if (i === pointCount - 1) {
+            const n = normals[normals.length - 1];
+            out.push(p.x + n.x * offset, p.y + n.y * offset);
+            continue;
+        }
+
+        const prev = normals[i - 1];
+        const next = normals[i];
+
+        const prevPoint = getPoint(i - 1);
+        const nextPoint = getPoint(i + 1);
+
+        const prevSegDx = p.x - prevPoint.x;
+        const prevSegDy = p.y - prevPoint.y;
+        const nextSegDx = nextPoint.x - p.x;
+        const nextSegDy = nextPoint.y - p.y;
+
+        const turnCross = prevSegDx * nextSegDy - prevSegDy * nextSegDx;
+
+        const prevOffsetStartX = prevPoint.x + prev.x * offset;
+        const prevOffsetStartY = prevPoint.y + prev.y * offset;
+        const prevOffsetEndX = p.x + prev.x * offset;
+        const prevOffsetEndY = p.y + prev.y * offset;
+
+        const nextOffsetStartX = p.x + next.x * offset;
+        const nextOffsetStartY = p.y + next.y * offset;
+        const nextOffsetEndX = nextPoint.x + next.x * offset;
+        const nextOffsetEndY = nextPoint.y + next.y * offset;
+
+        // Inner corner: nooit proberen te miteren of te clippen.
+        // Gewoon bevel tussen de twee offset-eindpunten.
+        const isOuterCorner = turnCross * side > 1e-9;
+
+        if (!isOuterCorner) {
+            out.push(
+                prevOffsetEndX,
+                prevOffsetEndY,
+                nextOffsetStartX,
+                nextOffsetStartY
+            );
+            continue;
+        }
+
+        const hit = lineIntersection(
+            prevOffsetStartX,
+            prevOffsetStartY,
+            prevOffsetEndX,
+            prevOffsetEndY,
+            nextOffsetStartX,
+            nextOffsetStartY,
+            nextOffsetEndX,
+            nextOffsetEndY
+        );
+
+        if (!hit) {
+            out.push(
+                prevOffsetEndX,
+                prevOffsetEndY,
+                nextOffsetStartX,
+                nextOffsetStartY
+            );
+            continue;
+        }
+
+        const hitDx = hit.x - p.x;
+        const hitDy = hit.y - p.y;
+        const hitDistanceFromCorner = Math.hypot(hitDx, hitDy);
+        const maxMiterLength = Math.abs(offset) * MITER_LIMIT_RATIO;
+
+        // Normale outer corner: gewone miter laten staan.
+        if (
+            !Number.isFinite(hitDistanceFromCorner) ||
+            hitDistanceFromCorner <= maxMiterLength
+        ) {
+            out.push(hit.x, hit.y);
+            continue;
+        }
+
+        // Extreme outer spike: clippen, maar zonder grid-snap.
+        const miterDirX = hitDx / hitDistanceFromCorner;
+        const miterDirY = hitDy / hitDistanceFromCorner;
+
+        const clipCenterX = p.x + miterDirX * maxMiterLength;
+        const clipCenterY = p.y + miterDirY * maxMiterLength;
+
+        const clipDirX = -miterDirY;
+        const clipDirY = miterDirX;
+
+        const clipA1X = clipCenterX - clipDirX * CLIP_LINE_EXTENT;
+        const clipA1Y = clipCenterY - clipDirY * CLIP_LINE_EXTENT;
+        const clipA2X = clipCenterX + clipDirX * CLIP_LINE_EXTENT;
+        const clipA2Y = clipCenterY + clipDirY * CLIP_LINE_EXTENT;
+
+        const clippedPrev = lineIntersection(
+            prevOffsetStartX,
+            prevOffsetStartY,
+            prevOffsetEndX,
+            prevOffsetEndY,
+            clipA1X,
+            clipA1Y,
+            clipA2X,
+            clipA2Y
+        );
+
+        const clippedNext = lineIntersection(
+            nextOffsetStartX,
+            nextOffsetStartY,
+            nextOffsetEndX,
+            nextOffsetEndY,
+            clipA1X,
+            clipA1Y,
+            clipA2X,
+            clipA2Y
+        );
+
+        if (clippedPrev && clippedNext) {
+            out.push(
+                clippedPrev.x,
+                clippedPrev.y,
+                clippedNext.x,
+                clippedNext.y
+            );
+            continue;
+        }
+
+        out.push(
+            prevOffsetEndX,
+            prevOffsetEndY,
+            nextOffsetStartX,
+            nextOffsetStartY
+        );
+    }
+
+    return out;
+}
+export function getBoundaryBandPoints(
+    points: number[],
+    thickness: number,
+    side: 1 | -1 = 1
+) {
+    if (!points || points.length < 4) return [];
+
+    const offsetPoints = getBoundaryOffsetPolylinePoints(points, thickness, side);
+    if (!offsetPoints || offsetPoints.length < 4) return [];
+
+    return [
+        ...points,
+        ...reversePointPairs(offsetPoints),
+    ];
+}
+
+export function getBoundaryPreviewLines(
+    points: number[],
+    thickness: number,
+    side: 1 | -1 = 1
+) {
+    return {
+        centerline: [...points],
+        offsetLine: getBoundaryOffsetPolylinePoints(points, thickness, side),
+    };
+}
+
+// backward-compatible helper voor bestaande codepaden
+export function getLineStrokeWidth(t: any) {
+    return isBoundaryType(t) ? getBoundaryThickness() : 2;
+}
+
+export function getViewVisibilityKeyForType(type: ObjectType) {
+    return getObjectVisibilityGroup(type) ?? "showGround";
+}
+
+export function getViewVisibilityLabelForType(type: ObjectType) {
+    const group = getObjectVisibilityGroup(type);
+
+    switch (group) {
+        case "showGround":
+            return "Toon ondergrond";
+        case "showBuildings":
+            return "Toon gebouwen";
+        case "showBoundaries":
+            return "Toon afbakening";
+        case "showPlantbeds":
+            return "Toon plantvak";
+        case "showTreebeds":
+            return "Toon boomvak";
+        default:
+            return "Toon object";
+    }
+}
+
+export function getBuildingPatternCanvas(type: BuildingType): HTMLCanvasElement | undefined {
+    if (typeof document === "undefined") return undefined;
+
+    const { fill, stroke } = OBJECT_STYLES[type];
+    const key = `${fill}_${stroke}`;
+
+    const cached = BUILDING_PATTERN_CACHE.get(key);
+    if (cached) return cached;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = BUILDING_PATTERN_SIZE;
+    canvas.height = BUILDING_PATTERN_SIZE;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return undefined;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = BUILDING_PATTERN_STROKE_WIDTH;
+
+    for (
+        let offset = -BUILDING_PATTERN_SIZE;
+        offset <= BUILDING_PATTERN_SIZE;
+        offset += BUILDING_PATTERN_SPACING
+    ) {
+        ctx.beginPath();
+        ctx.moveTo(offset, BUILDING_PATTERN_SIZE);
+        ctx.lineTo(offset + BUILDING_PATTERN_SIZE, 0);
+        ctx.stroke();
+    }
+
+    BUILDING_PATTERN_CACHE.set(key, canvas);
+    return canvas;
+}

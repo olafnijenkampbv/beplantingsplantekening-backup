@@ -1,0 +1,1 @@
+export const EDITOR_GRID_SIZE = 15;

@@ -1,0 +1,512 @@
+"use client";
+
+import React, { useEffect, useMemo, useState } from "react";
+import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
+import type { DummyPlant, ViewMode } from "@/features/editor/lib/plantSelectionDummyData";
+
+const COLORS = {
+    cardBg: "#FFFFFF",
+    border: "#E3E2E2",
+    green: "#58694C",
+    greenLight: "#EEF0ED",
+    orange: "#E94E1B",
+    text: "#111111",
+    muted: "#6B7280",
+};
+
+const INITIAL_VISIBLE_COUNT = 6;
+const LOAD_MORE_STEP = 6;
+
+function PlantCard(props: {
+    plant: DummyPlant;
+    viewMode: ViewMode;
+    onAddToPlantList: (plant: DummyPlant) => void;
+}) {
+    const { plant, viewMode, onAddToPlantList } = props;
+    const notify = useAppNotify();
+    const [isAdded, setIsAdded] = useState(false);
+
+    const handleAddToPlantList = () => {
+        onAddToPlantList(plant);
+        notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.name));
+        setIsAdded(true);
+
+        window.setTimeout(() => {
+            setIsAdded(false);
+        }, 3200);
+    };
+
+    const getBadgeMeta = (badge: string) => {
+        const normalized = badge.toLowerCase();
+
+        if (normalized === "zeer geschikt") {
+            return {
+                backgroundColor: "#DEFFDE",
+                color: "#008000",
+                iconSrc: "/icons/dubble-check.svg",
+            };
+        }
+
+        if (normalized === "geschikt") {
+            return {
+                backgroundColor: "#DEFFDE",
+                color: "#008000",
+                iconSrc: "/icons/check-icon.svg",
+            };
+        }
+
+        return {
+            backgroundColor: "#FDFFC6",
+            color: "#807300",
+            iconSrc: "/icons/plus.svg",
+        };
+    };
+
+    const badgeMeta = plant.badge ? getBadgeMeta(plant.badge) : null;
+
+    if (viewMode === "list") {
+        return (
+            <div
+                className="flex items-stretch gap-4 rounded-[8px] border p-3"
+                style={{
+                    backgroundColor: "#FFFFFF",
+                    borderColor: COLORS.border,
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+                    minHeight: 166,
+                }}
+            >
+                <div
+                    className="shrink-0 overflow-hidden rounded-[6px] bg-[#F1F1EE]"
+                    style={{
+                        width: 140,
+                        height: 140,
+                    }}
+                >
+                    <img
+                        src={plant.imageSrc}
+                        alt={plant.name}
+                        className="block h-full w-full"
+                        style={{
+                            objectFit: "cover",
+                            objectPosition: "center",
+                        }}
+                    />
+                </div>
+
+                <div className="flex min-w-0 flex-1 items-stretch justify-between gap-4">
+                    <div className="flex min-w-0 flex-1 flex-col">
+                        <div
+                            className="text-[16px] font-semibold leading-[1.35]"
+                            style={{ color: COLORS.text }}
+                        >
+                            {plant.name}
+                        </div>
+
+                        <div
+                            className="mt-1 text-[13px]"
+                            style={{ color: COLORS.muted }}
+                        >
+                            {plant.latinName}
+                        </div>
+
+                        <div
+                            className="mt-3 text-[12px]"
+                            style={{ color: COLORS.orange }}
+                        >
+                            {plant.stockLabel}
+                        </div>
+
+                        <div className="mt-auto pt-4">
+                            {plant.badge && badgeMeta ? (
+                                <span
+                                    className="inline-flex items-center gap-1.5 rounded-full px-3 py-[5px] text-[11px] font-semibold"
+                                    style={{
+                                        backgroundColor: badgeMeta.backgroundColor,
+                                        color: badgeMeta.color,
+                                    }}
+                                >
+                                    <img
+                                        src={badgeMeta.iconSrc}
+                                        alt=""
+                                        style={{
+                                            width: 12,
+                                            height: 12,
+                                            display: "block",
+                                            flex: "0 0 auto",
+                                            filter:
+                                                plant.badge.toLowerCase() === "goede aanvulling"
+                                                    ? "brightness(0) saturate(100%) invert(38%) sepia(97%) saturate(565%) hue-rotate(23deg) brightness(93%) contrast(101%)"
+                                                    : "none",
+                                        }}
+                                    />
+                                    <span>{plant.badge}</span>
+                                </span>
+                            ) : null}
+                        </div>
+                    </div>
+
+                    <div className="flex shrink-0 items-end">
+                        <button
+                            type="button"
+                            className="flex cursor-pointer items-center justify-center rounded-[6px]"
+                            style={{
+                                width: 44,
+                                height: 44,
+                                backgroundColor: isAdded ? "#008000" : COLORS.orange,
+                                color: "#FFFFFF",
+                                transform: isAdded ? "scale(1.06)" : "scale(1)",
+                                transition: "background-color 220ms ease, transform 220ms ease",
+                            }}
+                            onClick={handleAddToPlantList}
+                            onMouseEnter={(event) => {
+                                if (!isAdded) {
+                                    event.currentTarget.style.backgroundColor = "#BF3D12";
+                                }
+                            }}
+                            onMouseLeave={(event) => {
+                                event.currentTarget.style.backgroundColor = isAdded ? "#008000" : COLORS.orange;
+                            }}
+                        >
+                            <img
+                                src={isAdded ? "/icons/check.svg" : "/icons/add-to-cart.svg"}
+                                alt=""
+                                style={{
+                                    width: isAdded ? 22 : 18,
+                                    height: isAdded ? 22 : 18,
+                                    display: "block",
+                                    filter: "brightness(0) invert(1)",
+                                    transform: isAdded ? "scale(1)" : "scale(1)",
+                                    transition: "transform 220ms ease, width 220ms ease, height 220ms ease",
+                                }}
+                            />
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div
+            className="overflow-hidden rounded-[8px] border"
+            style={{
+                backgroundColor: "#FFFFFF",
+                borderColor: COLORS.border,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+            }}
+        >
+            <div
+                className="relative overflow-hidden bg-[#F1F1EE]"
+                style={{
+                    aspectRatio: "1 / 0.82",
+                }}
+            >
+                <img
+                    src={plant.imageSrc}
+                    alt={plant.name}
+                    className="block h-full w-full"
+                    style={{
+                        objectFit: "cover",
+                        objectPosition: "center",
+                    }}
+                />
+
+                {plant.badge && badgeMeta ? (
+                    <span
+                        className="absolute right-2 top-2 inline-flex items-center gap-1.5 rounded-full px-3 py-[5px] text-[11px] font-semibold"
+                        style={{
+                            backgroundColor: badgeMeta.backgroundColor,
+                            color: badgeMeta.color,
+                        }}
+                    >
+                        <img
+                            src={badgeMeta.iconSrc}
+                            alt=""
+                            style={{
+                                width: 12,
+                                height: 12,
+                                display: "block",
+                                flex: "0 0 auto",
+                                filter:
+                                    plant.badge.toLowerCase() === "goede aanvulling"
+                                        ? "brightness(0) saturate(100%) invert(38%) sepia(97%) saturate(565%) hue-rotate(23deg) brightness(93%) contrast(101%)"
+                                        : "none",
+                            }}
+                        />
+                        <span>{plant.badge}</span>
+                    </span>
+                ) : null}
+            </div>
+
+            <div className="p-2.5">
+                <div
+                    className="min-h-[30px] text-[15px] font-semibold leading-[1.35]"
+                    style={{ color: COLORS.text }}
+                >
+                    {plant.name}
+                </div>
+
+                <div className="mt-1 text-[13px]" style={{ color: COLORS.muted }}>
+                    {plant.latinName}
+                </div>
+
+                <div className="mt-2 flex items-center justify-between">
+                    <div className="text-[12px]" style={{ color: COLORS.orange }}>
+                        {plant.stockLabel}
+                    </div>
+
+                    <button
+                        type="button"
+                        className="flex shrink-0 cursor-pointer items-center justify-center rounded-[6px]"
+                        style={{
+                            width: 40,
+                            height: 40,
+                            backgroundColor: isAdded ? "#008000" : COLORS.orange,
+                            color: "#FFFFFF",
+                            transform: isAdded ? "scale(1.06)" : "scale(1)",
+                            transition: "background-color 220ms ease, transform 220ms ease",
+                        }}
+                        onClick={handleAddToPlantList}
+                        onMouseEnter={(event) => {
+                            if (!isAdded) {
+                                event.currentTarget.style.backgroundColor = "#BF3D12";
+                            }
+                        }}
+                        onMouseLeave={(event) => {
+                            event.currentTarget.style.backgroundColor = isAdded ? "#008000" : COLORS.orange;
+                        }}
+                    >
+                        <img
+                            src={isAdded ? "/icons/check.svg" : "/icons/add-to-cart.svg"}
+                            alt=""
+                            style={{
+                                width: isAdded ? 20 : 16,
+                                height: isAdded ? 20 : 16,
+                                display: "block",
+                                filter: "brightness(0) invert(1)",
+                                transition: "width 220ms ease, height 220ms ease",
+                            }}
+                        />
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+type PlantProposalGridProps = {
+    title: string;
+    resultsCount: number;
+    plants: DummyPlant[];
+    viewMode: ViewMode;
+    sortValue: string;
+    onChangeSort: (value: string) => void;
+    onChangeViewMode: (mode: ViewMode) => void;
+    onAddToPlantList: (plant: DummyPlant) => void;
+};
+
+export default function PlantProposalGrid(props: PlantProposalGridProps) {
+    const {
+        title,
+        resultsCount,
+        plants,
+        viewMode,
+        sortValue,
+        onChangeSort,
+        onChangeViewMode,
+        onAddToPlantList,
+    } = props;
+
+    const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT);
+
+    useEffect(() => {
+        setVisibleCount(INITIAL_VISIBLE_COUNT);
+    }, [plants, title, viewMode, sortValue]);
+
+    const visiblePlants = useMemo(() => {
+        return plants.slice(0, visibleCount);
+    }, [plants, visibleCount]);
+
+    const remainingCount = Math.max(0, plants.length - visiblePlants.length);
+    const canLoadMore = remainingCount > 0;
+    const canLoadLess = plants.length > INITIAL_VISIBLE_COUNT && visibleCount > INITIAL_VISIBLE_COUNT;
+
+    const handleLoadMore = () => {
+        setVisibleCount((prev) => Math.min(prev + LOAD_MORE_STEP, plants.length));
+    };
+
+    const handleLoadLess = () => {
+        setVisibleCount(INITIAL_VISIBLE_COUNT);
+    };
+
+    return (
+        <section
+            className="rounded-[10px] border p-5"
+            style={{
+                backgroundColor: COLORS.cardBg,
+                borderColor: COLORS.border,
+                boxShadow: "5px 3px 46px -25px rgba(0, 0, 0, 0.25)",
+            }}
+        >
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                    <h2
+                        className="text-[28px] font-semibold leading-[1.2]"
+                        style={{ color: COLORS.text }}
+                    >
+                        {title}{" "}
+                        <span
+                            className="text-[14px] font-normal"
+                            style={{ color: COLORS.muted }}
+                        >
+                            ({resultsCount} resultaten)
+                        </span>
+                    </h2>
+
+                    <p
+                        className="mt-3 text-[14px]"
+                        style={{ color: COLORS.text }}
+                    >
+                        In de plantenlijst bepaal je de aantallen en maten voor je definitieve plan.
+                    </p>
+                </div>
+
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <div className="flex items-center gap-3">
+                        <label
+                            htmlFor="plant-sort"
+                            className="text-[14px] font-normal"
+                            style={{ color: COLORS.text }}
+                        >
+                            Sorteren op
+                        </label>
+
+                        <div className="relative">
+                            <select
+                                id="plant-sort"
+                                value={sortValue}
+                                onChange={(event) => onChangeSort(event.target.value)}
+                                className="h-[40px] min-w-[190px] appearance-none rounded-[10px] border bg-white pl-4 pr-10 text-[14px] font-semibold outline-none"
+                                style={{
+                                    borderColor: "#E0DEDF",
+                                    color: COLORS.text,
+                                }}
+                            >
+                                <option value="">Geen sortering</option>
+                                <option value="meest-geschikt">Meest geschikt</option>
+                                <option value="alfabetisch-a-z">Naam A–Z</option>
+                                <option value="alfabetisch-z-a">Naam Z–A</option>
+                            </select>
+
+                            <img
+                                src="/icons/chevron-down.svg"
+                                alt=""
+                                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"
+                                style={{
+                                    width: 16,
+                                    height: 16,
+                                    display: "block",
+                                }}
+                            />
+                        </div>
+                    </div>
+
+                    <div
+                        className="inline-flex overflow-hidden rounded-[10px] border bg-white"
+                        style={{ borderColor: "#E0DEDF" }}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => onChangeViewMode("grid")}
+                            className="flex h-[40px] w-[56px] cursor-pointer items-center justify-center border-r"
+                            style={{
+                                backgroundColor: viewMode === "grid" ? "#58694C" : "#FFFFFF",
+                                borderRightColor: "#E0DEDF",
+                            }}
+                        >
+                            <img
+                                src="/icons/grid.svg"
+                                alt=""
+                                style={{
+                                    width: 20,
+                                    height: 20,
+                                    display: "block",
+                                    filter:
+                                        viewMode === "grid"
+                                            ? "brightness(0) invert(1)"
+                                            : "brightness(0) saturate(100%) invert(36%) sepia(13%) saturate(707%) hue-rotate(56deg) brightness(92%) contrast(86%)",
+                                }}
+                            />
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={() => onChangeViewMode("list")}
+                            className="flex h-[40px] w-[56px] cursor-pointer items-center justify-center"
+                            style={{
+                                backgroundColor: viewMode === "list" ? "#58694C" : "#FFFFFF",
+                            }}
+                        >
+                            <img
+                                src="/icons/list.svg"
+                                alt=""
+                                style={{
+                                    width: 20,
+                                    height: 20,
+                                    display: "block",
+                                    filter:
+                                        viewMode === "list"
+                                            ? "brightness(0) invert(1)"
+                                            : "brightness(0) saturate(100%) invert(36%) sepia(13%) saturate(707%) hue-rotate(56deg) brightness(92%) contrast(86%)",
+                                }}
+                            />
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div className="mt-6">
+                <div
+                    className={
+                        viewMode === "grid"
+                            ? "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+                            : "space-y-4"
+                    }
+                >
+                    {visiblePlants.map((plant) => (
+                        <PlantCard
+                            key={plant.id}
+                            plant={plant}
+                            viewMode={viewMode}
+                            onAddToPlantList={onAddToPlantList}
+                        />
+                    ))}
+                </div>
+            </div>
+
+            {canLoadMore ? (
+                <div className="mt-5 flex justify-center">
+                    <button
+                        type="button"
+                        onClick={handleLoadMore}
+                        className="cursor-pointer text-[14px] font-medium underline"
+                        style={{ color: COLORS.green }}
+                    >
+                        Meer laden ({remainingCount})
+                    </button>
+                </div>
+            ) : canLoadLess ? (
+                <div className="mt-5 flex justify-center">
+                    <button
+                        type="button"
+                        onClick={handleLoadLess}
+                        className="cursor-pointer text-[14px] font-medium underline"
+                        style={{ color: COLORS.green }}
+                    >
+                        Minder laden
+                    </button>
+                </div>
+            ) : null}
+        </section>
+    );
+}

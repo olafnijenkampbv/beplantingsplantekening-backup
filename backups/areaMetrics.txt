@@ -1,0 +1,412 @@
+import type { ObjectType, PolyObject } from "./projectStore";
+import {
+    getAllObjectTypes,
+    isAreaMeasurableObjectType,
+} from "@/features/editor/components/editor/objectMenuConfig";
+
+export const EDITOR_METRIC_SCALE = {
+    editorUnitsPerGridStep: 15,
+    metersPerGridStep: 0.1,
+} as const;
+
+export const AREA_MEASURABLE_TYPES = getAllObjectTypes().filter((type: ObjectType) =>
+    isAreaMeasurableObjectType(type)
+) as ObjectType[];
+
+const AREA_MEASURABLE_TYPE_SET = new Set<ObjectType>(AREA_MEASURABLE_TYPES);
+
+export function isAreaMeasurableType(type: ObjectType): boolean {
+    return AREA_MEASURABLE_TYPE_SET.has(type);
+}
+export function isAreaMeasurableObject(object: Pick<PolyObject, "type">): boolean {
+    return isAreaMeasurableType(object.type);
+}
+
+export function getMetersPerGridStep(): number {
+    return EDITOR_METRIC_SCALE.metersPerGridStep;
+}
+
+export function getEditorUnitsPerGridStep(): number {
+    return EDITOR_METRIC_SCALE.editorUnitsPerGridStep;
+}
+
+export function getMetersPerEditorUnit(): number {
+    return getMetersPerGridStep() / getEditorUnitsPerGridStep();
+}
+
+export function getMetersFromEditorUnits(units: number): number {
+    return units * getMetersPerEditorUnit();
+}
+
+export function getSquareMetersPerEditorUnitSquared(): number {
+    const metersPerUnit = getMetersPerEditorUnit();
+    return metersPerUnit * metersPerUnit;
+}
+
+export function getSquareMetersFromEditorArea(editorArea: number): number {
+    return editorArea * getSquareMetersPerEditorUnitSquared();
+}
+
+export function getPolygonSignedArea(points: number[]): number {
+    if (!points || points.length < 6) return 0;
+
+    let area = 0;
+    const pointCount = points.length / 2;
+
+    for (let i = 0; i < pointCount; i += 1) {
+        const currentIndex = i * 2;
+        const nextIndex = ((i + 1) % pointCount) * 2;
+
+        const x1 = points[currentIndex];
+        const y1 = points[currentIndex + 1];
+        const x2 = points[nextIndex];
+        const y2 = points[nextIndex + 1];
+
+        area += x1 * y2 - x2 * y1;
+    }
+
+    return area / 2;
+}
+
+export function getPolygonAreaAbs(points: number[]): number {
+    return Math.abs(getPolygonSignedArea(points));
+}
+
+function lineIntersection(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+    dx: number,
+    dy: number
+) {
+    const abx = bx - ax;
+    const aby = by - ay;
+    const cdx = dx - cx;
+    const cdy = dy - cy;
+
+    const det = abx * cdy - aby * cdx;
+    if (Math.abs(det) < 1e-9) return null;
+
+    const t = ((cx - ax) * cdy - (cy - ay) * cdx) / det;
+
+    return {
+        x: ax + t * abx,
+        y: ay + t * aby,
+    };
+}
+
+function getBoundaryBandAreaPoints(
+    points: number[],
+    thicknessInEditorUnits: number,
+    side: 1 | -1 = 1
+): number[] {
+    if (!points || points.length < 4) return [];
+
+    const pointCount = points.length / 2;
+    if (pointCount < 2) return [];
+
+    const offset = thicknessInEditorUnits * side;
+    const MITER_LIMIT_RATIO = 3.0;
+    const CLIP_LINE_EXTENT = 100000;
+
+    const getPoint = (index: number) => ({
+        x: points[index * 2],
+        y: points[index * 2 + 1],
+    });
+
+    const reversePointPairs = (pts: number[]) => {
+        const out: number[] = [];
+        for (let i = pts.length - 2; i >= 0; i -= 2) {
+            out.push(pts[i], pts[i + 1]);
+        }
+        return out;
+    };
+
+    const normals: Array<{ x: number; y: number }> = [];
+
+    for (let i = 0; i < pointCount - 1; i++) {
+        const a = getPoint(i);
+        const b = getPoint(i + 1);
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+
+        if (len < 1e-9) {
+            normals.push({ x: 0, y: 0 });
+            continue;
+        }
+
+        normals.push({
+            x: -dy / len,
+            y: dx / len,
+        });
+    }
+
+    const offsetPoints: number[] = [];
+
+    for (let i = 0; i < pointCount; i++) {
+        const p = getPoint(i);
+
+        if (i === 0) {
+            const n = normals[0];
+            offsetPoints.push(p.x + n.x * offset, p.y + n.y * offset);
+            continue;
+        }
+
+        if (i === pointCount - 1) {
+            const n = normals[normals.length - 1];
+            offsetPoints.push(p.x + n.x * offset, p.y + n.y * offset);
+            continue;
+        }
+
+        const prev = normals[i - 1];
+        const next = normals[i];
+
+        const prevPoint = getPoint(i - 1);
+        const nextPoint = getPoint(i + 1);
+
+        const prevSegDx = p.x - prevPoint.x;
+        const prevSegDy = p.y - prevPoint.y;
+        const nextSegDx = nextPoint.x - p.x;
+        const nextSegDy = nextPoint.y - p.y;
+
+        const turnCross = prevSegDx * nextSegDy - prevSegDy * nextSegDx;
+
+        const prevOffsetStartX = prevPoint.x + prev.x * offset;
+        const prevOffsetStartY = prevPoint.y + prev.y * offset;
+        const prevOffsetEndX = p.x + prev.x * offset;
+        const prevOffsetEndY = p.y + prev.y * offset;
+
+        const nextOffsetStartX = p.x + next.x * offset;
+        const nextOffsetStartY = p.y + next.y * offset;
+        const nextOffsetEndX = nextPoint.x + next.x * offset;
+        const nextOffsetEndY = nextPoint.y + next.y * offset;
+
+        const isOuterCorner = turnCross * side > 1e-9;
+
+        if (!isOuterCorner) {
+            offsetPoints.push(
+                prevOffsetEndX,
+                prevOffsetEndY,
+                nextOffsetStartX,
+                nextOffsetStartY
+            );
+            continue;
+        }
+
+        const hit = lineIntersection(
+            prevOffsetStartX,
+            prevOffsetStartY,
+            prevOffsetEndX,
+            prevOffsetEndY,
+            nextOffsetStartX,
+            nextOffsetStartY,
+            nextOffsetEndX,
+            nextOffsetEndY
+        );
+
+        if (!hit) {
+            offsetPoints.push(
+                prevOffsetEndX,
+                prevOffsetEndY,
+                nextOffsetStartX,
+                nextOffsetStartY
+            );
+            continue;
+        }
+
+        const hitDx = hit.x - p.x;
+        const hitDy = hit.y - p.y;
+        const hitDistanceFromCorner = Math.hypot(hitDx, hitDy);
+        const maxMiterLength = Math.abs(offset) * MITER_LIMIT_RATIO;
+
+        if (
+            !Number.isFinite(hitDistanceFromCorner) ||
+            hitDistanceFromCorner <= maxMiterLength
+        ) {
+            offsetPoints.push(hit.x, hit.y);
+            continue;
+        }
+
+        const miterDirX = hitDx / hitDistanceFromCorner;
+        const miterDirY = hitDy / hitDistanceFromCorner;
+
+        const clipCenterX = p.x + miterDirX * maxMiterLength;
+        const clipCenterY = p.y + miterDirY * maxMiterLength;
+
+        const clipDirX = -miterDirY;
+        const clipDirY = miterDirX;
+
+        const clipA1X = clipCenterX - clipDirX * CLIP_LINE_EXTENT;
+        const clipA1Y = clipCenterY - clipDirY * CLIP_LINE_EXTENT;
+        const clipA2X = clipCenterX + clipDirX * CLIP_LINE_EXTENT;
+        const clipA2Y = clipCenterY + clipDirY * CLIP_LINE_EXTENT;
+
+        const clippedPrev = lineIntersection(
+            prevOffsetStartX,
+            prevOffsetStartY,
+            prevOffsetEndX,
+            prevOffsetEndY,
+            clipA1X,
+            clipA1Y,
+            clipA2X,
+            clipA2Y
+        );
+
+        const clippedNext = lineIntersection(
+            nextOffsetStartX,
+            nextOffsetStartY,
+            nextOffsetEndX,
+            nextOffsetEndY,
+            clipA1X,
+            clipA1Y,
+            clipA2X,
+            clipA2Y
+        );
+
+        if (clippedPrev && clippedNext) {
+            offsetPoints.push(
+                clippedPrev.x,
+                clippedPrev.y,
+                clippedNext.x,
+                clippedNext.y
+            );
+            continue;
+        }
+
+        offsetPoints.push(
+            prevOffsetEndX,
+            prevOffsetEndY,
+            nextOffsetStartX,
+            nextOffsetStartY
+        );
+    }
+
+    if (offsetPoints.length < 4) return [];
+
+    return [
+        ...points,
+        ...reversePointPairs(offsetPoints),
+    ];
+}
+
+function isBoundaryPolylineType(type: ObjectType): boolean {
+    return (
+        type === "fence" ||
+        type === "gate" ||
+        type === "poort" ||
+        type === "border_edge" ||
+        type === "wall" ||
+        type === "curb"
+    );
+}
+
+export function getObjectAreaInEditorUnits(object: Pick<PolyObject, "type" | "points" | "holes" | "renderSide">): number {
+    if (!isAreaMeasurableObject(object)) return 0;
+    if (!object.points || object.points.length < 4) return 0;
+
+    if (isBoundaryPolylineType(object.type)) {
+        const bandPoints = getBoundaryBandAreaPoints(
+            object.points,
+            getEditorUnitsPerGridStep(),
+            object.renderSide ?? 1
+        );
+
+        if (bandPoints.length < 6) return 0;
+        return getPolygonAreaAbs(bandPoints);
+    }
+
+    if (object.points.length < 6) return 0;
+
+    const outerArea = getPolygonAreaAbs(object.points);
+    const holesArea = (object.holes ?? []).reduce((sum, hole) => sum + getPolygonAreaAbs(hole), 0);
+
+    return Math.max(0, outerArea - holesArea);
+}
+
+export function getObjectAreaInSquareMeters(object: Pick<PolyObject, "type" | "points" | "holes">): number {
+    return getSquareMetersFromEditorArea(getObjectAreaInEditorUnits(object));
+}
+
+export function getTotalAreaInEditorUnits(
+    objects: Array<Pick<PolyObject, "type" | "points" | "holes">>
+): number {
+    return objects.reduce((sum, object) => sum + getObjectAreaInEditorUnits(object), 0);
+}
+
+export function getTotalAreaInSquareMeters(
+    objects: Array<Pick<PolyObject, "type" | "points" | "holes">>
+): number {
+    return getSquareMetersFromEditorArea(getTotalAreaInEditorUnits(objects));
+}
+
+export function getSegmentLengthInEditorUnits(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number
+): number {
+    return Math.hypot(bx - ax, by - ay);
+}
+
+export function getSegmentLengthInMeters(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number
+): number {
+    return getMetersFromEditorUnits(getSegmentLengthInEditorUnits(ax, ay, bx, by));
+}
+
+export function getBoundingBoxFromPoints(points: number[]) {
+    if (!points || points.length < 2) {
+        return { x: 0, y: 0, w: 0, h: 0 };
+    }
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (let i = 0; i < points.length; i += 2) {
+        const x = points[i];
+        const y = points[i + 1];
+
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+        return { x: 0, y: 0, w: 0, h: 0 };
+    }
+
+    return {
+        x: minX,
+        y: minY,
+        w: Math.max(0, maxX - minX),
+        h: Math.max(0, maxY - minY),
+    };
+}
+
+export function getBoundingBoxDimensionsInMeters(points: number[]) {
+    const bbox = getBoundingBoxFromPoints(points);
+
+    return {
+        widthMeters: getMetersFromEditorUnits(bbox.w),
+        heightMeters: getMetersFromEditorUnits(bbox.h),
+    };
+}
+
+export function formatMeters(valueInMeters: number, fractionDigits = 1): string {
+    return `${valueInMeters.toFixed(fractionDigits)} m`;
+}
+
+export function formatSquareMeters(valueInSquareMeters: number, fractionDigits = 2): string {
+    return `${valueInSquareMeters.toFixed(fractionDigits)} m²`;
+}

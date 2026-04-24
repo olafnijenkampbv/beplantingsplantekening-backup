@@ -17,6 +17,362 @@ export type DummyPlant = {
     imageSrc: string;
 };
 
+export type DummyPlantSpecificationRow = {
+    label: string;
+    value: string;
+    iconSrc: string;
+};
+
+export type DummyPlantSpecifications = {
+    leftColumn: DummyPlantSpecificationRow[];
+    rightColumn: DummyPlantSpecificationRow[];
+};
+
+export type PlantSelectionAdvancedArrayFilterKey =
+    | "plantgroepen"
+    | "kleuren"
+    | "standplaatsen"
+    | "grondsoorten"
+    | "bloeiperiodes";
+
+export type PlantSelectionAdvancedFilters = Record<
+    PlantSelectionAdvancedArrayFilterKey,
+    string[]
+>;
+
+export type DummyPlantSearchCardData = {
+    botanicalName: string;
+    dutchName: string;
+    sizeLabel: string;
+    stockLabel: string;
+    plantGroupBadges: string[];
+    isInheems: boolean;
+    kleuren: string[];
+    standplaatsen: string[];
+    grondsoorten: string[];
+    bloeiperiodes: string[];
+};
+
+export const EMPTY_ADVANCED_PLANT_SELECTION_FILTERS: PlantSelectionAdvancedFilters = {
+    plantgroepen: [],
+    kleuren: [],
+    standplaatsen: [],
+    grondsoorten: [],
+    bloeiperiodes: [],
+};
+
+export const DUMMY_PLANT_SIZE_OPTIONS = [
+    "Geen maat geselecteerd",
+    "GM P9",
+    "15-20 cm P9",
+    "20-30 cm C1",
+    "30-40 cm C2",
+    "40-60 cm C3",
+    "60-80 cm C5",
+    "80-100 cm C7,5",
+    "100-125 cm C10",
+    "60-80 cm 5L",
+    "80-100 cm 7,5L",
+    "100-125 cm 10L",
+    "125-150 cm cont.",
+    "150-175 cm cont",
+    "175-200 cm container",
+    "125-150 cm C10",
+    "10-12HO DR",
+    "10-12HO drkl",
+    "10-12HO drkluit",
+    "10-12HO draadkluit",
+    "10-12HO draadkluit leivorm",
+] as const;
+
+export const DUMMY_PLANT_SPECIFICATIONS: DummyPlantSpecifications = {
+    leftColumn: [
+        {
+            label: "Nederlandse naam",
+            value: "Dwergmispel",
+            iconSrc: "/icons/nederlandse-naam.svg",
+        },
+        {
+            label: "Planthoeveelheid per m²",
+            value: "6",
+            iconSrc: "/icons/planthoeveelheid-per-m2.svg",
+        },
+        {
+            label: "Volwassen hoogte",
+            value: "30 cm",
+            iconSrc: "/icons/volwassen-hoogte.svg",
+        },
+        {
+            label: "Kleur bloem",
+            value: "wit",
+            iconSrc: "/icons/kleur-bloem.svg",
+        },
+        {
+            label: "Kleur blad",
+            value: "groen",
+            iconSrc: "/icons/kleur-blad.svg",
+        },
+        {
+            label: "Bloeiperiode",
+            value: "mei - juni",
+            iconSrc: "/icons/bloeiperiode.svg",
+        },
+        {
+            label: "Bodembedekker",
+            value: "ja",
+            iconSrc: "/icons/bodembedekker.svg",
+        },
+    ],
+    rightColumn: [
+        {
+            label: "Inheems",
+            value: "nee",
+            iconSrc: "/icons/inheems.svg",
+        },
+        {
+            label: "Stikstofbehoefte",
+            value: "10 - 20 g",
+            iconSrc: "/icons/stikstofbehoefte.svg",
+        },
+        {
+            label: "Standplaats",
+            value: "zon, halfschaduw",
+            iconSrc: "/icons/standplaats.svg",
+        },
+        {
+            label: "Grondsoort",
+            value: "zandgrond, lichte klei, neutrale grond",
+            iconSrc: "/icons/grondsoort.svg",
+        },
+        {
+            label: "Toelichting",
+            value:
+                "De Cotoneaster dammeri, ook wel bekend als de Dwergmispel, is een laagblijvende struik met witte bloemen in mei-juni. Het groene blad en de compacte groei maken het een ideale bodembedekker voor zonnige tot halfschaduwrijke plekken op zandgrond, lichte klei of neutrale grond.",
+            iconSrc: "/icons/toelichting.svg",
+        },
+    ],
+};
+
+export const PLANT_SELECTION_COLOR_OPTIONS = [
+    "Blauw",
+    "Rood",
+    "Geel",
+    "Wit",
+    "Roze",
+    "Paars",
+];
+
+export const PLANT_SELECTION_BLOEIPERIODE_OPTIONS = [
+    "jan - mrt",
+    "mrt - mei",
+    "juni - aug",
+    "sept - nov",
+];
+
+export const PLANT_SELECTION_PLANTGROUP_OPTIONS = [
+    "Vaste planten",
+    "Heesters",
+    "Coniferen",
+    "Klimplanten",
+    "Fruit",
+    "Mediterraan",
+    "Rhododendrons",
+    "Rhododendrons boskwaliteit",
+    "Ericaceae",
+    "Rozen",
+    "Bomen",
+    "Dak, lei- & vormbomen",
+    "Meerstammig",
+    "Bosplantsoen",
+    "Bloembollen",
+    "Vijverplanten",
+    "Perkgoed",
+    "Bonsai",
+    "Kant en klaar haag",
+    "Tuinmaterialen",
+];
+
+export const PLANT_SELECTION_STANDPLAATS_OPTIONS = [
+    "Zon",
+    "Halfschaduw",
+    "Schaduw",
+];
+
+export const PLANT_SELECTION_GRONDSOORT_OPTIONS = [
+    "Zandgrond",
+    "Klei",
+    "Lemige grond",
+    "Lichte klei",
+    "Zware klei",
+    "Zure grond",
+    "Kalkrijke grond",
+    "Neutrale grond",
+    "Voedselarme grond",
+    "Voedselrijke grond",
+    "Goede tuingrond",
+    "Humusrijke grond",
+    "Bosgrond",
+    "Veengrond",
+    "Moerassige grond",
+    "Droge zandgrond",
+    "Natte klei",
+    "Leemgrond",
+    "Alluviale grond",
+    "Lössgrond",
+];
+
+export type PlantSelectionBaseFilterKey = "opVoorraad" | "inheems";
+
+export type PlantSelectionVisibleFilterKey =
+    | PlantSelectionBaseFilterKey
+    | PlantSelectionAdvancedArrayFilterKey;
+
+export type PlantSelectionVisibleFilterSection = {
+    key: PlantSelectionVisibleFilterKey;
+    label: string;
+    kind: "toggle" | "expandable";
+};
+
+const DEFAULT_VISIBLE_FILTER_SECTIONS: PlantSelectionVisibleFilterSection[] = [
+    { key: "opVoorraad", label: "Op voorraad", kind: "toggle" },
+    { key: "inheems", label: "Inheems", kind: "toggle" },
+    { key: "kleuren", label: "Kleur", kind: "expandable" },
+    { key: "bloeiperiodes", label: "Bloeiperiode", kind: "expandable" },
+];
+
+const SEARCH_VISIBLE_FILTER_SECTIONS: PlantSelectionVisibleFilterSection[] = [
+    { key: "opVoorraad", label: "Op voorraad", kind: "toggle" },
+    { key: "inheems", label: "Inheems", kind: "toggle" },
+    { key: "plantgroepen", label: "Plantgroep", kind: "expandable" },
+    { key: "kleuren", label: "Kleur", kind: "expandable" },
+    { key: "standplaatsen", label: "Standplaats", kind: "expandable" },
+    { key: "grondsoorten", label: "Grondsoort", kind: "expandable" },
+    { key: "bloeiperiodes", label: "Bloeiperiode", kind: "expandable" },
+];
+
+export function getVisiblePlantSelectionFilterSections(
+    isSearchMode: boolean
+): PlantSelectionVisibleFilterSection[] {
+    return isSearchMode
+        ? SEARCH_VISIBLE_FILTER_SECTIONS
+        : DEFAULT_VISIBLE_FILTER_SECTIONS;
+}
+
+const INHEEMS_PLANT_IDS = new Set([
+    "plant-3",
+    "plant-4",
+    "plant-7",
+    "plant-8",
+    "plant-9",
+    "plant-12",
+    "plant-13",
+    "plant-17",
+    "plant-23",
+    "plant-27",
+    "plant-29",
+]);
+
+const SIZE_LABEL_BY_PLANT_ID: Record<string, string> = {
+    "plant-1": "GM P9",
+    "plant-2": "20-30 cm C1",
+    "plant-3": "60-80 cm 5L",
+    "plant-4": "40-60 cm C3",
+    "plant-5": "60-80 cm C5",
+    "plant-6": "125-150 cm cont.",
+    "plant-7": "30-40 cm C2",
+    "plant-8": "15-20 cm P9",
+    "plant-9": "20-30 cm C1",
+    "plant-10": "80-100 cm 7,5L",
+    "plant-11": "150-175 cm cont",
+    "plant-12": "80-100 cm C7,5",
+    "plant-13": "GM P9",
+    "plant-14": "40-60 cm C3",
+    "plant-15": "60-80 cm 5L",
+    "plant-16": "30-40 cm C2",
+    "plant-17": "15-20 cm P9",
+    "plant-18": "60-80 cm C5",
+    "plant-19": "100-125 cm C10",
+    "plant-20": "80-100 cm 7,5L",
+    "plant-21": "175-200 cm container",
+    "plant-22": "20-30 cm C1",
+    "plant-23": "20-30 cm C1",
+    "plant-24": "60-80 cm 5L",
+    "plant-25": "125-150 cm C10",
+    "plant-26": "150-175 cm cont.",
+    "plant-27": "10-12HO DR",
+    "plant-28": "10-12HO drkl",
+    "plant-29": "10-12HO drkluit",
+    "plant-30": "10-12HO draadkluit",
+    "plant-31": "10-12HO draadkluit leivorm",
+};
+
+const CARD_GROUP_BADGES_BY_GROUP: Record<
+    Exclude<PlantGroupKey, "zoek-zelf">,
+    string[]
+> = {
+    "bodembedekkers": ["Vaste plant", "Bodembedekker"],
+    "vaste-planten": ["Vaste plant"],
+    "heesters-struiken": ["Heesters & struiken"],
+    "bomen": ["Bomen"],
+};
+
+const SEARCH_META_BY_GROUP: Record<
+    Exclude<PlantGroupKey, "zoek-zelf">,
+    Pick<DummyPlantSearchCardData, "kleuren" | "standplaatsen" | "grondsoorten" | "bloeiperiodes">
+> = {
+    "bodembedekkers": {
+        kleuren: ["Wit", "Groen"],
+        standplaatsen: ["Zon", "Halfschaduw"],
+        grondsoorten: ["Zandgrond", "Lichte klei", "Neutrale grond"],
+        bloeiperiodes: ["mrt - mei", "juni - aug"],
+    },
+    "vaste-planten": {
+        kleuren: ["Paars", "Roze", "Wit"],
+        standplaatsen: ["Zon", "Halfschaduw"],
+        grondsoorten: ["Goede tuingrond", "Humusrijke grond", "Neutrale grond"],
+        bloeiperiodes: ["juni - aug", "sept - nov"],
+    },
+    "heesters-struiken": {
+        kleuren: ["Wit", "Roze"],
+        standplaatsen: ["Zon", "Halfschaduw"],
+        grondsoorten: ["Goede tuingrond", "Humusrijke grond", "Klei"],
+        bloeiperiodes: ["mrt - mei", "juni - aug"],
+    },
+    "bomen": {
+        kleuren: ["Wit", "Geel"],
+        standplaatsen: ["Zon"],
+        grondsoorten: ["Zandgrond", "Klei", "Leemgrond"],
+        bloeiperiodes: ["mrt - mei"],
+    },
+};
+
+export function getDummyPlantSizeOptionsForPlant(_plant: DummyPlant) {
+    return DUMMY_PLANT_SIZE_OPTIONS;
+}
+
+export function getDummyPlantSpecificationsForPlant(_plant: DummyPlant) {
+    return DUMMY_PLANT_SPECIFICATIONS;
+}
+
+export function getDummyPlantSearchCardDataForPlant(
+    plant: DummyPlant
+): DummyPlantSearchCardData {
+    const metaByGroup = SEARCH_META_BY_GROUP[plant.group];
+
+    return {
+        botanicalName: plant.name,
+        dutchName: plant.latinName,
+        sizeLabel: SIZE_LABEL_BY_PLANT_ID[plant.id] ?? "15-20 cm C1",
+        stockLabel: plant.stockLabel,
+        plantGroupBadges: CARD_GROUP_BADGES_BY_GROUP[plant.group],
+        isInheems: INHEEMS_PLANT_IDS.has(plant.id),
+        kleuren: metaByGroup.kleuren,
+        standplaatsen: metaByGroup.standplaatsen,
+        grondsoorten: metaByGroup.grondsoorten,
+        bloeiperiodes: metaByGroup.bloeiperiodes,
+    };
+}
+
 export const GROUP_OPTIONS: Array<{
     key: PlantGroupKey;
     label: string;

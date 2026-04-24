@@ -108,7 +108,15 @@ export default function RightStepMenu() {
         removedObjectIds: string[];
     }>(null);
 
-    const hasShownRightStepCompletedRef = useRef(false);
+    const wizardCompletionNoticeRef = useRef({
+        hasInitialized: false,
+        wasComplete: false,
+        shouldNotifyOnNextComplete: false,
+    });
+
+    const markWizardInputChanged = useCallback(() => {
+        wizardCompletionNoticeRef.current.shouldNotifyOnNextComplete = true;
+    }, []);
 
     const locationLabelByValue = useMemo(() => {
         return new Map(
@@ -117,6 +125,8 @@ export default function RightStepMenu() {
     }, []);
 
     const handleSelectLocation = useCallback((nextLocation: string) => {
+        markWizardInputChanged();
+
         const currentLocation = step1.locationType;
 
         if (!currentLocation || currentLocation === nextLocation) {
@@ -163,6 +173,7 @@ export default function RightStepMenu() {
         locationLabelByValue,
         objects,
         setActiveDrawType,
+        markWizardInputChanged,
         setStep1LocationType,
         step1.locationType,
     ]);
@@ -243,15 +254,25 @@ export default function RightStepMenu() {
             isStep3Complete() &&
             isStep4Complete();
 
-        if (allStepsComplete && !hasShownRightStepCompletedRef.current) {
-            notify(APP_NOTIFICATIONS.rightStepMenuCompleted());
-            hasShownRightStepCompletedRef.current = true;
+        const noticeState = wizardCompletionNoticeRef.current;
+
+        if (!noticeState.hasInitialized) {
+            noticeState.hasInitialized = true;
+            noticeState.wasComplete = allStepsComplete;
             return;
         }
 
         if (!allStepsComplete) {
-            hasShownRightStepCompletedRef.current = false;
+            noticeState.wasComplete = false;
+            return;
         }
+
+        if (!noticeState.wasComplete && noticeState.shouldNotifyOnNextComplete) {
+            notify(APP_NOTIFICATIONS.rightStepMenuCompleted());
+            noticeState.shouldNotifyOnNextComplete = false;
+        }
+
+        noticeState.wasComplete = true;
     }, [
         isStep1Complete,
         isStep2Complete,
@@ -346,7 +367,51 @@ export default function RightStepMenu() {
     };
 
     const handleToggleGardenZone = (value: string) => {
+        markWizardInputChanged();
         toggleStep1GardenZone(value);
+    };
+
+    const handleToggleStep2Standplaats = (value: string) => {
+        markWizardInputChanged();
+        toggleStep2Standplaats(value);
+    };
+
+    const handleSelectStep2GroundType = (value: string) => {
+        markWizardInputChanged();
+        setStep2GroundType(value);
+    };
+
+    const handleSelectStep2MaintenanceLevel = (value: string) => {
+        markWizardInputChanged();
+        setStep2MaintenanceLevel(value);
+    };
+
+    const handleSelectStep2CertificationPreference = (value: string) => {
+        markWizardInputChanged();
+        setStep2CertificationPreference(value);
+    };
+
+    const handleSelectStep3StructureStyle = (value: string) => {
+        markWizardInputChanged();
+        setStep3StructureStyle(value);
+    };
+
+    const handleChangeStep3CustomPercentage = (
+        key: Parameters<typeof setStep3CustomPercentage>[0],
+        value: string
+    ) => {
+        markWizardInputChanged();
+        setStep3CustomPercentage(key, value);
+    };
+
+    const handleSelectStep4SeasonExperience = (value: string) => {
+        markWizardInputChanged();
+        setStep4SeasonExperience(value);
+    };
+
+    const handleSelectStep4HeightStyle = (value: string) => {
+        markWizardInputChanged();
+        setStep4HeightStyle(value);
     };
 
     const isNextDisabled =
@@ -473,10 +538,10 @@ export default function RightStepMenu() {
                             soilOptions={RIGHT_STEP_STEP2_SOIL_OPTIONS}
                             maintenanceOptions={RIGHT_STEP_STEP2_MAINTENANCE_OPTIONS}
                             certificationOptions={RIGHT_STEP_STEP2_CERTIFICATION_OPTIONS}
-                            onToggleStandplaats={toggleStep2Standplaats}
-                            onSelectGroundType={setStep2GroundType}
-                            onSelectMaintenanceLevel={setStep2MaintenanceLevel}
-                            onSelectCertificationPreference={setStep2CertificationPreference}
+                            onToggleStandplaats={handleToggleStep2Standplaats}
+                            onSelectGroundType={handleSelectStep2GroundType}
+                            onSelectMaintenanceLevel={handleSelectStep2MaintenanceLevel}
+                            onSelectCertificationPreference={handleSelectStep2CertificationPreference}
                         />
                     )}
 
@@ -486,8 +551,8 @@ export default function RightStepMenu() {
                             structureOptions={RIGHT_STEP_STEP3_STRUCTURE_OPTIONS}
                             selectedStructureStyle={step3.structureStyle ?? ""}
                             customPercentages={step3.customPercentages}
-                            onSelectStructureStyle={setStep3StructureStyle}
-                            onChangeCustomPercentage={setStep3CustomPercentage}
+                            onSelectStructureStyle={handleSelectStep3StructureStyle}
+                            onChangeCustomPercentage={handleChangeStep3CustomPercentage}
                         />
                     )}
                     {activeStep === 4 && (
@@ -495,8 +560,8 @@ export default function RightStepMenu() {
                             stepLabel={activeStepMeta.title}
                             selectedSeasonExperience={step4.seasonExperience ?? ""}
                             selectedHeightStyle={step4.heightStyle ?? ""}
-                            onSelectSeasonExperience={setStep4SeasonExperience}
-                            onSelectHeightStyle={setStep4HeightStyle}
+                            onSelectSeasonExperience={handleSelectStep4SeasonExperience}
+                            onSelectHeightStyle={handleSelectStep4HeightStyle}
                         />
                     )}
                 </div>

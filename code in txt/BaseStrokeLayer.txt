@@ -5,6 +5,7 @@ import { isUnifiedBoundaryType, getBoundaryBandShape } from "@/features/editor/l
 import {
     PolygonWithHoles,
 } from "@/features/editor/lib/editorCanvasPrimitives";
+import { DynamicStrokeShape } from "@/features/editor/lib/treebedGeometry";
 
 type BaseStrokeLayerProps = {
     unselectedNonPlantbeds: PolyObject[];
@@ -25,6 +26,13 @@ type BaseStrokeLayerProps = {
     getPlantbedOutlineSegments: (plantbeds: PolyObject[]) => Array<[number, number, number, number]>;
 };
 
+function getObjectRenderStyle(object: PolyObject) {
+    return {
+        ...OBJECT_STYLES[object.type],
+        ...(object.customStyle ?? {}),
+    };
+}
+
 export default function BaseStrokeLayer({
     unselectedNonPlantbeds,
     unselectedPlantbeds,
@@ -44,6 +52,28 @@ export default function BaseStrokeLayer({
                     ? getBoundaryBandShape(obj.points, obj.type)
                     : null;
 
+                if (obj.type === "hedge") {
+                    return (
+                        <React.Fragment key={`stroke-${obj.id}`}>
+                            <DynamicStrokeShape
+                                points={obj.points}
+                                stroke={getObjectRenderStyle(obj).stroke}
+                                strokeWidth={2}
+                                seedKey={`hedge-stroke:${obj.id}:base:outer`}
+                            />
+                            {(obj.holes ?? []).map((hole, holeIndex) => (
+                                <DynamicStrokeShape
+                                    key={`stroke-${obj.id}-hole-${holeIndex}`}
+                                    points={hole}
+                                    stroke={getObjectRenderStyle(obj).stroke}
+                                    strokeWidth={2}
+                                    seedKey={`hedge-stroke:${obj.id}:base:hole:${holeIndex}`}
+                                />
+                            ))}
+                        </React.Fragment>
+                    );
+                }
+
                 if (hasHoles) {
                     return (
                         <PolygonWithHoles
@@ -51,7 +81,7 @@ export default function BaseStrokeLayer({
                             points={obj.points}
                             holes={obj.holes}
                             fill={undefined}
-                            stroke={OBJECT_STYLES[obj.type].stroke}
+                            stroke={getObjectRenderStyle(obj).stroke}
                             strokeWidth={2}
                             opacity={1}
                             listening={false}
@@ -67,7 +97,7 @@ export default function BaseStrokeLayer({
                             points={boundaryBandShape.outer}
                             holes={boundaryBandShape.holes}
                             fill={undefined}
-                            stroke={OBJECT_STYLES[obj.type].stroke}
+                            stroke={getObjectRenderStyle(obj).stroke}
                             strokeWidth={2}
                             opacity={1}
                             listening={false}
@@ -116,25 +146,27 @@ export default function BaseStrokeLayer({
             ))}
 
             {/* Plantbed dashed outline bovenop */}
-            {getPlantbedOutlineSegments(
-                unselectedPlantbeds.filter((pb) => dragOverPlantbedId !== pb.id)
-            ).map((seg, index) => (
-                <Line
-                    key={`pb-dash-seg-${index}`}
-                    points={seg}
-                    closed={false}
-                    fillEnabled={false}
-                    stroke={OBJECT_STYLES.plantbed.stroke}
-                    strokeWidth={2}
-                    dash={[6, 4]}
-                    dashEnabled
-                    lineCap="butt"
-                    lineJoin="miter"
-                    listening={false}
-                    perfectDrawEnabled={false}
-                    opacity={1}
-                />
-            ))}
+            {unselectedPlantbeds
+                .filter((pb) => dragOverPlantbedId !== pb.id)
+                .flatMap((pb) =>
+                    getPlantbedOutlineSegments([pb]).map((seg, index) => (
+                        <Line
+                            key={`pb-dash-seg-${pb.id}-${index}`}
+                            points={seg}
+                            closed={false}
+                            fillEnabled={false}
+                            stroke={getObjectRenderStyle(pb).stroke}
+                            strokeWidth={2}
+                            dash={[6, 4]}
+                            dashEnabled
+                            lineCap="butt"
+                            lineJoin="miter"
+                            listening={false}
+                            perfectDrawEnabled={false}
+                            opacity={1}
+                        />
+                    ))
+                )}
 
             {null}
         </Layer>

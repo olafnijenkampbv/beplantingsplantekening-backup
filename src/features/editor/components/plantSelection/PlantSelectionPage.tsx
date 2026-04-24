@@ -5,13 +5,28 @@ import RightStepMenuSummaryOverlay from "@/features/editor/components/editor/rig
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import { goBackToEditor } from "@/features/editor/lib/editorWorkflowNavigation";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
-import { DUMMY_PLANTS, GROUP_LABELS } from "@/features/editor/lib/plantSelectionDummyData";
+import {
+    DUMMY_PLANTS,
+    EMPTY_ADVANCED_PLANT_SELECTION_FILTERS,
+    GROUP_LABELS,
+    getDummyPlantSearchCardDataForPlant,
+    type PlantSelectionAdvancedArrayFilterKey,
+    type PlantSelectionAdvancedFilters,
+} from "@/features/editor/lib/plantSelectionDummyData";
 import PlantSelectionProgress from "@/features/editor/components/plantSelection/PlantSelectionProgress";
 import PlantProposalGroupsCard from "@/features/editor/components/plantSelection/PlantProposalGroupsCard";
 import PlantSelectionSummaryCard from "@/features/editor/components/plantSelection/PlantSelectionSummaryCard";
 import PlantSelectionFiltersCard from "@/features/editor/components/plantSelection/PlantSelectionFiltersCard";
 import PlantProposalGrid from "@/features/editor/components/plantSelection/PlantProposalGrid";
 import PlantSelectionListCard from "@/features/editor/components/plantSelection/PlantSelectionListCard";
+import {
+    getPlantSelectionSnapshotForDrawing,
+    getRightStepSnapshotForDrawing,
+    readActiveDrawingIdFromStorage,
+    readPlantSelectionSnapshotsByDrawingIdFromStorage,
+    readRightStepSnapshotsByDrawingIdFromStorage,
+    writePlantSelectionSnapshotsByDrawingIdToStorage,
+} from "@/features/editor/lib/appDrawingPersistence";
 
 const COLORS = {
     pageBg: "#F7F6F4",
@@ -24,6 +39,12 @@ export default function PlantSelectionPage() {
     const plantListSectionRef = useRef<HTMLDivElement | null>(null);
     const [isPlantListVisible, setIsPlantListVisible] = useState(false);
     const [isPlantListFabHovered, setIsPlantListFabHovered] = useState(false);
+    const [activeDrawingId, setActiveDrawingId] = useState<string | null>(null);
+    const [hasHydratedDrawingContext, setHasHydratedDrawingContext] = useState(false);
+    const [advancedFilters, setAdvancedFilters] = useState<PlantSelectionAdvancedFilters>(
+        EMPTY_ADVANCED_PLANT_SELECTION_FILTERS
+    );
+
     const step1 = useRightStepMenuStore((s) => s.step1);
     const step2 = useRightStepMenuStore((s) => s.step2);
     const step3 = useRightStepMenuStore((s) => s.step3);
@@ -38,6 +59,7 @@ export default function PlantSelectionPage() {
     const sortValue = usePlantSelectionStore((s) => s.sortValue);
     const filters = usePlantSelectionStore((s) => s.filters);
     const isSummaryOpen = usePlantSelectionStore((s) => s.isSummaryOpen);
+    const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
 
     const setSelectedGroup = usePlantSelectionStore((s) => s.setSelectedGroup);
     const setViewMode = usePlantSelectionStore((s) => s.setViewMode);
@@ -47,6 +69,141 @@ export default function PlantSelectionPage() {
     const closeSummary = usePlantSelectionStore((s) => s.closeSummary);
     const clearFilters = usePlantSelectionStore((s) => s.clearFilters);
     const addPlantToList = usePlantSelectionStore((s) => s.addPlantToList);
+    const exportPlantSelectionSnapshot = usePlantSelectionStore((s) => s.exportSnapshot);
+    const loadPlantSelectionSnapshot = usePlantSelectionStore((s) => s.loadSnapshot);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        const restoredDrawingId = readActiveDrawingIdFromStorage();
+        const rightStepSnapshotsByDrawingId = readRightStepSnapshotsByDrawingIdFromStorage();
+        const plantSelectionSnapshotsByDrawingId =
+            readPlantSelectionSnapshotsByDrawingIdFromStorage();
+
+        const rightStepSnapshot = getRightStepSnapshotForDrawing(
+            restoredDrawingId,
+            rightStepSnapshotsByDrawingId
+        );
+
+        useRightStepMenuStore.setState({
+            activeStep: rightStepSnapshot.activeStep,
+            step1: {
+                locationType: rightStepSnapshot.step1.locationType,
+                gardenZones: [...rightStepSnapshot.step1.gardenZones],
+            },
+            step2: {
+                standplaatsen: [...rightStepSnapshot.step2.standplaatsen],
+                groundTypes: [...rightStepSnapshot.step2.groundTypes],
+                maintenanceLevel: rightStepSnapshot.step2.maintenanceLevel,
+                certificationPreference: rightStepSnapshot.step2.certificationPreference,
+            },
+            step3: {
+                structureStyle: rightStepSnapshot.step3.structureStyle,
+                customPercentages: {
+                    bodembedekkers:
+                        rightStepSnapshot.step3.customPercentages.bodembedekkers,
+                    vastePlanten:
+                        rightStepSnapshot.step3.customPercentages.vastePlanten,
+                    heestersEnStruiken:
+                        rightStepSnapshot.step3.customPercentages.heestersEnStruiken,
+                    bomen: rightStepSnapshot.step3.customPercentages.bomen,
+                },
+            },
+            step4: {
+                seasonExperience: rightStepSnapshot.step4.seasonExperience,
+                heightStyle: rightStepSnapshot.step4.heightStyle,
+            },
+        });
+
+        loadPlantSelectionSnapshot(
+            getPlantSelectionSnapshotForDrawing(
+                restoredDrawingId,
+                plantSelectionSnapshotsByDrawingId
+            )
+        );
+
+        setActiveDrawingId(restoredDrawingId);
+        setHasHydratedDrawingContext(true);
+    }, [loadPlantSelectionSnapshot]);
+
+    useEffect(() => {
+        if (!hasHydratedDrawingContext || !activeDrawingId) return;
+        if (typeof window === "undefined") return;
+
+        const snapshotsByDrawingId =
+            readPlantSelectionSnapshotsByDrawingIdFromStorage();
+
+        snapshotsByDrawingId[activeDrawingId] = exportPlantSelectionSnapshot();
+
+        writePlantSelectionSnapshotsByDrawingIdToStorage(snapshotsByDrawingId);
+    }, [
+        activeDrawingId,
+        hasHydratedDrawingContext,
+        selectedGroup,
+        viewMode,
+        sortValue,
+        filters,
+        plantListItems,
+        exportPlantSelectionSnapshot,
+    ]);
+
+    useEffect(() => {
+        if (selectedGroup === "zoek-zelf") return;
+
+        setAdvancedFilters((prev) => ({
+            ...prev,
+            plantgroepen: [],
+            standplaatsen: [],
+            grondsoorten: [],
+        }));
+    }, [selectedGroup]);
+
+    const handleToggleAdvancedFilter = (
+        key: PlantSelectionAdvancedArrayFilterKey,
+        value: string
+    ) => {
+        setAdvancedFilters((prev) => {
+            const currentValues = prev[key];
+
+            return {
+                ...prev,
+                [key]: currentValues.includes(value)
+                    ? currentValues.filter((item: string) => item !== value)
+                    : [...currentValues, value],
+            };
+        });
+    };
+
+    const handleRemoveFilterChip = (
+        key: PlantSelectionAdvancedArrayFilterKey | keyof typeof filters,
+        value?: string
+    ) => {
+        if (key === "opVoorraad" || key === "inheems") {
+            if (filters[key]) {
+                toggleFilter(key);
+            }
+            return;
+        }
+
+        if (!value) return;
+
+        setAdvancedFilters((prev) => ({
+            ...prev,
+            [key]: prev[key].filter((item: string) => item !== value),
+        }));
+    };
+
+    const handleClearAllFilters = () => {
+        if (filters.opVoorraad) {
+            toggleFilter("opVoorraad");
+        }
+
+        if (filters.inheems) {
+            toggleFilter("inheems");
+        }
+
+        setAdvancedFilters(EMPTY_ADVANCED_PLANT_SELECTION_FILTERS);
+    };
 
     const visiblePlants = useMemo(() => {
         let nextPlants =
@@ -60,7 +217,58 @@ export default function PlantSelectionPage() {
             );
         }
 
-        if (sortValue === "meest-geschikt") {
+        if (filters.inheems) {
+            nextPlants = nextPlants.filter((plant) =>
+                getDummyPlantSearchCardDataForPlant(plant).isInheems
+            );
+        }
+
+        if (advancedFilters.plantgroepen.length > 0) {
+            nextPlants = nextPlants.filter((plant) => {
+                const cardData = getDummyPlantSearchCardDataForPlant(plant);
+                return cardData.plantGroupBadges.some((badge) =>
+                    advancedFilters.plantgroepen.includes(badge)
+                );
+            });
+        }
+
+        if (advancedFilters.kleuren.length > 0) {
+            nextPlants = nextPlants.filter((plant) => {
+                const cardData = getDummyPlantSearchCardDataForPlant(plant);
+                return cardData.kleuren.some((kleur) =>
+                    advancedFilters.kleuren.includes(kleur)
+                );
+            });
+        }
+
+        if (advancedFilters.standplaatsen.length > 0) {
+            nextPlants = nextPlants.filter((plant) => {
+                const cardData = getDummyPlantSearchCardDataForPlant(plant);
+                return cardData.standplaatsen.some((standplaats) =>
+                    advancedFilters.standplaatsen.includes(standplaats)
+                );
+            });
+        }
+
+        if (advancedFilters.grondsoorten.length > 0) {
+            nextPlants = nextPlants.filter((plant) => {
+                const cardData = getDummyPlantSearchCardDataForPlant(plant);
+                return cardData.grondsoorten.some((grondsoort) =>
+                    advancedFilters.grondsoorten.includes(grondsoort)
+                );
+            });
+        }
+
+        if (advancedFilters.bloeiperiodes.length > 0) {
+            nextPlants = nextPlants.filter((plant) => {
+                const cardData = getDummyPlantSearchCardDataForPlant(plant);
+                return cardData.bloeiperiodes.some((bloeiperiode) =>
+                    advancedFilters.bloeiperiodes.includes(bloeiperiode)
+                );
+            });
+        }
+
+        if (selectedGroup !== "zoek-zelf" && sortValue === "meest-geschikt") {
             const badgePriority: Record<string, number> = {
                 "zeer geschikt": 0,
                 "geschikt": 1,
@@ -88,7 +296,13 @@ export default function PlantSelectionPage() {
         }
 
         return nextPlants;
-    }, [filters.opVoorraad, selectedGroup, sortValue]);
+    }, [
+        advancedFilters,
+        filters.inheems,
+        filters.opVoorraad,
+        selectedGroup,
+        sortValue,
+    ]);
 
     useEffect(() => {
         const target = plantListSectionRef.current;
@@ -121,6 +335,21 @@ export default function PlantSelectionPage() {
         };
     }, [isPlantListVisible]);
 
+    const handleBackToEditorWithStepsPanel = () => {
+        if (typeof window !== "undefined") {
+            const drawingId = activeDrawingId ?? readActiveDrawingIdFromStorage();
+
+            if (drawingId) {
+                window.sessionStorage.setItem(
+                    `hello-editor:right-panel-mode:${drawingId}`,
+                    "steps"
+                );
+            }
+        }
+
+        goBackToEditor();
+    };
+
     const handleScrollToPlantList = () => {
         plantListSectionRef.current?.scrollIntoView({
             behavior: "smooth",
@@ -145,7 +374,7 @@ export default function PlantSelectionPage() {
 
                         <button
                             type="button"
-                            onClick={goBackToEditor}
+                            onClick={handleBackToEditorWithStepsPanel}
                             className="group mt-4 inline-flex cursor-pointer items-center gap-3 text-left"
                             style={{ color: COLORS.text }}
                         >
@@ -156,7 +385,7 @@ export default function PlantSelectionPage() {
                                 style={{ width: 16, height: 16, display: "block" }}
                             />
                             <span className="text-[14px] font-medium underline-offset-4 group-hover:underline group-focus-visible:underline">
-                                Terug naar tekening
+                                Terug naar tekening met stappenmenu
                             </span>
                         </button>
                     </div>
@@ -173,11 +402,14 @@ export default function PlantSelectionPage() {
                             />
 
                             <PlantSelectionSummaryCard onClick={openSummary} />
-
+                            
                             <PlantSelectionFiltersCard
                                 filters={filters}
+                                advancedFilters={advancedFilters}
+                                isSearchMode={selectedGroup === "zoek-zelf"}
                                 onToggleFilter={toggleFilter}
-                                onClearFilters={clearFilters}
+                                onToggleAdvancedFilter={handleToggleAdvancedFilter}
+                                onClearFilters={handleClearAllFilters}
                             />
                         </div>
 
@@ -188,9 +420,14 @@ export default function PlantSelectionPage() {
                                 plants={visiblePlants}
                                 viewMode={viewMode}
                                 sortValue={sortValue}
+                                selectedGroup={selectedGroup}
+                                filters={filters}
+                                advancedFilters={advancedFilters}
                                 onChangeSort={setSortValue}
                                 onChangeViewMode={setViewMode}
                                 onAddToPlantList={addPlantToList}
+                                onRemoveFilterChip={handleRemoveFilterChip}
+                                onClearAllFilters={handleClearAllFilters}
                             />
                         </div>
 

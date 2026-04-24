@@ -1,8 +1,12 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { useProjectStore } from "@/state/projectStore";
+import { OBJECT_STYLES, useProjectStore } from "@/state/projectStore";
+import type { TreebedVariant } from "@/state/projectStore";
+import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwatch";
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
+import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
+import { DUMMY_PLANTS } from "@/features/editor/lib/plantSelectionDummyData";
 
 const COLORS = {
     orange: "#E94E1B",
@@ -11,6 +15,9 @@ const COLORS = {
     greenLight: "#EEF0ED",
     border: "#E3E2E2",
 };
+
+const PLANT_LATIN_NAME_FONT_SIZE = 14;
+const PLANT_DUTCH_NAME_FONT_SIZE = 12;
 
 // ✅ align met EditorToolbar (zelfde waardes als HelloEditor)
 const HEADER_HEIGHT = 56;
@@ -22,29 +29,10 @@ type PlantItem = {
     nr: number;
     latin: string;
     dutch: string;
+    size: string;
+    imageSrc: string;
 };
-
-// 🔧 Zet deze op false om terug te gaan naar 5 dummy planten
-const USE_EXTENDED_DUMMY = true;
 type TabKey = "list" | "linked";
-
-function IconDragDots(props: { className?: string }) {
-    return (
-        <svg
-            className={props.className}
-            width="18"
-            height="18"
-            viewBox="0 0 20 20"
-            fill="none"
-            style={{ color: "#898988" }}
-        >
-            <path
-                d="M7 4.5C7 5.32843 6.32843 6 5.5 6C4.67157 6 4 5.32843 4 4.5C4 3.67157 4.67157 3 5.5 3C6.32843 3 7 3.67157 7 4.5ZM7 10C7 10.8284 6.32843 11.5 5.5 11.5C4.67157 11.5 4 10.8284 4 10C4 9.17157 4.67157 8.5 5.5 8.5C6.32843 8.5 7 9.17157 7 10ZM7 15.5C7 16.3284 6.32843 17 5.5 17C4.67157 17 4 16.3284 4 15.5C4 14.6716 4.67157 14 5.5 14C6.32843 14 7 14.6716 7 15.5ZM16 4.5C16 5.32843 15.3284 6 14.5 6C13.6716 6 13 5.32843 13 4.5C13 3.67157 13.6716 3 14.5 3C15.3284 3 16 3.67157 16 4.5ZM16 10C16 10.8284 15.3284 11.5 14.5 11.5C13.6716 11.5 13 10.8284 13 10C13 9.17157 13.6716 8.5 14.5 8.5C15.3284 8.5 16 9.17157 16 10ZM16 15.5C16 16.3284 15.3284 17 14.5 17C13.6716 17 13 16.3284 13 15.5C13 14.6716 13.6716 14 14.5 14C15.3284 14 16 14.6716 16 15.5Z"
-                fill="currentColor"
-            />
-        </svg>
-    );
-}
 
 function IconSearch(props: { className?: string }) {
     return (
@@ -75,45 +63,76 @@ function IconX(props: { className?: string }) {
     );
 }
 
-function BadgeCount(props: { count: number }) {
+function BadgeCount(props: {
+    count: number;
+    tone?: "default" | "linked" | "empty";
+}) {
+    const { count, tone = "default" } = props;
+
+    const palette =
+        tone === "linked"
+            ? {
+                background: COLORS.orange,
+                color: "#ffffff",
+            }
+            : tone === "empty"
+                ? {
+                    background: COLORS.orangeLight,
+                    color: COLORS.orange,
+                }
+                : {
+                    background: "#E0E6DB",
+                    color: COLORS.green,
+                };
+
     return (
         <span
-            className="inline-flex items-center justify-center rounded-full text-white font-bold"
+            className="inline-flex items-center justify-center font-semibold"
             style={{
-                width: 20,
-                height: 20,
-                background: COLORS.orange,
-                fontSize: 12,
+                minWidth: 24,
+                height: 24,
+                paddingLeft: 7,
+                paddingRight: 7,
+                borderRadius: 6,
+                background: palette.background,
+                color: palette.color,
+                fontSize: 13,
                 lineHeight: 1,
             }}
         >
-            {props.count}
+            {count}
         </span>
     );
 }
 
-function PlantRow(props: { plant: PlantItem; isLinked: boolean; linkedCount: number }) {
-    const { plant, isLinked, linkedCount } = props;
+function PlantRow(props: { plant: PlantItem; isLinked: boolean; linkedCount: number; linkedLabelText?: string }) {
+    const { plant, isLinked, linkedCount, linkedLabelText } = props;
+    const clearSelection = useProjectStore((s: any) => s.clearSelection);
+
+    const linkedLabel =
+        linkedLabelText ??
+        (linkedCount === 1
+            ? "aan 1 plantvak gekoppeld"
+            : `aan ${linkedCount} plantvakken gekoppeld`);
 
     return (
         <div
             className="flex items-center gap-3 px-4 py-3 border-b plant-row-draggable"
             style={{
                 borderColor: COLORS.border,
-                background: isLinked ? COLORS.greenLight : "#fff",
-                cursor: "grab", // ✅ hover = grab (requirement #1)
+                background: isLinked ? "#DEFFDE" : "#fff",
+                cursor: "grab",
                 userSelect: "none",
+                position: "relative",
+                borderLeft: isLinked ? "7px solid #008000" : "7px solid transparent",
+                paddingLeft: isLinked ? 14 : 16,
             }}
             draggable
             onDragStart={(e) => {
-                // ✅ belangrijkste: plantId meegeven
+                clearSelection();
                 e.dataTransfer.setData("application/x-plant-id", plant.id);
                 e.dataTransfer.effectAllowed = "copy";
-
-                // optioneel: ook plain text voor debugging
                 e.dataTransfer.setData("text/plain", plant.id);
-
-                // cursor feedback
                 (e.currentTarget as HTMLDivElement).style.cursor = "grabbing";
             }}
             onDragEnd={(e) => {
@@ -121,98 +140,150 @@ function PlantRow(props: { plant: PlantItem; isLinked: boolean; linkedCount: num
             }}
         >
             <div
-                className="flex items-center justify-center rounded-md font-bold text-white"
+                className={`flex items-center justify-center font-bold text-white ${isLinked ? "rounded-full" : "rounded-md"
+                    }`}
                 style={{
                     width: 32,
                     height: 32,
-                    background: COLORS.green,
+                    background: isLinked ? "transparent" : COLORS.green,
                     flex: "0 0 auto",
                     pointerEvents: "none",
+                    overflow: "visible",
                 }}
             >
-                {plant.nr}
-            </div>
-
-            <div className="min-w-0 flex-1" style={{ pointerEvents: "none" }}>
-                <div className="font-semibold text-[14px] leading-tight truncate text-black">{plant.latin}</div>
-                <div className="flex items-center gap-2 text-[12px] leading-tight truncate" style={{ color: "#444" }}>
-                    <span className="truncate">{plant.dutch}</span>
-
-                    {linkedCount > 0 && (
-                        <span
-                            style={{
-                                border: `1px solid ${COLORS.orange}`,
-                                color: COLORS.orange,
-                                fontWeight: 500,
-                                fontSize: 11,          
-                                padding: "1px 8px", 
-                                borderRadius: 999,
-                                lineHeight: 1,
-                                whiteSpace: "nowrap",
-                                flex: "0 0 auto",
-                            }}
-                        >
-                            {linkedCount}x gekoppeld
-                        </span>
-                    )}
-                </div>
-            </div>
-
-            <div className="flex items-center gap-2" style={{ color: "#111", pointerEvents: "none" }}>
                 {isLinked ? (
                     <img
                         src="/icons/check-icon.svg"
                         alt=""
-                        style={{ width: 16, height: 16 }}
+                        style={{
+                            width: 26,
+                            height: 26,
+                            display: "block",
+                            objectFit: "contain",
+                        }}
                     />
                 ) : (
-                    <IconDragDots className="opacity-70" />
+                    plant.nr
                 )}
+            </div>
+
+            <div
+                className="min-w-0 flex-1"
+                style={{
+                    pointerEvents: "none",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 0,
+                }}
+            >
+                <div
+                    className="font-semibold leading-tight truncate text-black"
+                    style={{ fontSize: PLANT_LATIN_NAME_FONT_SIZE }}
+                >
+                    {plant.latin}
+                </div>
+
+                <div
+                    className="leading-tight truncate"
+                    style={{
+                        color: "#444",
+                        marginTop: 2,
+                        fontSize: PLANT_DUTCH_NAME_FONT_SIZE,
+                    }}
+                >
+                    {plant.dutch}
+                </div>
+
+                <div
+                    className="text-[14px] leading-tight truncate"
+                    style={{ color: "#222", marginTop: 8 }}
+                >
+                    {plant.size}
+                </div>
+
+                {linkedCount > 0 && (
+                    <div
+                        className="text-[12px] leading-tight font-semibold truncate"
+                        style={{ color: "#008000", marginTop: 4 }}
+                    >
+                        {linkedLabel}
+                    </div>
+                )}
+            </div>
+
+            <div
+                className="flex items-center gap-2"
+                style={{ color: "#111", pointerEvents: "none", flex: "0 0 auto" }}
+            >
+                <img
+                    src="/icons/drag-handle.svg"
+                    alt=""
+                    style={{
+                        width: 26,
+                        height: 26,
+                        display: "block",
+                    }}
+                />
             </div>
         </div>
     );
 }
 
-function SectionHeader(props: {
+function LinkedGroupHeader(props: {
     title: string;
+    iconSrc: string;
     count: number;
     open: boolean;
     onToggle: () => void;
 }) {
-    const { title, count, open, onToggle } = props;
+    const { title, iconSrc, count, open, onToggle } = props;
 
     return (
         <button
             type="button"
-            className="w-full flex items-center justify-between px-4 py-3 border-b transition-colors duration-150"
+            className="w-full flex items-center justify-between"
             style={{
-                borderColor: COLORS.border,
-                background: "#F7F7F7",
+                background: "#F5F7F4",
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 6,
+                padding: "10px 12px",
                 cursor: "pointer",
             }}
             onClick={onToggle}
-            onMouseEnter={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = "#EFEFEF";
-            }}
-            onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = "#F7F7F7";
-            }}
         >
-            <div className="flex items-center gap-3">
-                <div className="font-semibold text-[13px]" style={{ color: "#111" }}>
-                    {title}
+            <div className="flex items-center gap-10">
+                <div className="flex items-center gap-10">
+                    <img
+                        src={iconSrc}
+                        alt=""
+                        style={{
+                            width: 16,
+                            height: 16,
+                            display: "block",
+                            objectFit: "contain",
+                        }}
+                    />
+                    <div
+                        className="font-semibold"
+                        style={{
+                            fontSize: 14,
+                            color: COLORS.green,
+                        }}
+                    >
+                        {title}
+                    </div>
                 </div>
             </div>
 
-            <div className="flex items-center gap-2">
-                <BadgeCount count={count} />
+            <div className="flex items-center gap-10">
+                <BadgeCount count={count} tone="default" />
                 <img
                     src={open ? "/icons/chevron-down.svg" : "/icons/chevron-right.svg"}
                     alt=""
                     style={{
                         width: 18,
                         height: 18,
-                        opacity: 0.9,
+                        display: "block",
                     }}
                 />
             </div>
@@ -220,38 +291,158 @@ function SectionHeader(props: {
     );
 }
 
-function LinkedPlantRow(props: { plant: PlantItem; onUnlink: () => void }) {
-    const { plant, onUnlink } = props;
-
+function LinkedObjectHeader(props: {
+    title: string;
+    linkedCount: number;
+    open: boolean;
+    swatchFill: string;
+    swatchStroke: string;
+    swatchShape?: "square" | "circle";
+    treebedVariant?: TreebedVariant;
+    onToggle: () => void;
+}) {
+    const { title, linkedCount, open, swatchFill, swatchStroke, swatchShape = "square", treebedVariant, onToggle } = props;
+    
     return (
-        <div className="flex items-center gap-3 px-4 py-3 border-b" style={{ borderColor: COLORS.border }}>
+        <button
+            type="button"
+            className="w-full flex items-center justify-between transition-colors duration-150"
+            style={{
+                padding: "12px 14px",
+                background: open ? "#F7F7F7" : "#ffffff",
+                border: "none",
+                cursor: "pointer",
+            }}
+            onClick={onToggle}
+            onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = "#F7F7F7";
+            }}
+            onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = open
+                    ? "#F7F7F7"
+                    : "#ffffff";
+            }}
+        >
             <div
-                className="flex items-center justify-center rounded-md font-bold text-white"
+                className="font-semibold flex items-center"
                 style={{
-                    width: 32,
-                    height: 32,
-                    background: COLORS.green,
-                    flex: "0 0 auto",
+                    color: "#111",
+                    fontSize: 14,
+                    textAlign: "left",
+                    gap: 8,
+                    minWidth: 0,
                 }}
             >
-                {plant.nr}
+                {treebedVariant ? (
+                    <TreebedVariantSwatch
+                        variant={treebedVariant}
+                        size={14}
+                    />
+                ) : (
+                    <span
+                        style={{
+                            width: 12,
+                            height: 12,
+                            borderRadius: swatchShape === "circle" ? 999 : 2,
+                            background: swatchFill,
+                            border: `1px solid ${swatchStroke}`,
+                            flex: "0 0 auto",
+                        }}
+                    />
+                )}
+                <span>{title}</span>
             </div>
 
-            <div className="min-w-0 flex-1">
-                <div className="font-semibold text-[14px] leading-tight truncate text-black">{plant.latin}</div>
-                <div className="text-[12px] leading-tight truncate" style={{ color: "#444" }}>
-                    {plant.dutch}
-                </div>
+            <div className="flex items-center gap-10">
+                <BadgeCount
+                    count={linkedCount}
+                    tone={linkedCount > 0 ? "linked" : "empty"}
+                />
+                <img
+                    src={open ? "/icons/chevron-down.svg" : "/icons/chevron-right.svg"}
+                    alt=""
+                    style={{
+                        width: 18,
+                        height: 18,
+                        display: "block",
+                    }}
+                />
             </div>
+        </button>
+    );
+}
+
+function LinkedPlantRow(props: { plant: PlantItem; onClick: () => void; onUnlink: () => void }) {
+    const { plant, onClick, onUnlink } = props;
+
+    return (
+        <div
+            className="flex items-center gap-3 px-4 py-3 border-b"
+            style={{
+                borderColor: COLORS.border,
+                background: "#ffffff",
+            }}
+        >
+            <button
+                type="button"
+                className="linked-plant-name-button flex items-center gap-3 min-w-0 flex-1 text-left"
+                style={{
+                    background: "transparent",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                }}
+                onClick={onClick}
+            >
+                <div
+                    className="flex items-center justify-center rounded-md font-bold text-white"
+                    style={{
+                        width: 32,
+                        height: 32,
+                        background: COLORS.green,
+                        flex: "0 0 auto",
+                    }}
+                >
+                    {plant.nr}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                    <div
+                        className="linked-plant-latin-name font-semibold leading-tight truncate text-black"
+                        style={{ fontSize: PLANT_LATIN_NAME_FONT_SIZE }}
+                    >
+                        {plant.latin}
+                    </div>
+                    <div
+                        className="leading-tight truncate"
+                        style={{
+                            color: "#444",
+                            fontSize: PLANT_DUTCH_NAME_FONT_SIZE,
+                        }}
+                    >
+                        {plant.dutch}
+                    </div>
+                    <div
+                        className="leading-tight truncate"
+                        style={{
+                            color: "#111",
+                            fontSize: 14,
+                            marginTop: 8,
+                        }}
+                    >
+                        {plant.size}
+                    </div>
+                </div>
+            </button>
 
             <button
                 type="button"
                 className="h-9 w-9 rounded-md flex items-center justify-center transition-colors duration-150"
-                style={{ color: "#111", cursor: "pointer" }}
+                style={{ color: "#111", cursor: "pointer", flex: "0 0 auto" }}
                 onMouseEnter={(e) => {
                     const el = e.currentTarget as HTMLButtonElement;
-                    el.style.background = "#f2f2f2";   // ✅ grijze hover-bg
-                    el.style.color = "#D11A2A";        // ✅ kruisje rood
+                    el.style.background = "#f2f2f2";
+                    el.style.color = "#D11A2A";
                 }}
                 onMouseLeave={(e) => {
                     const el = e.currentTarget as HTMLButtonElement;
@@ -294,13 +485,20 @@ function ChevronUpIcon() {
         </svg>
     );
 }
+export default function PlantSidebar(props: {
+    onLinkedPlantSelect?: (plant: { id: string; latin: string; dutch: string; imageSrc: string } | null) => void;
+}) {
+    const { onLinkedPlantSelect } = props;
 
-export default function PlantSidebar() {
     const [collapsed, setCollapsed] = React.useState(false);
     const [activeTab, setActiveTab] = React.useState<TabKey>("list");
     const [query, setQuery] = React.useState("");
-
     const [openSections, setOpenSections] = React.useState<Record<string, boolean>>({});
+    const [openLinkedGroups, setOpenLinkedGroups] = React.useState<Record<"plantbed" | "hedge" | "treebed", boolean>>({
+        plantbed: true,
+        hedge: false,
+        treebed: false,
+    });
 
     const linkedScrollRef = React.useRef<HTMLDivElement | null>(null);
     const linkedSectionRefs = React.useRef<Record<string, HTMLDivElement | null>>({});
@@ -331,10 +529,46 @@ export default function PlantSidebar() {
         return Math.max(0, Math.floor(maxCardHeight - headerH - footerH));
     }, []);
 
-    // ✅ Store: plants + linking
-    const ensureDummyPlants = useProjectStore((s: any) => s.ensureDummyPlants);
-    const plants = useProjectStore((s: any) => s.plants) as PlantItem[];
+    // ✅ Plants uit de drawing-aware plantenlijststore
+    const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
 
+    const plants = useMemo(() => {
+        const seenPlantIds = new Set<string>();
+        let nextNr = 1;
+
+        const dummyPlantById = Object.fromEntries(
+            DUMMY_PLANTS.map((plant) => [plant.id, plant])
+        ) as Record<string, (typeof DUMMY_PLANTS)[number]>;
+
+        return plantListItems.flatMap((item) => {
+            const plantId = item.plant.id;
+
+            if (seenPlantIds.has(plantId)) {
+                return [];
+            }
+
+            seenPlantIds.add(plantId);
+
+            return [
+                {
+                    id: plantId,
+                    nr: nextNr++,
+                    latin: item.plant.name,
+                    dutch: item.plant.latinName,
+                    size: item.size || "Geen maat geselecteerd",
+                    imageSrc: dummyPlantById[plantId]?.imageSrc ?? "/images/placeholder-plant.jpg",
+                },
+            ];
+        });
+    }, [plantListItems]);
+
+    const plantsById = useMemo(() => {
+        return Object.fromEntries(
+            plants.map((plant) => [plant.id, plant])
+        ) as Record<string, PlantItem>;
+    }, [plants]);
+
+    const setPlants = useProjectStore((s: any) => s.setPlants);
     const isPlantLinked = useProjectStore((s: any) => s.isPlantLinked);
     const plantSidebarFocus = useProjectStore((s: any) => s.plantSidebarFocus);
 
@@ -342,11 +576,25 @@ export default function PlantSidebar() {
     const focusCanvasOnObject = useProjectStore((s: any) => s.focusCanvasOnObject);
 
     // ✅ subscribe op echte state, zodat UI DIRECT rerendert bij link/unlink
-    // ✅ subscribe op echte state, zodat UI DIRECT rerendert bij link/unlink
     const plantbedLinks = useProjectStore((s: any) => s.plantbedLinks) as Record<string, string[]>;
     const plantbedLinkedCountMap = useProjectStore((s: any) => s.plantbedLinkedCount) as Record<string, number>;
-    const getPlantById = useProjectStore((s: any) => s.getPlantById);
     const unlinkPlantFromPlantbedByPlantId = useProjectStore((s: any) => s.unlinkPlantFromPlantbedByPlantId);
+
+    const validPlantIds = useMemo(() => {
+        return new Set(plants.map((plant) => plant.id));
+    }, [plants]);
+
+    useEffect(() => {
+        setPlants(plants);
+
+        for (const [plantbedId, linkedPlantIds] of Object.entries(plantbedLinks ?? {})) {
+            for (const linkedPlantId of linkedPlantIds ?? []) {
+                if (!validPlantIds.has(linkedPlantId)) {
+                    unlinkPlantFromPlantbedByPlantId(plantbedId, linkedPlantId);
+                }
+            }
+        }
+    }, [plants, plantbedLinks, setPlants, unlinkPlantFromPlantbedByPlantId, validPlantIds]);
 
     // ✅ hoe vaak elke plant gekoppeld is (plantId -> count)
     const plantLinkedCountMap = useMemo(() => {
@@ -364,38 +612,104 @@ export default function PlantSidebar() {
     // ✅ Plantvakken uit canvas (live, dus undo/redo werkt automatisch)
     const objects = useProjectStore((s: any) => s.objects);
 
-    const plantbeds = useMemo(() => {
-        const beds = (objects as any[]).filter((o) => o?.type === "plantbed");
+    const plantLinkedLabelMap = useMemo(() => {
+        const objectById = new Map(
+            (objects as any[]).map((obj) => [obj.id as string, obj])
+        );
 
-        return beds
-            .map((pb, idx) => ({
-                id: pb.id as string,
-                no: typeof pb.plantbedNo === "number" ? pb.plantbedNo : idx + 1,
+        const labels: Record<string, string> = {};
+
+        for (const plant of plants) {
+            const linkedObjectIds = Object.entries(plantbedLinks ?? {})
+                .filter(([, plantIds]) => (plantIds ?? []).includes(plant.id))
+                .map(([objectId]) => objectId);
+
+            const linkedObjects = linkedObjectIds
+                .map((objectId) => objectById.get(objectId))
+                .filter(Boolean) as any[];
+
+            if (linkedObjects.length === 0) continue;
+
+            if (linkedObjects.length === 1) {
+                const linkedObject = linkedObjects[0];
+
+                labels[plant.id] =
+                    linkedObject?.type === "treebed"
+                        ? "aan boomvak gekoppeld"
+                        : linkedObject?.type === "hedge"
+                            ? "aan haag gekoppeld"
+                            : "aan 1 plantvak gekoppeld";
+
+                continue;
+            }
+
+            labels[plant.id] = `aan ${linkedObjects.length} plantvakken gekoppeld`;
+        }
+
+        return labels;
+    }, [objects, plantbedLinks, plants]);
+
+    const plantbeds = useMemo(() => {
+        const numberedObjects = (objects as any[])
+            .filter((o) => o?.type === "plantbed" || o?.type === "hedge" || o?.type === "treebed")
+            .map((obj, idx) => ({
+                id: obj.id as string,
+                type: obj.type as "plantbed" | "hedge" | "treebed",
+                no: typeof obj.plantbedNo === "number" ? obj.plantbedNo : idx + 1,
+                title:
+                    obj.type === "hedge"
+                        ? `Haag ${typeof obj.plantbedNo === "number" ? obj.plantbedNo : idx + 1}`
+                        : obj.type === "treebed"
+                            ? `Boomvak ${typeof obj.plantbedNo === "number" ? obj.plantbedNo : idx + 1}`
+                            : `Plantvak ${typeof obj.plantbedNo === "number" ? obj.plantbedNo : idx + 1}`,
+                swatchFill: {
+                    ...OBJECT_STYLES[obj.type as keyof typeof OBJECT_STYLES],
+                    ...(obj.customStyle ?? {}),
+                }.fill,
+                swatchStroke: {
+                    ...OBJECT_STYLES[obj.type as keyof typeof OBJECT_STYLES],
+                    ...(obj.customStyle ?? {}),
+                }.stroke,
+                swatchShape: (obj.type === "treebed" ? "circle" : "square") as "circle" | "square",
+                treebedVariant: obj.type === "treebed" ? (obj.treebedVariant ?? "standard") as TreebedVariant : undefined,
             }))
-            .sort((a, b) => a.no - b.no);
+            .sort((a, b) => {
+                if (a.type !== b.type) {
+                    const order = { plantbed: 0, hedge: 1, treebed: 2 };
+                    return order[a.type] - order[b.type];
+                }
+                return a.no - b.no;
+            });
+
+        return numberedObjects;
     }, [objects]);
 
-    const hasPlantbeds = plantbeds.length > 0;
-    
-    useEffect(() => {
-        ensureDummyPlants(USE_EXTENDED_DUMMY);
-    }, [ensureDummyPlants]);
+    const linkedGroups = useMemo(() => {
+        return {
+            plantbed: plantbeds.filter((item) => item.type === "plantbed"),
+            hedge: plantbeds.filter((item) => item.type === "hedge"),
+            treebed: plantbeds.filter((item) => item.type === "treebed"),
+        };
+    }, [plantbeds]);
 
+    const hasPlantbeds = plantbeds.length > 0;
 
     useEffect(() => {
         const focusedPlantbedId = plantSidebarFocus?.plantbedId;
         if (!focusedPlantbedId) return;
 
-        const focusedPlantbedExists = plantbeds.some((pb) => pb.id === focusedPlantbedId);
-        if (!focusedPlantbedExists) return;
+        const focusedPlantbed = plantbeds.find((pb) => pb.id === focusedPlantbedId);
+        if (!focusedPlantbed) return;
 
-        // sidebar openklappen als hij ingeklapt is
         setCollapsed(false);
-
-        // naar tab "Gekoppelde planten"
         setActiveTab("linked");
 
-        // ✅ alleen het gefocuste plantvak open, rest dicht
+        setOpenLinkedGroups({
+            plantbed: focusedPlantbed.type === "plantbed",
+            hedge: focusedPlantbed.type === "hedge",
+            treebed: focusedPlantbed.type === "treebed",
+        });
+
         setOpenSections(() => {
             const next: Record<string, boolean> = {};
             for (const pb of plantbeds) next[pb.id] = false;
@@ -403,7 +717,6 @@ export default function PlantSidebar() {
             return next;
         });
 
-        // ✅ wacht tot tab + open state echt gerenderd zijn
         requestAnimationFrame(() => {
             requestAnimationFrame(() => {
                 const container = linkedScrollRef.current;
@@ -414,8 +727,6 @@ export default function PlantSidebar() {
                 const containerRect = container.getBoundingClientRect();
                 const targetRect = target.getBoundingClientRect();
 
-                // ✅ zet de HEADER van het plantvak bewust hoger in beeld,
-                // zodat ook de opengeklapte inhoud zichtbaar wordt
                 const TOP_PADDING = 8;
 
                 const targetScrollTop =
@@ -427,7 +738,7 @@ export default function PlantSidebar() {
                 });
             });
         });
-    }, [plantSidebarFocus?.nonce]);
+    }, [plantSidebarFocus?.nonce, plantbeds]);
     
     const filteredPlants = useMemo(() => {
         const q = query.trim().toLowerCase();
@@ -475,14 +786,21 @@ export default function PlantSidebar() {
         setOpenSections((prev) => {
             const next: Record<string, boolean> = {};
 
-            // keep existing open state for existing plantbeds
             for (const pb of plantbeds) {
-                next[pb.id] = prev[pb.id] ?? false; // default dicht
+                next[pb.id] = prev[pb.id] ?? false;
             }
 
             return next;
         });
     }, [plantbeds]);
+
+    useEffect(() => {
+        setOpenLinkedGroups((prev) => ({
+            plantbed: linkedGroups.plantbed.length > 0 ? prev.plantbed : false,
+            hedge: linkedGroups.hedge.length > 0 ? prev.hedge : false,
+            treebed: linkedGroups.treebed.length > 0 ? prev.treebed : false,
+        }));
+    }, [linkedGroups]);
 
     useEffect(() => {
         const setHeights = () => {
@@ -500,20 +818,27 @@ export default function PlantSidebar() {
         return () => window.removeEventListener("resize", setHeights);
     }, [collapsed, getExpandedPanelTargetHeight]);
 
+    useEffect(() => {
+        if (collapsed || activeTab !== "linked") {
+            onLinkedPlantSelect?.(null);
+        }
+    }, [collapsed, activeTab, onLinkedPlantSelect]);
+
     return (
         <>
             <div
-                className="fixed z-30"
-            style={{
-                right: 18,
-                bottom: 18,                       // ✅ ALTIJD bottom anchored (geen jump)
-                width: 420,
-                maxWidth: "calc(100vw - 24px)",
+                className="fixed"
+                style={{
+                    zIndex: 100,
+                    right: 18,
+                    bottom: 18,                       // ✅ ALTIJD bottom anchored (geen jump)         // ✅ ALTIJD bottom anchored (geen jump)
+                    width: 420,
+                    maxWidth: "calc(100vw - 24px)",
 
-                // ✅ zorg dat expanded nooit over de groene balk / toolbar heen gaat
-                maxHeight: `calc(100vh - ${TOP_OFFSET + 18}px)`,
-            }}
-        >
+                    // ✅ zorg dat expanded nooit over de groene balk / toolbar heen gaat
+                    maxHeight: `calc(100vh - ${TOP_OFFSET + 18}px)`,
+                }}
+            >
             <div
                 className="rounded-md overflow-hidden border bg-white flex flex-col"
                 style={{
@@ -548,6 +873,10 @@ export default function PlantSidebar() {
                                 const target = collapsed ? expandedH : collapsedH;
 
                                 setPanelHeight(current);
+
+                                if (!collapsed) {
+                                    onLinkedPlantSelect?.(null);
+                                }
 
                                 setCollapsed((v) => !v);
 
@@ -601,7 +930,10 @@ export default function PlantSidebar() {
                                                 borderTopRightRadius: 5,
                                                 borderBottom: activeTab === "list" ? `2px solid ${COLORS.green}` : "2px solid transparent",
                                             }}
-                                            onClick={() => setActiveTab("list")}
+                                                onClick={() => {
+                                                    setActiveTab("list");
+                                                    onLinkedPlantSelect?.(null);
+                                                }}
                                         >
                                             Planten
                                         </button>
@@ -623,136 +955,234 @@ export default function PlantSidebar() {
                                         </button>
                                     </div>
 
-                                    {/* Content */}
-                                    <div className="flex-1 min-h-0 overflow-hidden">
-                                        <div className="h-full min-h-0 overflow-hidden">
-                                            {activeTab === "list" ? (
-                                                <div className="pt-4 px-4 h-full flex flex-col">
-                                                    <div className="text-[14px] mb-3 italic" style={{ color: "#000" }}>
-                                                        Sleep de planten in de getekende plantvakken.
-                                                    </div>
-
-                                                    <div
-                                                        className="flex items-center gap-2 px-3 py-2"
-                                                        style={{ borderRadius: 5, background: "#f2f2f2" }}
-                                                        onMouseDown={(e) => e.stopPropagation()}
-                                                        onPointerDown={(e) => e.stopPropagation()}
-                                                    >
-                                                        <IconSearch className="opacity-100" />
-                                                        <input
-                                                            value={query}
-                                                            onChange={(e) => setQuery(e.target.value)}
-                                                            placeholder="Zoeken in plantenlijst..."
-                                                            className="w-full bg-transparent outline-none plant-search-input"
-                                                            style={{ fontSize: 15, color: "#000" }}
-                                                            onKeyDown={(e) => e.stopPropagation()}
-                                                        />
-                                                    </div>
-
-                                                    <div className="mt-3 -mx-4 border-t" style={{ borderColor: COLORS.border }} />
-
-                                                    <div className="mt-0 -mx-4 flex-1 min-h-0 overflow-y-auto app-thin-scrollbar">
-                                                        {filteredPlants.map((p) => (
-                                                            <PlantRow
-                                                                key={p.id}
-                                                                plant={p}
-                                                                isLinked={Boolean(isPlantLinked(p.id))}
-                                                                linkedCount={plantLinkedCountMap?.[p.id] ?? 0}
-                                                            />
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="pt-4 px-4 h-full flex flex-col">
-                                                    {!hasPlantbeds ? (
-                                                        <div
-                                                            className="flex items-center justify-center"
-                                                            style={{
-                                                                paddingTop: 32,
-                                                                color: "#898988",
-                                                                fontSize: 14,
-                                                                fontWeight: 400,
-                                                                textAlign: "center",
-                                                            }}
-                                                        >
-                                                            Teken eerst een plantvak.
+                                        {/* Content */}
+                                        <div className="flex-1 min-h-0 overflow-hidden">
+                                            <div className="h-full min-h-0 overflow-hidden">
+                                                {activeTab === "list" ? (
+                                                    <div className="pt-4 px-4 h-full flex flex-col">
+                                                        <div className="text-[14px] mb-3 italic" style={{ color: "#000" }}>
+                                                            Sleep de planten in de getekende plantvakken. Je kan planten aan meerdere plantvakken koppelen.
                                                         </div>
-                                                    ) : (
-                                                        <>
-                                                            <div className="text-[14px] mb-3 italic" style={{ color: "#000" }}>
-                                                                Hier is een overzicht van de planten die je aan een plantvak hebt gekoppeld.
-                                                            </div>
 
+                                                        <div
+                                                            className="flex items-center gap-2 px-3 py-2"
+                                                            style={{ borderRadius: 5, background: "#f2f2f2" }}
+                                                            onMouseDown={(e) => e.stopPropagation()}
+                                                            onPointerDown={(e) => e.stopPropagation()}
+                                                        >
+                                                            <IconSearch className="opacity-100" />
+                                                            <input
+                                                                value={query}
+                                                                onChange={(e) => setQuery(e.target.value)}
+                                                                placeholder="Zoeken in plantenlijst..."
+                                                                className="w-full bg-transparent outline-none plant-search-input"
+                                                                style={{ fontSize: 15, color: "#000" }}
+                                                                onKeyDown={(e) => e.stopPropagation()}
+                                                            />
+                                                        </div>
+
+                                                        <div className="mt-3 -mx-4 border-t" style={{ borderColor: COLORS.border }} />
+
+                                                        <div className="mt-0 -mx-4 flex-1 min-h-0 overflow-y-auto app-thin-scrollbar">
+                                                            {filteredPlants.map((p) => (
+                                                                <PlantRow
+                                                                    key={p.id}
+                                                                    plant={p}
+                                                                    isLinked={Boolean(isPlantLinked(p.id))}
+                                                                    linkedCount={plantLinkedCountMap?.[p.id] ?? 0}
+                                                                    linkedLabelText={plantLinkedLabelMap?.[p.id]}
+                                                                />
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="pt-4 px-4 h-full flex flex-col">
+                                                        {!hasPlantbeds ? (
                                                             <div
-                                                                ref={linkedScrollRef}
-                                                                className="-mx-4 flex-1 min-h-0 overflow-y-auto app-thin-scrollbar"
+                                                                className="flex items-center justify-center"
+                                                                style={{
+                                                                    paddingTop: 32,
+                                                                    color: "#898988",
+                                                                    fontSize: 14,
+                                                                    fontWeight: 400,
+                                                                    textAlign: "center",
+                                                                }}
                                                             >
-                                                                {plantbeds.map((pb) => {
-                                                                    const linkedPlantIds = plantbedLinks?.[pb.id] ?? [];
-                                                                    const linkedCount = plantbedLinkedCountMap?.[pb.id] ?? linkedPlantIds.length;
+                                                                Teken eerst een plantvak.
+                                                            </div>
+                                                        ) : (
+                                                            <>
+                                                                <div className="text-[14px] mb-3 italic" style={{ color: "#000" }}>
+                                                                    Hier is een overzicht van de planten die je aan een plantvak, haag of boomvak hebt gekoppeld.
+                                                                </div>
 
-                                                                    const linkedPlants = linkedPlantIds
-                                                                        .map((pid: string) => getPlantById(pid))
-                                                                        .filter(Boolean) as PlantItem[];
+                                                                <div
+                                                                    ref={linkedScrollRef}
+                                                                    className="flex-1 min-h-0 overflow-y-auto app-thin-scrollbar"
+                                                                >
+                                                                    <div className="flex flex-col gap-3 pb-2">
+                                                                        {[
+                                                                            {
+                                                                                key: "plantbed" as const,
+                                                                                title: "Plantvakken",
+                                                                                iconSrc: "/icons/plantvakken.svg",
+                                                                                items: linkedGroups.plantbed,
+                                                                            },
+                                                                            {
+                                                                                key: "hedge" as const,
+                                                                                title: "Hagen",
+                                                                                iconSrc: "/icons/hagen.svg",
+                                                                                items: linkedGroups.hedge,
+                                                                            },
+                                                                            {
+                                                                                key: "treebed" as const,
+                                                                                title: "Boomvakken",
+                                                                                iconSrc: "/icons/boomvakken.svg",
+                                                                                items: linkedGroups.treebed,
+                                                                            },
+                                                                        ]
+                                                                            .filter((group) => group.items.length > 0)
+                                                                            .map((group) => (
+                                                                                <div key={group.key} className="flex flex-col gap-2">
+                                                                                    <LinkedGroupHeader
+                                                                                        title={group.title}
+                                                                                        iconSrc={group.iconSrc}
+                                                                                        count={group.items.length}
+                                                                                        open={openLinkedGroups[group.key]}
+                                                                                        onToggle={() => {
+                                                                                            setOpenLinkedGroups((prev) => ({
+                                                                                                ...prev,
+                                                                                                [group.key]: !prev[group.key],
+                                                                                            }));
+                                                                                        }}
+                                                                                    />
 
-                                                                    return (
-                                                                        <div
-                                                                            key={pb.id}
-                                                                            ref={(el) => {
-                                                                                linkedSectionRefs.current[pb.id] = el;
-                                                                            }}
-                                                                        >
-                                                                            <SectionHeader
-                                                                                title={`Plantvak ${pb.no}`}
-                                                                                count={linkedCount}
-                                                                                open={Boolean(openSections[pb.id])}
-                                                                                onToggle={() => {
-                                                                                    selectObject(pb.id);
-                                                                                    focusCanvasOnObject(pb.id);
+                                                                                    {openLinkedGroups[group.key] && (
+                                                                                        <div
+                                                                                            style={{
+                                                                                                border: `1px solid ${COLORS.border}`,
+                                                                                                borderRadius: 6,
+                                                                                                background: "#ffffff",
+                                                                                                overflow: "hidden",
+                                                                                            }}
+                                                                                        >
+                                                                                            {group.items.map((pb, index) => {
+                                                                                                const linkedPlantIds = plantbedLinks?.[pb.id] ?? [];
+                                                                                                const linkedCount =
+                                                                                                    plantbedLinkedCountMap?.[pb.id] ?? linkedPlantIds.length;
 
-                                                                                    setOpenSections((prev) => {
-                                                                                        const willOpen = !Boolean(prev[pb.id]);
+                                                                                                const linkedPlants = linkedPlantIds
+                                                                                                    .map((pid: string) => plantsById[pid])
+                                                                                                    .filter(Boolean) as PlantItem[];
 
-                                                                                        const next: Record<string, boolean> = {};
-                                                                                        for (const other of plantbeds) next[other.id] = false;
+                                                                                                return (
+                                                                                                    <div
+                                                                                                        key={pb.id}
+                                                                                                        ref={(el) => {
+                                                                                                            linkedSectionRefs.current[pb.id] = el;
+                                                                                                        }}
+                                                                                                        style={{
+                                                                                                            borderTop:
+                                                                                                                index === 0 ? "none" : `1px solid ${COLORS.border}`,
+                                                                                                        }}
+                                                                                                    >
+                                                                                                        <LinkedObjectHeader
+                                                                                                            title={pb.title}
+                                                                                                            linkedCount={linkedCount}
+                                                                                                            open={Boolean(openSections[pb.id])}
+                                                                                                            swatchFill={pb.swatchFill}
+                                                                                                            swatchStroke={pb.swatchStroke}
+                                                                                                            swatchShape={pb.swatchShape}
+                                                                                                            treebedVariant={pb.treebedVariant}
+                                                                                                            onToggle={() => {
+                                                                                                                selectObject(pb.id);
+                                                                                                                focusCanvasOnObject(pb.id);
 
-                                                                                        next[pb.id] = willOpen;
-                                                                                        return next;
-                                                                                    });
-                                                                                }}
-                                                                            />
+                                                                                                                setOpenSections((prev) => {
+                                                                                                                    const willOpen = !Boolean(prev[pb.id]);
 
-                                                                            {openSections[pb.id] && (
-                                                                                <>
-                                                                                    {linkedPlants.length > 0 ? (
-                                                                                        <>
-                                                                                            {linkedPlants.map((plant) => (
-                                                                                                <LinkedPlantRow
-                                                                                                    key={`${pb.id}-${plant.id}`}
-                                                                                                    plant={plant}
-                                                                                                    onUnlink={() =>
-                                                                                                        unlinkPlantFromPlantbedByPlantId(pb.id, plant.id)
-                                                                                                    }
-                                                                                                />
-                                                                                            ))}
-                                                                                        </>
-                                                                                    ) : (
-                                                                                        <div className="px-4 py-3 text-[12px] italic" style={{ color: "#333" }}>
-                                                                                            Nog geen planten gekoppeld.
+                                                                                                                    const next: Record<string, boolean> = {};
+                                                                                                                    for (const other of plantbeds) {
+                                                                                                                        next[other.id] = false;
+                                                                                                                    }
+
+                                                                                                                    next[pb.id] = willOpen;
+                                                                                                                    return next;
+                                                                                                                });
+                                                                                                            }}
+                                                                                                        />
+
+                                                                                                        {openSections[pb.id] && (
+                                                                                                            <>
+                                                                                                                {linkedPlants.length > 0 ? (
+                                                                                                                    <>
+                                                                                                                        {linkedPlants.map((plant) => (
+                                                                                                                            <LinkedPlantRow
+                                                                                                                                key={`${pb.id}-${plant.id}`}
+                                                                                                                                plant={plant}
+                                                                                                                                onClick={() => {
+                                                                                                                                    onLinkedPlantSelect?.({
+                                                                                                                                        id: plant.id,
+                                                                                                                                        latin: plant.latin,
+                                                                                                                                        dutch: plant.dutch,
+                                                                                                                                        imageSrc: plant.imageSrc,
+                                                                                                                                    });
+                                                                                                                                }}
+                                                                                                                                onUnlink={() => {
+                                                                                                                                    unlinkPlantFromPlantbedByPlantId(pb.id, plant.id);
+                                                                                                                                    onLinkedPlantSelect?.(null);
+
+                                                                                                                                    const objectLabel =
+                                                                                                                                        pb.type === "treebed"
+                                                                                                                                            ? "boomvak"
+                                                                                                                                            : pb.type === "hedge"
+                                                                                                                                                ? "haag"
+                                                                                                                                                : "plantvak";
+
+                                                                                                                                    notify(
+                                                                                                                                        APP_NOTIFICATIONS.plantUnlinkedFromObject(
+                                                                                                                                            plant.latin,
+                                                                                                                                            objectLabel,
+                                                                                                                                            pb.no
+                                                                                                                                        )
+                                                                                                                                    );
+                                                                                                                                }}
+                                                                                                                            />
+                                                                                                                        ))}
+                                                                                                                    </>
+                                                                                                                ) : (
+                                                                                                                    <div
+                                                                                                                        className="px-4 py-3 text-[12px] italic"
+                                                                                                                        style={{
+                                                                                                                            color: "#333",
+                                                                                                                            borderTop: `1px solid ${COLORS.border}`,
+                                                                                                                            background: "#ffffff",
+                                                                                                                        }}
+                                                                                                                    >
+                                                                                                                        {pb.type === "treebed"
+                                                                                                                            ? "Nog geen bomen gekoppeld."
+                                                                                                                            : pb.type === "hedge"
+                                                                                                                                ? "Nog geen haagplanten gekoppeld."
+                                                                                                                                : "Nog geen planten gekoppeld."}
+                                                                                                                    </div>
+                                                                                                                )}
+                                                                                                            </>
+                                                                                                        )}
+                                                                                                    </div>
+                                                                                                );
+                                                                                            })}
                                                                                         </div>
                                                                                     )}
-                                                                                </>
-                                                                            )}
-                                                                        </div>
-                                                                    );
-                                                                })}
-                                                            </div>
-                                                        </>
-                                                    )}
-                                                </div>
-                                            )}
+                                                                                </div>
+                                                                            ))}
+                                                                    </div>
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
-                                    </div>
                                 </>
                             ) : (
                                 // ✅ Collapsed tekst (kleinere ruimte onder titel zoals je design)
@@ -947,8 +1377,13 @@ export default function PlantSidebar() {
                     opacity: 1;
                 }
 
-                .plant-row-draggable:active {
+                                .plant-row-draggable:active {
                     cursor: grabbing;
+                }
+
+                .linked-plant-name-button:hover .linked-plant-latin-name {
+                    text-decoration: underline;
+                    text-underline-offset: 2px;
                 }
             `}</style>
         </div>

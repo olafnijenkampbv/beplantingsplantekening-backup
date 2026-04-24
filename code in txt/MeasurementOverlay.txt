@@ -456,7 +456,12 @@ function buildAreaLabelRenderData(
 
     const strokeColor = OBJECT_STYLES[object.type].stroke;
 
-    if (object.type === "plantbed") {
+    if (
+        object.type === "plantbed" ||
+        object.type === "hedge" ||
+        object.type === "treebed" ||
+        object.type === "parking"
+    ) {
         return null;
     }
     

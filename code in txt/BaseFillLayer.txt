@@ -33,6 +33,7 @@ type BaseFillLayerProps = {
     stageScale: number;
     viewVisibility: {
         showPlantNumbers: boolean;
+        showAreaLabels: boolean;
         showGround: boolean;
         showBuildings: boolean;
         showBoundaries: boolean;
@@ -59,6 +60,47 @@ type BaseFillLayerProps = {
         fallback?: 1 | -1
     ) => 1 | -1;
 };
+
+function getObjectRenderStyle(object: PolyObject) {
+    return {
+        ...OBJECT_STYLES[object.type],
+        ...(object.customStyle ?? {}),
+    };
+}
+
+function getReadablePlantbedLabelColor(fillColor: string) {
+    const hex = fillColor.trim().replace("#", "");
+
+    if (!/^[0-9A-Fa-f]{6}$/.test(hex)) {
+        return "#3F6B3F";
+    }
+
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+
+    const luminance =
+        (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    const darken = (value: number) =>
+        Math.max(0, Math.round(value * 0.55));
+
+    const lighten = (value: number) =>
+        Math.min(255, Math.round(value + (255 - value) * 0.55));
+
+    if (hex.toUpperCase() === "F2FDEF") {
+        return "#3F6B3F";
+    }
+
+    const rr = luminance > 0.62 ? darken(r) : lighten(r);
+    const gg = luminance > 0.62 ? darken(g) : lighten(g);
+    const bb = luminance > 0.62 ? darken(b) : lighten(b);
+
+    const toHex = (value: number) =>
+        value.toString(16).padStart(2, "0").toUpperCase();
+
+    return `#${toHex(rr)}${toHex(gg)}${toHex(bb)}`;
+}
 
 export default function BaseFillLayer({
     unselectedNonPlantbeds,
@@ -128,6 +170,23 @@ export default function BaseFillLayer({
 
                         if (activeTool !== "select") return;
                         evt.cancelBubble = true;
+
+                        const multi = !!(evt.evt?.ctrlKey || evt.evt?.metaKey);
+
+                        // Zelfde klikvoorbereiding als plantvakken:
+                        // bij single click mag HelloEditor na mouse-up de gekoppelde sidebar-sectie openen
+                        if (!multi) {
+                            pendingPlantbedClickRef.current = {
+                                id: obj.id,
+                                startClientX: evt.evt?.clientX ?? 0,
+                                startClientY: evt.evt?.clientY ?? 0,
+                            };
+                            plantbedClickMovedRef.current = false;
+                        } else {
+                            pendingPlantbedClickRef.current = null;
+                            plantbedClickMovedRef.current = false;
+                        }
+
                         handleObjectSelection(obj.id, evt.evt);
                     },
                     onClick: (evt: any) => {
@@ -141,6 +200,8 @@ export default function BaseFillLayer({
                     },
                 };
 
+                const objectStyle = getObjectRenderStyle(obj);
+
                 if (isUnifiedBoundary && boundaryBandShape && boundaryBandShape.outer.length >= 6) {
                     return (
                         <React.Fragment key={`boundary-fill-${obj.id}`}>
@@ -148,7 +209,7 @@ export default function BaseFillLayer({
                                 {...common}
                                 points={boundaryBandShape.outer}
                                 holes={boundaryBandShape.holes}
-                                fill={OBJECT_STYLES[obj.type].fill}
+                                fill={objectStyle.fill}
                                 fillPriority="color"
                                 stroke={undefined}
                                 strokeWidth={0}
@@ -164,7 +225,7 @@ export default function BaseFillLayer({
                                 {...common}
                                 points={obj.points}
                                 holes={obj.holes}
-                                fill={patternImage ? undefined : OBJECT_STYLES[obj.type].fill}
+                                fill={patternImage ? undefined : objectStyle.fill}
                                 fillPriority={patternImage ? "pattern" : "color"}
                                 fillPatternImage={patternImage as unknown as HTMLImageElement | undefined}
                                 fillPatternRepeat={patternImage ? "repeat" : undefined}
@@ -206,8 +267,6 @@ export default function BaseFillLayer({
                         </React.Fragment>
                     );
                 }
-
-                const objectStyle = OBJECT_STYLES[obj.type as ObjectType];
 
                 return (
                     <React.Fragment key={`fill-${obj.id}`}>
@@ -301,7 +360,7 @@ export default function BaseFillLayer({
                                 {...plantbedCommon}
                                 points={pb.points}
                                 holes={pb.holes}
-                                fill={OBJECT_STYLES.plantbed.fill}
+                                fill={getObjectRenderStyle(pb).fill}
                                 stroke={undefined}
                                 strokeWidth={0}
                             />
@@ -310,94 +369,236 @@ export default function BaseFillLayer({
                                 {...plantbedCommon}
                                 points={pb.points}
                                 closed
-                                fill={OBJECT_STYLES.plantbed.fill}
+                                fill={getObjectRenderStyle(pb).fill}
                                 strokeEnabled={false}
                             />
                         )}
 
                         {(() => {
-                            if (!viewVisibility.showPlantNumbers) return null;
+                            const showPlantNumber = viewVisibility.showPlantNumbers !== false;
+                            const showAreaLabel = viewVisibility.showAreaLabels !== false;
+
+                            if (!showPlantNumber && !showAreaLabel) return null;
 
                             const label = plantbedNumberLayouts.get(pb.id);
                             if (!label) return null;
 
-                            const bbox = bboxFromPoints(pb.points);
-                            const numberTextWidth = estimateTextWidth(label.text, label.fontSize);
-                            const areaTextWidth = estimateTextWidth(label.areaText, label.areaFontSize);
+                            const plantbedStyle = {
+                                ...OBJECT_STYLES.plantbed,
+                                ...(pb.customStyle ?? {}),
+                            };
+                            const labelColor = getReadablePlantbedLabelColor(plantbedStyle.fill);
 
+                            const bbox = bboxFromPoints(pb.points);
+                            const numberTextWidth = showPlantNumber
+                                ? estimateTextWidth(label.text, label.fontSize)
+                                : 0;
+                            const areaTextWidth = showAreaLabel
+                                ? estimateTextWidth(label.areaText, label.areaFontSize)
+                                : 0;
+
+                            const verticalGap = 4;
+                            const inlineGap = 6;
+
+                            const stackedBlockHeight =
+                                showPlantNumber && showAreaLabel
+                                    ? label.fontSize + verticalGap + label.areaFontSize
+                                    : showPlantNumber
+                                        ? label.fontSize
+                                        : label.areaFontSize;
+
+                            const inlineBlockWidth =
+                                showPlantNumber && showAreaLabel
+                                    ? numberTextWidth + inlineGap + areaTextWidth
+                                    : showPlantNumber
+                                        ? numberTextWidth
+                                        : areaTextWidth;
+
+                            const inlineBlockHeight =
+                                showPlantNumber && showAreaLabel
+                                    ? Math.max(label.fontSize, label.areaFontSize)
+                                    : showPlantNumber
+                                        ? label.fontSize
+                                        : label.areaFontSize;
+                           
                             const horizontalBlockWidth = Math.max(label.width, areaTextWidth);
                             const shouldRotatePlantbedLabel =
                                 bbox.h > bbox.w &&
                                 bbox.w < horizontalBlockWidth + 12;
 
+                            const numberCenterX = label.x + label.width / 2;
+                            const numberCenterY = label.y + label.fontSize / 2;
+
+                            const areaCenterX =
+                                label.areaRotation === 0
+                                    ? label.areaX + areaTextWidth / 2
+                                    : label.areaX;
+
+                            const areaCenterY =
+                                label.areaRotation === 0
+                                    ? label.areaY + label.areaFontSize / 2
+                                    : label.areaY;
+
+                            const centerX = (numberCenterX + areaCenterX) / 2;
+                            const centerY = (numberCenterY + areaCenterY) / 2;
+
                             if (shouldRotatePlantbedLabel) {
-                                const numberCenterX = label.x + label.width / 2;
-                                const numberCenterY = label.y + label.fontSize / 2;
+                                const canUseVerticalStacked = bbox.w >= stackedBlockHeight + 8;
+                                const canUseVerticalInline = bbox.w >= inlineBlockHeight + 8 && bbox.h >= inlineBlockWidth + 8;
 
-                                const areaCenterX =
-                                    label.areaRotation === 0
-                                        ? label.areaX + areaTextWidth / 2
-                                        : label.areaX;
+                                if (canUseVerticalInline && (!canUseVerticalStacked || bbox.w < stackedBlockHeight + 8)) {
+                                    return (
+                                        <Group
+                                            x={centerX}
+                                            y={centerY}
+                                            rotation={-90}
+                                            listening={false}
+                                        >
+                                            {showPlantNumber && (
+                                                <Text
+                                                    x={-inlineBlockWidth / 2}
+                                                    y={-inlineBlockHeight / 2}
+                                                    text={label.text}
+                                                    fontSize={label.fontSize}
+                                                    fontStyle="bold"
+                                                    fill={labelColor}
+                                                    listening={false}
+                                                    perfectDrawEnabled={false}
+                                                />
+                                            )}
+                                            {showAreaLabel && (
+                                                <Text
+                                                    x={
+                                                        showPlantNumber
+                                                            ? -inlineBlockWidth / 2 + numberTextWidth + inlineGap
+                                                            : -inlineBlockWidth / 2
+                                                    }
+                                                    y={-inlineBlockHeight / 2}
+                                                    text={label.areaText}
+                                                    fontSize={label.areaFontSize}
+                                                    fontStyle="700"
+                                                    fill={labelColor}
+                                                    listening={false}
+                                                    perfectDrawEnabled={false}
+                                                />
+                                            )}
+                                        </Group>
+                                    );
+                                }
 
-                                const areaCenterY =
-                                    label.areaRotation === 0
-                                        ? label.areaY + label.areaFontSize / 2
-                                        : label.areaY;
+                                if (canUseVerticalStacked) {
+                                    return (
+                                        <Group
+                                            x={centerX}
+                                            y={centerY}
+                                            rotation={-90}
+                                            listening={false}
+                                        >
+                                            {showPlantNumber && (
+                                                <Text
+                                                    x={-numberTextWidth / 2}
+                                                    y={-stackedBlockHeight / 2}
+                                                    text={label.text}
+                                                    fontSize={label.fontSize}
+                                                    fontStyle="bold"
+                                                    fill={labelColor}
+                                                    listening={false}
+                                                    perfectDrawEnabled={false}
+                                                />
+                                            )}
+                                            {showAreaLabel && (
+                                                <Text
+                                                    x={-areaTextWidth / 2}
+                                                    y={
+                                                        showPlantNumber
+                                                            ? -stackedBlockHeight / 2 + label.fontSize + verticalGap
+                                                            : -stackedBlockHeight / 2
+                                                    }
+                                                    text={label.areaText}
+                                                    fontSize={label.areaFontSize}
+                                                    fontStyle="700"
+                                                    fill={labelColor}
+                                                    listening={false}
+                                                    perfectDrawEnabled={false}
+                                                />
+                                            )}
+                                        </Group>
+                                    );
+                                }
 
-                                const centerX = (numberCenterX + areaCenterX) / 2;
-                                const centerY = (numberCenterY + areaCenterY) / 2;
+                                return null;
+                            }
 
-                                const verticalGap = 4;
-                                const blockHeight = label.fontSize + verticalGap + label.areaFontSize;
+                            const canUseHorizontalStacked = bbox.h >= stackedBlockHeight + 8;
+                            const canUseHorizontalInline = bbox.h >= inlineBlockHeight + 8 && bbox.w >= inlineBlockWidth + 8;
 
+                            if (!canUseHorizontalStacked && canUseHorizontalInline) {
                                 return (
                                     <Group
                                         x={centerX}
                                         y={centerY}
-                                        rotation={-90}
                                         listening={false}
                                     >
-                                        <Text
-                                            x={-numberTextWidth / 2}
-                                            y={-blockHeight / 2}
-                                            text={label.text}
-                                            fontSize={label.fontSize}
-                                            fontStyle="bold"
-                                            fill={OBJECT_STYLES.plantbed.stroke}
-                                            listening={false}
-                                            perfectDrawEnabled={false}
-                                        />
-                                        <Text
-                                            x={-areaTextWidth / 2}
-                                            y={-blockHeight / 2 + label.fontSize + verticalGap}
-                                            text={label.areaText}
-                                            fontSize={label.areaFontSize}
-                                            fontStyle="700"
-                                            fill={OBJECT_STYLES.plantbed.stroke}
-                                            listening={false}
-                                            perfectDrawEnabled={false}
-                                        />
+                                        {showPlantNumber && (
+                                            <Text
+                                                x={-inlineBlockWidth / 2}
+                                                y={-inlineBlockHeight / 2}
+                                                text={label.text}
+                                                fontSize={label.fontSize}
+                                                fontStyle="bold"
+                                                fill={labelColor}
+                                                listening={false}
+                                                perfectDrawEnabled={false}
+                                            />
+                                        )}
+
+                                        {showAreaLabel && (
+                                            <Text
+                                                x={
+                                                    showPlantNumber
+                                                        ? -inlineBlockWidth / 2 + numberTextWidth + inlineGap
+                                                        : -inlineBlockWidth / 2
+                                                }
+                                                y={-inlineBlockHeight / 2}
+                                                text={label.areaText}
+                                                fontSize={label.areaFontSize}
+                                                fontStyle="700"
+                                                fill={labelColor}
+                                                listening={false}
+                                                perfectDrawEnabled={false}
+                                            />
+                                        )}
                                     </Group>
                                 );
                             }
 
+                            if (!canUseHorizontalStacked && !canUseHorizontalInline) {
+                                return null;
+                            }
+
                             return (
                                 <React.Fragment>
-                                    <Text
-                                        x={label.x}
-                                        y={label.y}
-                                        width={label.width}
-                                        align="center"
-                                        wrap="none"
-                                        text={label.text}
-                                        fontSize={label.fontSize}
-                                        fontStyle="bold"
-                                        fill={OBJECT_STYLES.plantbed.stroke}
-                                        listening={false}
-                                        perfectDrawEnabled={false}
-                                    />
+                                    {showPlantNumber && (
+                                        <Text
+                                            x={label.x}
+                                            y={
+                                                showAreaLabel
+                                                    ? label.y
+                                                    : label.y + label.areaFontSize / 2
+                                            }
+                                            width={label.width}
+                                            align="center"
+                                            wrap="none"
+                                            text={label.text}
+                                            fontSize={label.fontSize}
+                                            fontStyle="bold"
+                                            fill={labelColor}
+                                            listening={false}
+                                            perfectDrawEnabled={false}
+                                        />
+                                    )}
 
-                                    {label.areaRotation === 0 ? (
+                                    {showAreaLabel && label.areaRotation === 0 ? (
                                         <Text
                                             x={label.areaX}
                                             y={label.areaY}
@@ -407,11 +608,11 @@ export default function BaseFillLayer({
                                             text={label.areaText}
                                             fontSize={label.areaFontSize}
                                             fontStyle="700"
-                                            fill={OBJECT_STYLES.plantbed.stroke}
+                                            fill={labelColor}
                                             listening={false}
                                             perfectDrawEnabled={false}
                                         />
-                                    ) : (
+                                    ) : showAreaLabel ? (
                                         <Group
                                             x={label.areaX}
                                             y={label.areaY}
@@ -424,12 +625,12 @@ export default function BaseFillLayer({
                                                 text={label.areaText}
                                                 fontSize={label.areaFontSize}
                                                 fontStyle="700"
-                                                fill={OBJECT_STYLES.plantbed.stroke}
+                                                fill={labelColor}
                                                 listening={false}
                                                 perfectDrawEnabled={false}
                                             />
                                         </Group>
-                                    )}
+                                    ) : null}
                                 </React.Fragment>
                             );
                         })()}

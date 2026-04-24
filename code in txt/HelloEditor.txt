@@ -4,11 +4,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Stage, Layer, Line, Rect, Group, Shape, Circle, Text } from "react-konva";
 import { Html } from "react-konva-utils";
 import { nanoid } from "nanoid";
-import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX } from "@/state/projectStore";
+import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX, ViewVisibilityKey } from "@/state/projectStore";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import EditorToolbar from "@/features/editor/components/EditorToolbar";
 import LeftObjectsMenu from "@/features/editor/components/LeftObjectsMenu";
 import RightStepMenu from "@/features/editor/components/editor/RightStepMenu";
+import PlantSidebar from "@/features/editor/components/PlantSidebar";
+import LinkedPlantSpecificationsOverlay from "@/features/editor/components/LinkedPlantSpecificationsOverlay";
 import ConfirmModal from "@/features/editor/components/ConfirmModal";
 import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwatch";
 import { APP_NOTIFICATIONS, AppNotificationsRenderer, useAppNotify, useDismissAppNotification } from "@/state/allNotifications";
@@ -67,11 +69,26 @@ import {
 } from "@/features/editor/editorDrawingsPersistence";
 import {
     PersistedRightStepMenuSnapshot,
-    RIGHT_STEP_MENU_STORAGE_KEY,
     createEmptyRightStepMenuSnapshot,
     sanitizeRightStepMenuSnapshot,
-    sanitizeRightStepMenuSnapshotsByDrawingId,
 } from "@/features/editor/lib/rightStepMenuPersistence";
+import {
+    readDrawingsFromStorage,
+    writeActiveDrawingIdToStorage,
+    writeDrawingsToStorage,
+    readRightStepSnapshotsByDrawingIdFromStorage,
+    writeRightStepSnapshotsByDrawingIdToStorage,
+    readPlantSelectionSnapshotsByDrawingIdFromStorage,
+    writePlantSelectionSnapshotsByDrawingIdToStorage,
+    getPlantSelectionSnapshotForDrawing,
+    type PersistedPlantSelectionSnapshotsByDrawingId,
+} from "@/features/editor/lib/appDrawingPersistence";
+import {
+    usePlantSelectionStore,
+    PersistedPlantSelectionSnapshot,
+    createEmptyPlantSelectionSnapshot,
+} from "@/features/editor/state/plantSelectionStore";
+import { goToPlantSelectionPage } from "@/features/editor/lib/editorWorkflowNavigation";
 import BaseFillLayer from "@/features/editor/components/editor/BaseFillLayer";
 import BaseStrokeLayer from "@/features/editor/components/editor/BaseStrokeLayer";
 import TypeLabelCard from "@/features/editor/components/editor/TypeLabelCard";
@@ -79,6 +96,7 @@ import { getObjectMenuSections } from "@/features/editor/components/editor/objec
 import { EditorTopLayer } from "@/features/editor/components/editor/EditorTopLayer";
 
 type DrawMode = "draw";
+type EditorRightPanelMode = "steps" | "plants";
 
 const COLORS = {
     orange: "#E94E1B",
@@ -1527,6 +1545,21 @@ export default function HelloEditor() {
     const [hasUsedShiftForRotateSnap, setHasUsedShiftForRotateSnap] = useState(false);
     const [isFenceHintDismissed, setIsFenceHintDismissed] = useState(false);
     const [compassDirection, setCompassDirection] = useState<CompassDirection>("noord");
+    const [selectedLinkedPlantPreview, setSelectedLinkedPlantPreview] = useState<{
+        id: string;
+        latin: string;
+        dutch: string;
+        imageSrc: string;
+    } | null>(null);
+    const [isLinkedPlantSpecificationsOpen, setIsLinkedPlantSpecificationsOpen] = useState(false);
+
+    const handleLinkedPlantPreviewSelect = useCallback(
+        (plant: { id: string; latin: string; dutch: string; imageSrc: string } | null) => {
+            setSelectedLinkedPlantPreview(plant);
+            setIsLinkedPlantSpecificationsOpen(false);
+        },
+        []
+    );
 
     const dismissShiftHintForever = useCallback(() => {
         setIsShiftHintDismissed(true);
@@ -1568,6 +1601,12 @@ export default function HelloEditor() {
     const rightStep3 = useRightStepMenuStore((s) => s.step3);
     const rightStep4 = useRightStepMenuStore((s) => s.step4);
 
+    const plantSelectionSelectedGroup = usePlantSelectionStore((s) => s.selectedGroup);
+    const plantSelectionViewMode = usePlantSelectionStore((s) => s.viewMode);
+    const plantSelectionSortValue = usePlantSelectionStore((s) => s.sortValue);
+    const plantSelectionFilters = usePlantSelectionStore((s) => s.filters);
+    const plantSelectionItems = usePlantSelectionStore((s) => s.plantListItems);
+
     const exportSnapshotFromStore = useCallback((): PersistedDrawingSnapshot => {
         const state = useProjectStore.getState() as any;
         const safeObjects = (state.objects as PolyObject[]).map(clonePolyObject);
@@ -1581,6 +1620,7 @@ export default function HelloEditor() {
             plantbedLinks: safeLinks,
             viewVisibility: {
                 ...DEFAULT_DRAWING_VIEW_VISIBILITY,
+                showTrafficUse: true,
                 ...(state.viewVisibility ?? {}),
             },
             nextPlantbedNo: typeof state.nextPlantbedNo === "number"
@@ -1619,6 +1659,10 @@ export default function HelloEditor() {
                 heightStyle: state.step4.heightStyle,
             },
         };
+    }, []);
+
+    const exportPlantSelectionSnapshotFromStore = useCallback(() => {
+        return usePlantSelectionStore.getState().exportSnapshot();
     }, []);
 
     const loadRightStepMenuSnapshotIntoStore = useCallback(
@@ -1677,6 +1721,7 @@ export default function HelloEditor() {
                 nextPlantbedNo: safeSnapshot.nextPlantbedNo ?? 1,
                 viewVisibility: {
                     ...DEFAULT_DRAWING_VIEW_VISIBILITY,
+                    showTrafficUse: true,
                     ...safeSnapshot.viewVisibility,
                 },
                 selectedObjectId: null,
@@ -1703,9 +1748,12 @@ export default function HelloEditor() {
     const [activeDrawingId, setActiveDrawingId] = useState<string | null>(null);
     const [isDrawingsHydrated, setIsDrawingsHydrated] = useState(false);
     const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved">("saved");
+    const [rightPanelMode, setRightPanelMode] = useState<EditorRightPanelMode>("steps");
     const [rightStepSnapshotsByDrawingId, setRightStepSnapshotsByDrawingId] = useState<
         Record<string, PersistedRightStepMenuSnapshot>
     >({});
+
+    const [plantSelectionSnapshotsByDrawingId, setPlantSelectionSnapshotsByDrawingId] = useState<PersistedPlantSelectionSnapshotsByDrawingId>({});
 
     const autosaveTimerRef = useRef<number | null>(null);
     const persistToStorageTimerRef = useRef<number | null>(null);
@@ -1716,6 +1764,23 @@ export default function HelloEditor() {
     const activeDrawing = useMemo(() => {
         return editorDrawings.find((drawing) => drawing.id === activeDrawingId) ?? null;
     }, [editorDrawings, activeDrawingId]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        if (!activeDrawingId) {
+            setRightPanelMode("steps");
+            return;
+        }
+
+        const storedMode = window.sessionStorage.getItem(
+            `hello-editor:right-panel-mode:${activeDrawingId}`
+        );
+
+        setRightPanelMode(storedMode === "plants" ? "plants" : "steps");
+    }, [activeDrawingId]);
+
+    const shouldShowPlantSidebar = rightPanelMode === "plants";
 
     const handleOpenDrawingsDashboard = useCallback(() => {
         setIsFileMenuOpen(false);
@@ -1745,8 +1810,15 @@ export default function HelloEditor() {
         loadRightStepMenuSnapshotIntoStore(
             rightStepSnapshotsByDrawingId[drawingId] ?? createEmptyRightStepMenuSnapshot()
         );
+        usePlantSelectionStore.getState().loadSnapshot(
+            getPlantSelectionSnapshotForDrawing(
+                drawingId,
+                plantSelectionSnapshotsByDrawingId
+            )
+        );
 
         setActiveDrawingId(drawingId);
+        writeActiveDrawingIdToStorage(drawingId);
         setSaveState("saved");
         setIsCreateDrawingOpen(false);
         setIsDrawingsDashboardOpen(false);
@@ -1756,6 +1828,7 @@ export default function HelloEditor() {
         loadSnapshotIntoStore,
         loadRightStepMenuSnapshotIntoStore,
         rightStepSnapshotsByDrawingId,
+        plantSelectionSnapshotsByDrawingId,
     ]);
 
     const handleCreateDrawingFromDashboard = useCallback((name: string) => {
@@ -1771,13 +1844,20 @@ export default function HelloEditor() {
             [nextDrawing.id]: emptyWizardSnapshot,
         }));
 
+        setPlantSelectionSnapshotsByDrawingId((prev) => ({
+            ...prev,
+            [nextDrawing.id]: createEmptyPlantSelectionSnapshot(),
+        }));
+
         isRestoringDrawingRef.current = true;
         isRestoringRightStepMenuRef.current = true;
 
         loadSnapshotIntoStore(nextDrawing.snapshot);
         loadRightStepMenuSnapshotIntoStore(emptyWizardSnapshot);
+        usePlantSelectionStore.getState().resetForNewDrawing();
 
         setActiveDrawingId(nextDrawing.id);
+        writeActiveDrawingIdToStorage(nextDrawing.id);
         setSaveState("saved");
         setIsCreateDrawingOpen(false);
         setIsDrawingsDashboardOpen(false);
@@ -1792,6 +1872,10 @@ export default function HelloEditor() {
         const sourceWizardSnapshot =
             rightStepSnapshotsByDrawingId[drawingId] ?? createEmptyRightStepMenuSnapshot();
 
+        const sourcePlantSelectionSnapshot =
+            plantSelectionSnapshotsByDrawingId[drawingId] ??
+            createEmptyPlantSelectionSnapshot();
+
         setEditorDrawings((prev) => {
             const source = prev.find((drawing) => drawing.id === drawingId);
             if (!source) return prev;
@@ -1799,7 +1883,10 @@ export default function HelloEditor() {
             const baseName = source.name.replace(/ kopie(?: (\d+))?$/, "");
 
             const usedNumbers = prev
-                .filter((drawing) => drawing.name === `${baseName} kopie` || drawing.name.startsWith(`${baseName} kopie `))
+                .filter((drawing) =>
+                    drawing.name === `${baseName} kopie` ||
+                    drawing.name.startsWith(`${baseName} kopie `)
+                )
                 .map((drawing) => {
                     const match = drawing.name.match(/ kopie(?: (\d+))?$/);
                     if (!match) return null;
@@ -1831,11 +1918,30 @@ export default function HelloEditor() {
                 [duplicatedDrawingId]: sanitizeRightStepMenuSnapshot(sourceWizardSnapshot),
             }));
 
+            setPlantSelectionSnapshotsByDrawingId((prevSnapshots) => ({
+                ...prevSnapshots,
+                [duplicatedDrawing.id]: {
+                    selectedGroup: sourcePlantSelectionSnapshot.selectedGroup,
+                    viewMode: sourcePlantSelectionSnapshot.viewMode,
+                    sortValue: sourcePlantSelectionSnapshot.sortValue,
+                    filters: {
+                        ...sourcePlantSelectionSnapshot.filters,
+                    },
+                    plantListItems: sourcePlantSelectionSnapshot.plantListItems.map((item: any) => ({
+                        ...item,
+                        plant: {
+                            ...item.plant,
+                        },
+                    })),
+                },
+            }));
+
             return [...prev, duplicatedDrawing];
         });
     }, [
         cloneDrawingSnapshot,
         rightStepSnapshotsByDrawingId,
+        plantSelectionSnapshotsByDrawingId,
     ]);
 
     const handleDeleteDrawingFromDashboard = useCallback((drawingId: string) => {
@@ -1843,6 +1949,12 @@ export default function HelloEditor() {
 
         setEditorDrawings(nextDrawings);
         setRightStepSnapshotsByDrawingId((prev) => {
+            const next = { ...prev };
+            delete next[drawingId];
+            return next;
+        });
+
+        setPlantSelectionSnapshotsByDrawingId((prev) => {
             const next = { ...prev };
             delete next[drawingId];
             return next;
@@ -1925,57 +2037,32 @@ export default function HelloEditor() {
         if (typeof window === "undefined") return;
 
         try {
-            const raw = window.localStorage.getItem(DRAWINGS_STORAGE_KEY);
-            const rawWizard = window.localStorage.getItem(RIGHT_STEP_MENU_STORAGE_KEY);
+            const { drawings: nextDrawings, activeDrawingId: restoredActiveDrawingId } =
+                readDrawingsFromStorage();
 
-            const parsedWizard = rawWizard ? JSON.parse(rawWizard) : {};
             const nextRightStepSnapshotsByDrawingId =
-                sanitizeRightStepMenuSnapshotsByDrawingId(parsedWizard);
+                readRightStepSnapshotsByDrawingIdFromStorage();
 
-            if (!raw) {
+            const nextPlantSelectionSnapshotsByDrawingId =
+                readPlantSelectionSnapshotsByDrawingIdFromStorage();
+
+            if (nextDrawings.length === 0 || !restoredActiveDrawingId) {
                 isRestoringDrawingRef.current = true;
                 isRestoringRightStepMenuRef.current = true;
 
                 loadSnapshotIntoStore(createEmptyDrawingSnapshot());
                 loadRightStepMenuSnapshotIntoStore(createEmptyRightStepMenuSnapshot());
+                usePlantSelectionStore.getState().resetForNewDrawing();
 
                 setEditorDrawings([]);
                 setRightStepSnapshotsByDrawingId({});
+                setPlantSelectionSnapshotsByDrawingId({});
                 setActiveDrawingId(null);
                 setSaveState("saved");
                 setIsDrawingsDashboardOpen(true);
                 setIsDrawingsHydrated(true);
                 return;
             }
-
-            const parsed = JSON.parse(raw);
-            const rawDrawings = Array.isArray(parsed?.drawings) ? parsed.drawings : [];
-
-            const nextDrawings: PersistedDrawingDocument[] = rawDrawings
-                .map((item: any) => sanitizeDrawingDocument(item))
-                .filter((item: PersistedDrawingDocument | null): item is PersistedDrawingDocument => item !== null);
-
-            if (nextDrawings.length === 0) {
-                isRestoringDrawingRef.current = true;
-                isRestoringRightStepMenuRef.current = true;
-
-                loadSnapshotIntoStore(createEmptyDrawingSnapshot());
-                loadRightStepMenuSnapshotIntoStore(createEmptyRightStepMenuSnapshot());
-
-                setEditorDrawings([]);
-                setRightStepSnapshotsByDrawingId({});
-                setActiveDrawingId(null);
-                setSaveState("saved");
-                setIsDrawingsDashboardOpen(true);
-                setIsDrawingsHydrated(true);
-                return;
-            }
-
-            const restoredActiveDrawingId =
-                typeof parsed?.activeDrawingId === "string" &&
-                    nextDrawings.some((drawing: PersistedDrawingDocument) => drawing.id === parsed.activeDrawingId)
-                    ? parsed.activeDrawingId
-                    : nextDrawings[0].id;
 
             const restoredDrawing =
                 nextDrawings.find((drawing: PersistedDrawingDocument) => drawing.id === restoredActiveDrawingId) ??
@@ -1983,6 +2070,7 @@ export default function HelloEditor() {
 
             setEditorDrawings(nextDrawings);
             setRightStepSnapshotsByDrawingId(nextRightStepSnapshotsByDrawingId);
+            setPlantSelectionSnapshotsByDrawingId(nextPlantSelectionSnapshotsByDrawingId);
             setActiveDrawingId(restoredDrawing.id);
 
             isRestoringDrawingRef.current = true;
@@ -1992,6 +2080,14 @@ export default function HelloEditor() {
             loadRightStepMenuSnapshotIntoStore(
                 nextRightStepSnapshotsByDrawingId[restoredDrawing.id] ?? createEmptyRightStepMenuSnapshot()
             );
+            usePlantSelectionStore.getState().loadSnapshot(
+                getPlantSelectionSnapshotForDrawing(
+                    restoredDrawing.id,
+                    nextPlantSelectionSnapshotsByDrawingId
+                )
+            );
+
+            writeActiveDrawingIdToStorage(restoredDrawing.id);
 
             setSaveState("saved");
             setIsDrawingsDashboardOpen(false);
@@ -2002,9 +2098,11 @@ export default function HelloEditor() {
 
             loadSnapshotIntoStore(createEmptyDrawingSnapshot());
             loadRightStepMenuSnapshotIntoStore(createEmptyRightStepMenuSnapshot());
+            usePlantSelectionStore.getState().resetForNewDrawing();
 
             setEditorDrawings([]);
             setRightStepSnapshotsByDrawingId({});
+            setPlantSelectionSnapshotsByDrawingId({});
             setActiveDrawingId(null);
             setSaveState("saved");
             setIsDrawingsDashboardOpen(true);
@@ -2014,7 +2112,6 @@ export default function HelloEditor() {
         createEmptyDrawingSnapshot,
         loadSnapshotIntoStore,
         loadRightStepMenuSnapshotIntoStore,
-        sanitizeDrawingDocument,
     ]);
 
     useEffect(() => {
@@ -2025,13 +2122,8 @@ export default function HelloEditor() {
         }
 
         persistToStorageTimerRef.current = window.setTimeout(() => {
-            window.localStorage.setItem(
-                DRAWINGS_STORAGE_KEY,
-                JSON.stringify({
-                    drawings: editorDrawings,
-                    activeDrawingId,
-                })
-            );
+            writeDrawingsToStorage(editorDrawings, activeDrawingId);
+            writeActiveDrawingIdToStorage(activeDrawingId);
 
             persistToStorageTimerRef.current = null;
         }, 400);
@@ -2052,9 +2144,9 @@ export default function HelloEditor() {
         }
 
         persistRightStepTimerRef.current = window.setTimeout(() => {
-            window.localStorage.setItem(
-                RIGHT_STEP_MENU_STORAGE_KEY,
-                JSON.stringify(rightStepSnapshotsByDrawingId)
+            writeRightStepSnapshotsByDrawingIdToStorage(rightStepSnapshotsByDrawingId);
+            writePlantSelectionSnapshotsByDrawingIdToStorage(
+                plantSelectionSnapshotsByDrawingId as PersistedPlantSelectionSnapshotsByDrawingId
             );
 
             persistRightStepTimerRef.current = null;
@@ -2066,8 +2158,11 @@ export default function HelloEditor() {
                 persistRightStepTimerRef.current = null;
             }
         };
-    }, [isDrawingsHydrated, rightStepSnapshotsByDrawingId]);
-
+    }, [
+        isDrawingsHydrated,
+        rightStepSnapshotsByDrawingId,
+        plantSelectionSnapshotsByDrawingId,
+    ]);
     const getPlantbedLinkedCount = useProjectStore((s: any) => s.getPlantbedLinkedCount);
     const [topLeftNoticeLeft, setTopLeftNoticeLeft] = useState(0);
 
@@ -2228,17 +2323,24 @@ export default function HelloEditor() {
     const plantbedNumberLayouts = useMemo(() => {
         const layouts = new Map<string, PlantbedNumberLayout>();
         const cache = plantbedLayoutCacheRef.current;
-        const plantbeds = (objects as PolyObject[]).filter((obj) => obj.type === "plantbed");
+        const numberedObjects = (objects as PolyObject[]).filter((obj) =>
+            obj.type === "plantbed" || obj.type === "hedge" || obj.type === "treebed"
+        );
         const validIds = new Set<string>();
 
-        for (const obj of plantbeds) {
+        for (const obj of numberedObjects) {
             const areaText = formatSquareMeters(getObjectAreaInSquareMeters(obj));
+            const blockersForLayout =
+                obj.type === "treebed"
+                    ? []
+                    : treebedLabelBlockers;
+
             const signature = buildPlantbedLayoutSignature(
                 obj.points,
                 obj.holes ?? [],
                 obj.plantbedNo ?? 0,
                 areaText,
-                treebedLabelBlockersSignature
+                obj.type === "treebed" ? "" : treebedLabelBlockersSignature
             );
 
             const cached = cache.get(obj.id);
@@ -2253,7 +2355,7 @@ export default function HelloEditor() {
                 obj.holes ?? [],
                 obj.plantbedNo ?? 0,
                 areaText,
-                treebedLabelBlockers
+                blockersForLayout
             );
 
             cache.set(obj.id, {
@@ -2291,6 +2393,7 @@ export default function HelloEditor() {
     }, [scheduleViewportState]);
 
     const linkPlantToPlantbed = useProjectStore((s: any) => s.linkPlantToPlantbed);
+    const unlinkPlantFromPlantbedByPlantId = useProjectStore((s: any) => s.unlinkPlantFromPlantbedByPlantId);
     const getPlantById = useProjectStore((s: any) => s.getPlantById);
     const focusSidebarOnPlantbed = useProjectStore((s: any) => s.focusSidebarOnPlantbed);
     const canvasFocusRequest = useProjectStore((s: any) => s.canvasFocusRequest);
@@ -3163,7 +3266,11 @@ export default function HelloEditor() {
     const livePlantbedNumberLayouts = useMemo(() => {
         const layouts = new Map(plantbedNumberLayouts);
 
-        if (livePrimaryMeasurementObject?.type !== "plantbed") {
+        if (
+            livePrimaryMeasurementObject?.type !== "plantbed" &&
+            livePrimaryMeasurementObject?.type !== "hedge" &&
+            livePrimaryMeasurementObject?.type !== "treebed"
+        ) {
             livePlantbedLayoutCacheRef.current.clear();
             return layouts;
         }
@@ -3172,6 +3279,10 @@ export default function HelloEditor() {
         const hasHoles = (livePrimaryMeasurementObject.holes?.length ?? 0) > 0;
         const isInteractiveEdit = isVertexDragging || isEdgeResizing;
         const committedLayout = plantbedNumberLayouts.get(livePrimaryMeasurementObject.id);
+        const blockersForLayout =
+            livePrimaryMeasurementObject.type === "treebed"
+                ? []
+                : treebedLabelBlockers;
 
         if (isInteractiveEdit) {
             const fastInteractiveLayout = hasHoles
@@ -3195,7 +3306,7 @@ export default function HelloEditor() {
                     livePrimaryMeasurementObject.holes ?? [],
                     livePrimaryMeasurementObject.plantbedNo ?? 0,
                     areaText,
-                    treebedLabelBlockersSignature
+                    livePrimaryMeasurementObject.type === "treebed" ? "" : treebedLabelBlockersSignature
                 ),
                 layout: fastInteractiveLayout,
             });
@@ -3209,7 +3320,7 @@ export default function HelloEditor() {
             livePrimaryMeasurementObject.holes ?? [],
             livePrimaryMeasurementObject.plantbedNo ?? 0,
             areaText,
-            treebedLabelBlockersSignature
+            livePrimaryMeasurementObject.type === "treebed" ? "" : treebedLabelBlockersSignature
         );
 
         const cached = livePlantbedLayoutCacheRef.current.get(livePrimaryMeasurementObject.id);
@@ -3223,7 +3334,7 @@ export default function HelloEditor() {
             livePrimaryMeasurementObject.holes ?? [],
             livePrimaryMeasurementObject.plantbedNo ?? 0,
             areaText,
-            treebedLabelBlockers
+            blockersForLayout
         );
 
         livePlantbedLayoutCacheRef.current.set(livePrimaryMeasurementObject.id, {
@@ -3466,17 +3577,30 @@ export default function HelloEditor() {
                 return;
             }
 
-            e.preventDefault();
-
             const world = clientToWorld(e.clientX, e.clientY);
             const objs = objectsRef.current as PolyObject[];
-            const plantbeds = objs.filter((o) => o.type === "plantbed");
+            const plantbeds = objs.filter(
+                (o) => o.type === "plantbed" || o.type === "hedge" || o.type === "treebed"
+            );
 
             const hit = getPlantbedHitAtWorldPoint(world.x, world.y, plantbeds);
             const nextId = hit ? hit.id : null;
 
             dragOverPlantbedIdRef.current = nextId;
             setDragOverPlantbedId(nextId);
+
+            if (!hit) {
+                if (e.dataTransfer) {
+                    e.dataTransfer.dropEffect = "none";
+                }
+                return;
+            }
+
+            e.preventDefault();
+
+            if (e.dataTransfer) {
+                e.dataTransfer.dropEffect = "copy";
+            }
         };
 
         const onDragLeave = (e: DragEvent) => {
@@ -3508,7 +3632,9 @@ export default function HelloEditor() {
 
             const world = clientToWorld(e.clientX, e.clientY);
             const objs = useProjectStore.getState().objects as PolyObject[];
-            const plantbeds = objs.filter((o) => o.type === "plantbed");
+            const plantbeds = objs.filter(
+                (o) => o.type === "plantbed" || o.type === "hedge" || o.type === "treebed"
+            );
 
             let hit = getPlantbedHitAtWorldPoint(world.x, world.y, plantbeds);
 
@@ -3525,6 +3651,8 @@ export default function HelloEditor() {
             }
 
             const plantbedId = hit.id;
+            const hitType = hit.type;
+            const objectNo = (hit as any).plantbedNo ?? "?";
 
             const state = useProjectStore.getState();
             const plant = state.getPlantById(plantId);
@@ -3535,21 +3663,53 @@ export default function HelloEditor() {
             }
 
             const alreadyLinkedIds: string[] = state.plantbedLinks?.[plantbedId] ?? [];
+            const plantName = plant.latin ?? "Plant";
+
+            if (hitType === "treebed") {
+                const existingLinkedPlantId = alreadyLinkedIds[0] ?? null;
+
+                if (existingLinkedPlantId === plantId) {
+                    clearDragOverPlantbed();
+                    notify(APP_NOTIFICATIONS.plantAlreadyLinkedToPlantbed(objectNo));
+                    return;
+                }
+
+                if (existingLinkedPlantId) {
+                    const oldPlant = state.getPlantById(existingLinkedPlantId);
+                    const oldPlantName = oldPlant?.latin ?? "Plant";
+
+                    unlinkPlantFromPlantbedByPlantId(plantbedId, existingLinkedPlantId);
+                    linkPlantToPlantbed(plantId, plantbedId);
+
+                    clearDragOverPlantbed();
+                    notify(
+                        APP_NOTIFICATIONS.plantReplacedInSingleSlotObject(
+                            oldPlantName,
+                            plantName,
+                            "boomvak",
+                            objectNo
+                        )
+                    );
+                    return;
+                }
+
+                linkPlantToPlantbed(plantId, plantbedId);
+
+                clearDragOverPlantbed();
+                notify(APP_NOTIFICATIONS.plantLinkedToPlantbed(plantName, objectNo));
+                return;
+            }
 
             if (alreadyLinkedIds.includes(plantId)) {
-                const plantbedNo = (hit as any).plantbedNo ?? "?";
                 clearDragOverPlantbed();
-                notify(APP_NOTIFICATIONS.plantAlreadyLinkedToPlantbed(plantbedNo));
+                notify(APP_NOTIFICATIONS.plantAlreadyLinkedToPlantbed(objectNo));
                 return;
             }
 
             linkPlantToPlantbed(plantId, plantbedId);
 
-            const plantName = plant.latin ?? "Plant";
-            const plantbedNo = (hit as any).plantbedNo ?? "?";
-
             clearDragOverPlantbed();
-            notify(APP_NOTIFICATIONS.plantLinkedToPlantbed(plantName, plantbedNo));
+            notify(APP_NOTIFICATIONS.plantLinkedToPlantbed(plantName, objectNo));
         };
 
         container.addEventListener("dragover", onDragOver);
@@ -4003,6 +4163,8 @@ export default function HelloEditor() {
             if (!stage) return;
 
             const evt = e.evt as MouseEvent;
+
+            setSelectedLinkedPlantPreview(null);
 
             if (
                 evt.shiftKey &&
@@ -5125,6 +5287,26 @@ export default function HelloEditor() {
         exportRightStepMenuSnapshotFromStore,
     ]);
 
+    useEffect(() => {
+        if (!isDrawingsHydrated || !activeDrawingId) return;
+
+        const nextSnapshot = exportPlantSelectionSnapshotFromStore();
+
+        setPlantSelectionSnapshotsByDrawingId((prev) => ({
+            ...prev,
+            [activeDrawingId]: exportPlantSelectionSnapshotFromStore(),
+        }));
+    }, [
+        activeDrawingId,
+        isDrawingsHydrated,
+        exportPlantSelectionSnapshotFromStore,
+        plantSelectionSelectedGroup,
+        plantSelectionViewMode,
+        plantSelectionSortValue,
+        plantSelectionFilters,
+        plantSelectionItems,
+    ]);
+
     const shouldHideHeavySceneDecorations =
         treebedRotatePreview !== null ||
         isVertexDragging ||
@@ -5154,9 +5336,32 @@ export default function HelloEditor() {
         const zSort = (a: PolyObject, b: PolyObject) =>
             TYPE_Z_INDEX[a.type] - TYPE_Z_INDEX[b.type];
 
+        const visibilitySectionByObjectType = new Map<ObjectType, string>();
+
+        getObjectMenuSections(selectedLocationType).forEach((section) => {
+            section.items.forEach((item) => {
+                visibilitySectionByObjectType.set(item.id, section.id);
+            });
+        });
+
+        const resolveViewVisibilityKeyForType = (type: ObjectType): ViewVisibilityKey => {
+            if (type === "plantbed" || type === "hedge") return "showPlantbeds";
+            if (type === "treebed") return "showTreebeds";
+
+            const sectionId = visibilitySectionByObjectType.get(type);
+
+            if (sectionId === "ondergrond") return "showGround";
+            if (sectionId === "gebouwen") return "showBuildings";
+            if (sectionId === "verkeer-gebruik") return "showTrafficUse";
+            if (sectionId === "afbakening" || sectionId === "randen") return "showBoundaries";
+            if (sectionId === "beplanting") return "showPlantbeds";
+
+            return getViewVisibilityKeyForType(type);
+        };
+
         const visibleObjects = (objects as PolyObject[]).filter((o) => {
-            const key = getViewVisibilityKeyForType(o.type);
-            return viewVisibility[key];
+            const key = resolveViewVisibilityKeyForType(o.type);
+            return viewVisibility[key] ?? true;
         });
 
         const selected = visibleObjects
@@ -5177,7 +5382,7 @@ export default function HelloEditor() {
             unselectedPlantbeds,
             unselectedNonPlantbeds,
         };
-    }, [objects, selectedObjectIds, viewVisibility]);
+    }, [objects, selectedLocationType, selectedObjectIds, viewVisibility]);
 
     const changeTypeMenuSections = useMemo(() => {
         return getObjectMenuSections(selectedLocationType);
@@ -5540,44 +5745,94 @@ export default function HelloEditor() {
             <AppNotificationsRenderer topLeftLeftOffset={topLeftNoticeLeft} />
 
             <div className="w-full relative z-50" style={{ height: HEADER_HEIGHT, background: COLORS.green }}>
-                <FileMenuDropdown
-                    isOpen={isFileMenuOpen}
-                    onToggle={() => setIsFileMenuOpen((prev) => !prev)}
-                    onClose={() => setIsFileMenuOpen(false)}
-                    drawingName={activeDrawing?.name ?? "Nieuwe tekening"}
-                    createdAtLabel={getCurrentDateTimeLabel(activeDrawing?.createdAt ?? null)}
-                    createdByLabel="[account naam]"
-                    onDrawingNameChange={(nextName) => {
-                        if (!activeDrawingId) return false;
-
-                        const duplicateExists = editorDrawings.some(
-                            (drawing) =>
-                                drawing.id !== activeDrawingId &&
-                                drawing.name.trim().toLowerCase() === nextName.trim().toLowerCase()
-                        );
-
-                        if (duplicateExists) {
-                            return false;
-                        }
-
-                        setEditorDrawings((prev) =>
-                            prev.map((drawing) =>
-                                drawing.id === activeDrawingId
-                                    ? {
-                                        ...drawing,
-                                        name: nextName,
-                                        updatedAt: new Date().toISOString(),
-                                    }
-                                    : drawing
-                            )
-                        );
-
-                        return true;
+                <button
+                    type="button"
+                    onClick={goToPlantSelectionPage}
+                    style={{
+                        position: "absolute",
+                        left: 16,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        color: "#ffffff",
+                        background: "transparent",
+                        border: "none",
+                        padding: 0,
+                        fontSize: 14,
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        textDecoration: "none",
                     }}
-                    onNew={() => handleOpenCreateDrawingModal("editor")}
-                    onOpen={handleOpenDrawingsDashboard}
-                    onSave={handleManualSaveActiveDrawing}
-                />
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.textDecoration = "underline";
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.textDecoration = "none";
+                    }}
+                >
+                    <img
+                        src="/icons/arrow-left.svg"
+                        alt=""
+                        style={{
+                            width: 16,
+                            height: 16,
+                            display: "block",
+                            filter: "brightness(0) invert(1)",
+                        }}
+                    />
+                    <span>Ga terug naar plantenlijst</span>
+                </button>
+
+                <div
+                    style={{
+                        position: "absolute",
+                        left: 200,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                    }}
+                >
+                    <FileMenuDropdown
+                        isOpen={isFileMenuOpen}
+                        onToggle={() => setIsFileMenuOpen((prev) => !prev)}
+                        onClose={() => setIsFileMenuOpen(false)}
+                        drawingName={activeDrawing?.name ?? "Nieuwe tekening"}
+                        createdAtLabel={getCurrentDateTimeLabel(activeDrawing?.createdAt ?? null)}
+                        createdByLabel="[account naam]"
+                        onDrawingNameChange={(nextName) => {
+                            if (!activeDrawingId) return false;
+
+                            const duplicateExists = editorDrawings.some(
+                                (drawing) =>
+                                    drawing.id !== activeDrawingId &&
+                                    drawing.name.trim().toLowerCase() === nextName.trim().toLowerCase()
+                            );
+
+                            if (duplicateExists) {
+                                return false;
+                            }
+
+                            setEditorDrawings((prev) =>
+                                prev.map((drawing) =>
+                                    drawing.id === activeDrawingId
+                                        ? {
+                                            ...drawing,
+                                            name: nextName,
+                                            updatedAt: new Date().toISOString(),
+                                        }
+                                        : drawing
+                                )
+                            );
+
+                            return true;
+                        }}
+                        onNew={() => handleOpenCreateDrawingModal("editor")}
+                        onOpen={handleOpenDrawingsDashboard}
+                        onSave={handleManualSaveActiveDrawing}
+                    />
+                </div>
+
                 <div
                     style={{
                         position: "absolute",
@@ -5788,9 +6043,120 @@ export default function HelloEditor() {
                         />
                     </div>
 
-                    <div className="relative z-40">
-                        <RightStepMenu />
+                    <div className="relative z-20">
+                        {shouldShowPlantSidebar ? (
+                            <PlantSidebar onLinkedPlantSelect={handleLinkedPlantPreviewSelect} />
+                        ) : (
+                            <RightStepMenu />
+                        )}
                     </div>
+
+                    {selectedLinkedPlantPreview && shouldShowPlantSidebar && (
+                        <div
+                            style={{
+                                position: "fixed",
+                                left: topLeftNoticeLeft,
+                                top: HEADER_HEIGHT + TOOLBAR_OFFSET,
+                                zIndex: 35,
+                                width: 260,
+                                background: "#ffffff",
+                                border: `1px solid ${COLORS.border}`,
+                                borderRadius: 6,
+                                boxShadow: "0px 4px 14px rgba(0,0,0,0.12)",
+                                padding: 14,
+                            }}
+                        >
+                            <div
+                                style={{
+                                    width: "100%",
+                                    aspectRatio: "1 / 0.72",
+                                    borderRadius: 4,
+                                    overflow: "hidden",
+                                    background: "#F3F3F3",
+                                }}
+                            >
+                                <img
+                                    src={selectedLinkedPlantPreview.imageSrc}
+                                    alt={selectedLinkedPlantPreview.latin}
+                                    style={{
+                                        width: "100%",
+                                        height: "100%",
+                                        objectFit: "cover",
+                                        display: "block",
+                                    }}
+                                />
+                            </div>
+
+                            <div
+                                style={{
+                                    marginTop: 14,
+                                    fontSize: 18,
+                                    fontWeight: 700,
+                                    lineHeight: 1.2,
+                                    color: "#111111",
+                                }}
+                            >
+                                {selectedLinkedPlantPreview.latin}
+                            </div>
+
+                            <div
+                                style={{
+                                    marginTop: 4,
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    lineHeight: 1.2,
+                                    color: "#7B7B7B",
+                                }}
+                            >
+                                {selectedLinkedPlantPreview.dutch}
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    setIsLinkedPlantSpecificationsOpen(true);
+                                }}
+                                style={{
+                                    marginTop: 12,
+                                    padding: 0,
+                                    border: "none",
+                                    background: "transparent",
+                                    color: COLORS.orange,
+                                    fontSize: 13,
+                                    fontWeight: 700,
+                                    lineHeight: 1.2,
+                                    textDecoration: "underline",
+                                    textUnderlineOffset: 2,
+                                    cursor: "pointer",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                }}
+                            >
+                                Bekijk plantspecificaties
+                                <img
+                                    src="/icons/chevron-right.svg"
+                                    alt=""
+                                    style={{
+                                        width: 12,
+                                        height: 12,
+                                        display: "block",
+                                        filter: "invert(41%) sepia(97%) saturate(2284%) hue-rotate(343deg) brightness(95%) contrast(101%)",
+                                    }}
+                                />
+                            </button>
+                        </div>
+                    )}
+
+                    <LinkedPlantSpecificationsOverlay
+                        open={isLinkedPlantSpecificationsOpen}
+                        plant={selectedLinkedPlantPreview}
+                        topOffset={HEADER_HEIGHT + TOOLBAR_OFFSET + 72}
+                        onClose={() => {
+                            setIsLinkedPlantSpecificationsOpen(false);
+                        }}
+                    />
 
                     <CanvasScaleSummary
                         leftOffset={topLeftNoticeLeft}

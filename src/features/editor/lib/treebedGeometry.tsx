@@ -138,6 +138,9 @@ export function DynamicStrokeShape({
     seedKey,
     closed = true,
     listening = false,
+    dash,
+    dashEnabled,
+    opacity,
 }: {
     points: number[];
     stroke: string;
@@ -145,6 +148,9 @@ export function DynamicStrokeShape({
     seedKey: string;
     closed?: boolean;
     listening?: boolean;
+    dash?: number[];
+    dashEnabled?: boolean;
+    opacity?: number;
 }) {
     const sampled = getDynamicStrokeSamplePoints(points, seedKey, closed);
 
@@ -156,6 +162,9 @@ export function DynamicStrokeShape({
             strokeWidth={strokeWidth}
             lineCap="round"
             lineJoin="round"
+            dash={dash}
+            dashEnabled={dashEnabled}
+            opacity={opacity}
             sceneFunc={(ctx, shape) => {
                 if (sampled.length < 2) return;
 

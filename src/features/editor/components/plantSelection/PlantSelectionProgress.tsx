@@ -31,26 +31,67 @@ const STEP_LINE_HEIGHT = 4;
 const STEP_LINE_TOP = STEP_BUBBLE_SIZE / 2 - STEP_LINE_HEIGHT / 2;
 
 export default function PlantSelectionProgress() {
-    const isStep1Complete = useRightStepMenuStore((s) => s.isStep1Complete);
-    const isStep2Complete = useRightStepMenuStore((s) => s.isStep2Complete);
-    const isStep3Complete = useRightStepMenuStore((s) => s.isStep3Complete);
-    const isStep4Complete = useRightStepMenuStore((s) => s.isStep4Complete);
+    const step1 = useRightStepMenuStore((s) => s.step1);
+    const step2 = useRightStepMenuStore((s) => s.step2);
+    const step3 = useRightStepMenuStore((s) => s.step3);
+    const step4 = useRightStepMenuStore((s) => s.step4);
     const isStepAccessible = useRightStepMenuStore((s) => s.isStepAccessible);
+
+    const isStep1Completed = useMemo(() => {
+        return !!step1.locationType && step1.gardenZones.length > 0;
+    }, [step1]);
+
+    const isStep2Completed = useMemo(() => {
+        return (
+            step2.standplaatsen.length > 0 &&
+            step2.groundTypes.length > 0 &&
+            !!step2.maintenanceLevel &&
+            !!step2.certificationPreference
+        );
+    }, [step2]);
+
+    const isStep3Completed = useMemo(() => {
+        if (!step3.structureStyle) return false;
+
+        if (step3.structureStyle !== "vrij-samenstellen") {
+            return true;
+        }
+
+        const percentages = step3.customPercentages;
+        const hasAllValues = Object.values(percentages).every((value) => value !== "");
+        if (!hasAllValues) return false;
+
+        const total =
+            Number(percentages.bodembedekkers || 0) +
+            Number(percentages.vastePlanten || 0) +
+            Number(percentages.heestersEnStruiken || 0) +
+            Number(percentages.bomen || 0);
+
+        return total === 100;
+    }, [step3]);
+
+    const isStep4Completed = useMemo(() => {
+        return !!step4.seasonExperience && !!step4.heightStyle;
+    }, [step4]);
 
     const completedCount = useMemo(() => {
         let count = 0;
 
-        if (isStep1Complete()) count += 1;
-        if (isStep2Complete()) count += 1;
-        if (isStep3Complete()) count += 1;
-        if (isStep4Complete()) count += 1;
+        if (isStep1Completed) count += 1;
+        if (isStep2Completed) count += 1;
+        if (isStep3Completed) count += 1;
+        if (isStep4Completed) count += 1;
 
         return count;
-    }, [isStep1Complete, isStep2Complete, isStep3Complete, isStep4Complete]);
+    }, [
+        isStep1Completed,
+        isStep2Completed,
+        isStep3Completed,
+        isStep4Completed,
+    ]);
 
     const progressIndex = Math.min(completedCount + 1, STEP_COUNT);
     const progressRatio = (progressIndex - 1) / (STEP_COUNT - 1);
-
     const handleStepClick = (stepId: number) => {
         const isClickableEditorStep =
             stepId >= 1 &&

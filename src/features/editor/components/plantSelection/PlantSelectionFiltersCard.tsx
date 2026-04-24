@@ -2,6 +2,18 @@
 
 import React, { useMemo, useState } from "react";
 import type { PlantSelectionFiltersState } from "@/features/editor/state/plantSelectionStore";
+import type {
+    PlantSelectionAdvancedArrayFilterKey,
+    PlantSelectionAdvancedFilters,
+} from "@/features/editor/lib/plantSelectionDummyData";
+import {
+    PLANT_SELECTION_BLOEIPERIODE_OPTIONS,
+    PLANT_SELECTION_COLOR_OPTIONS,
+    PLANT_SELECTION_GRONDSOORT_OPTIONS,
+    PLANT_SELECTION_PLANTGROUP_OPTIONS,
+    PLANT_SELECTION_STANDPLAATS_OPTIONS,
+    getVisiblePlantSelectionFilterSections,
+} from "@/features/editor/lib/plantSelectionDummyData";
 
 const COLORS = {
     cardBg: "#FFFFFF",
@@ -10,9 +22,6 @@ const COLORS = {
     text: "#111111",
     softButtonBg: "#F8F7F6",
 };
-
-const COLOR_OPTIONS = ["Blauw", "Rood", "Geel", "Wit", "Roze", "Paars"];
-const BLOEIPERIODE_OPTIONS = ["jan - mrt", "mrt - mei", "juni - aug", "sept - nov"];
 
 function ToggleRow(props: {
     label: string;
@@ -138,49 +147,99 @@ function CheckboxOptionRow(props: {
     );
 }
 
+type ExpandableFilterState = Record<PlantSelectionAdvancedArrayFilterKey, boolean>;
+
 type PlantSelectionFiltersCardProps = {
     filters: PlantSelectionFiltersState;
+    advancedFilters: PlantSelectionAdvancedFilters;
+    isSearchMode: boolean;
     onToggleFilter: (key: keyof PlantSelectionFiltersState) => void;
+    onToggleAdvancedFilter: (
+        key: PlantSelectionAdvancedArrayFilterKey,
+        value: string
+    ) => void;
     onClearFilters: () => void;
 };
 
 export default function PlantSelectionFiltersCard(props: PlantSelectionFiltersCardProps) {
-    const { filters, onToggleFilter, onClearFilters } = props;
+    const {
+        filters,
+        advancedFilters,
+        isSearchMode,
+        onToggleFilter,
+        onToggleAdvancedFilter,
+        onClearFilters,
+    } = props;
 
-    const [isColorOpen, setIsColorOpen] = useState(false);
-    const [isBloomOpen, setIsBloomOpen] = useState(false);
-    const [selectedColors, setSelectedColors] = useState<string[]>([]);
-    const [selectedBloomPeriods, setSelectedBloomPeriods] = useState<string[]>([]);
+    const [openSections, setOpenSections] = useState<ExpandableFilterState>({
+        plantgroepen: false,
+        kleuren: false,
+        standplaatsen: false,
+        grondsoorten: false,
+        bloeiperiodes: false,
+    });
+
+    const visibleSections = useMemo(
+        () => getVisiblePlantSelectionFilterSections(isSearchMode),
+        [isSearchMode]
+    );
 
     const hasAnyExtraFilter = useMemo(() => {
         return (
             filters.opVoorraad ||
             filters.inheems ||
-            selectedColors.length > 0 ||
-            selectedBloomPeriods.length > 0
+            advancedFilters.plantgroepen.length > 0 ||
+            advancedFilters.kleuren.length > 0 ||
+            advancedFilters.standplaatsen.length > 0 ||
+            advancedFilters.grondsoorten.length > 0 ||
+            advancedFilters.bloeiperiodes.length > 0
         );
-    }, [filters.inheems, filters.opVoorraad, selectedBloomPeriods.length, selectedColors.length]);
+    }, [advancedFilters, filters.inheems, filters.opVoorraad]);
 
-    const handleToggleColor = (value: string) => {
-        setSelectedColors((prev) =>
-            prev.includes(value)
-                ? prev.filter((item) => item !== value)
-                : [...prev, value]
-        );
+    const getOptionsForFilter = (
+        filterKey: PlantSelectionAdvancedArrayFilterKey
+    ): string[] => {
+        switch (filterKey) {
+            case "plantgroepen":
+                return PLANT_SELECTION_PLANTGROUP_OPTIONS;
+            case "kleuren":
+                return PLANT_SELECTION_COLOR_OPTIONS;
+            case "standplaatsen":
+                return PLANT_SELECTION_STANDPLAATS_OPTIONS;
+            case "grondsoorten":
+                return PLANT_SELECTION_GRONDSOORT_OPTIONS;
+            case "bloeiperiodes":
+                return PLANT_SELECTION_BLOEIPERIODE_OPTIONS;
+        }
     };
 
-    const handleToggleBloomPeriod = (value: string) => {
-        setSelectedBloomPeriods((prev) =>
-            prev.includes(value)
-                ? prev.filter((item) => item !== value)
-                : [...prev, value]
-        );
-    };
+    const renderScrollableOptions = (
+        filterKey: PlantSelectionAdvancedArrayFilterKey
+    ) => {
+        const options = getOptionsForFilter(filterKey);
+        const selectedValues = advancedFilters[filterKey];
 
-    const handleClearAll = () => {
-        onClearFilters();
-        setSelectedColors([]);
-        setSelectedBloomPeriods([]);
+        return (
+            <div
+                className="pr-2"
+                style={{
+                    maxHeight: 170,
+                    overflowY: options.length > 5 ? "auto" : "visible",
+                    scrollbarWidth: "thin",
+                }}
+            >
+                <div className="space-y-1">
+                    {options.map((option) => (
+                        <CheckboxOptionRow
+                            key={option}
+                            label={option}
+                            checked={selectedValues.includes(option)}
+                            onClick={() => onToggleAdvancedFilter(filterKey, option)}
+                        />
+                    ))}
+                </div>
+            </div>
+        );
     };
 
     return (
@@ -202,7 +261,7 @@ export default function PlantSelectionFiltersCard(props: PlantSelectionFiltersCa
 
                 <button
                     type="button"
-                    onClick={handleClearAll}
+                    onClick={onClearFilters}
                     className="cursor-pointer text-[14px] font-semibold"
                     style={{
                         color: COLORS.green,
@@ -214,70 +273,38 @@ export default function PlantSelectionFiltersCard(props: PlantSelectionFiltersCa
             </div>
 
             <div className="mt-4 space-y-3">
-                <ToggleRow
-                    label="Op voorraad"
-                    checked={filters.opVoorraad}
-                    onClick={() => onToggleFilter("opVoorraad")}
-                />
+                {visibleSections.map((section) => {
+                    if (section.kind === "toggle") {
+                        const toggleKey = section.key as keyof PlantSelectionFiltersState;
 
-                <ToggleRow
-                    label="Inheems"
-                    checked={filters.inheems}
-                    onClick={() => onToggleFilter("inheems")}
-                />
+                        return (
+                            <ToggleRow
+                                key={section.key}
+                                label={section.label}
+                                checked={filters[toggleKey]}
+                                onClick={() => onToggleFilter(toggleKey)}
+                            />
+                        );
+                    }
 
-                <ExpandableFilterRow
-                    label="Kleur"
-                    isOpen={isColorOpen}
-                    onToggle={() => setIsColorOpen((prev) => !prev)}
-                >
-                    <div
-                        className="pr-2"
-                        style={{
-                            maxHeight: 170,
-                            overflowY: COLOR_OPTIONS.length > 5 ? "auto" : "visible",
-                            scrollbarWidth: "thin",
-                        }}
-                    >
-                        <div className="space-y-1">
-                            {COLOR_OPTIONS.map((option) => (
-                                <CheckboxOptionRow
-                                    key={option}
-                                    label={option}
-                                    checked={selectedColors.includes(option)}
-                                    onClick={() => handleToggleColor(option)}
-                                />
-                            ))}
-                        </div>
-                    </div>
-                </ExpandableFilterRow>
+                    const expandableKey = section.key as PlantSelectionAdvancedArrayFilterKey;
 
-                <ExpandableFilterRow
-                    label="Bloeiperiode"
-                    isOpen={isBloomOpen}
-                    onToggle={() => setIsBloomOpen((prev) => !prev)}
-                >
-                    <div
-                        className="pr-2"
-                        style={{
-                            maxHeight: 170,
-                            overflowY:
-                                BLOEIPERIODE_OPTIONS.length > 5 ? "auto" : "visible",
-                            scrollbarWidth: "thin",
-                        }}
-                    >
-                        <div className="space-y-1">
-                            {BLOEIPERIODE_OPTIONS.map((option) => (
-                                <CheckboxOptionRow
-                                    key={option}
-                                    label={option}
-                                    checked={selectedBloomPeriods.includes(option)}
-                                    onClick={() => handleToggleBloomPeriod(option)}
-                                />
-                            ))}
-                        </div>
-                    </div>
-                </ExpandableFilterRow>
+                    return (
+                        <ExpandableFilterRow
+                            key={section.key}
+                            label={section.label}
+                            isOpen={openSections[expandableKey]}
+                            onToggle={() =>
+                                setOpenSections((prev) => ({
+                                    ...prev,
+                                    [expandableKey]: !prev[expandableKey],
+                                }))
+                            }
+                        >
+                            {renderScrollableOptions(expandableKey)}
+                        </ExpandableFilterRow>
+                    );
+                })}
             </div>
         </section>
     );

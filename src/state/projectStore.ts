@@ -573,6 +573,11 @@ import {
     type GeometryKind,
 } from "@/features/editor/components/editor/objectMenuConfig";
 
+export type PolyObjectStyle = {
+    fill?: string;
+    stroke?: string;
+};
+
 export type PolyObject = {
     id: string;
     type: ObjectType;
@@ -585,6 +590,9 @@ export type PolyObject = {
 
     //rotaten boomvak leivorm
     rotationDeg?: number
+
+    // ✅ Custom objectstijl per object
+    customStyle?: PolyObjectStyle;
 
     // ✅ Holes (counter-clockwise). Alleen gebruikt bij polygonen met “gaten” (bv water in gras)
     holes?: number[][];
@@ -621,6 +629,7 @@ export type ViewVisibilityKey =
     | "showAreaLabels"
     | "showGround"
     | "showBuildings"
+    | "showTrafficUse"
     | "showBoundaries"
     | "showPlantbeds"
     | "showTreebeds";
@@ -630,6 +639,7 @@ export type ViewVisibilityState = {
     showAreaLabels: boolean;
     showGround: boolean;
     showBuildings: boolean;
+    showTrafficUse: boolean;
     showBoundaries: boolean;
     showPlantbeds: boolean;
     showTreebeds: boolean;
@@ -845,6 +855,8 @@ type ProjectState = {
     moveObjectAndMerge: (id: string, toPoints: number[], toHoles?: number[][]) => void;
     updateObjectPoints: (id: string, toPoints: number[]) => void;
     changeObjectType: (id: string, nextType: ObjectType) => void;
+    updateObjectStyle: (id: string, style: PolyObjectStyle) => void;
+    resetObjectStyle: (id: string) => void;
     setObjectsWithHistory: (nextObjects: PolyObject[], nextSelectionId?: string | null) => void;
 
     confirmModal:
@@ -1312,10 +1324,19 @@ function findFirstFreeDuplicateDx(
     }
 }
 
-function getLowestFreePlantbedNoFromObjects(objects: PolyObject[]) {
+const NUMBERED_LINKABLE_OBJECT_TYPES: ObjectType[] = ["plantbed", "hedge", "treebed"];
+
+function isNumberedLinkableObjectType(type: ObjectType) {
+    return NUMBERED_LINKABLE_OBJECT_TYPES.includes(type);
+}
+
+function getLowestFreePlantbedNoFromObjects(
+    objects: PolyObject[],
+    targetType: ObjectType = "plantbed"
+) {
     const used = new Set(
         objects
-            .filter((o) => o.type === "plantbed")
+            .filter((o) => o.type === targetType)
             .map((o) => o.plantbedNo ?? 0)
             .filter((n) => Number.isFinite(n) && n > 0)
     );
@@ -1326,42 +1347,48 @@ function getLowestFreePlantbedNoFromObjects(objects: PolyObject[]) {
 }
 
 function renumberPlantbedsSequential(objects: PolyObject[]) {
-    const plantbedsSorted = objects
-        .filter((obj) => obj.type === "plantbed")
-        .slice()
-        .sort((a, b) => {
-            const aNo =
-                Number.isFinite(a.plantbedNo) && (a.plantbedNo ?? 0) > 0
-                    ? (a.plantbedNo as number)
-                    : Number.MAX_SAFE_INTEGER;
+    const nextObjects = [...objects];
 
-            const bNo =
-                Number.isFinite(b.plantbedNo) && (b.plantbedNo ?? 0) > 0
-                    ? (b.plantbedNo as number)
-                    : Number.MAX_SAFE_INTEGER;
+    for (const targetType of NUMBERED_LINKABLE_OBJECT_TYPES) {
+        const numberedObjectsSorted = nextObjects
+            .filter((obj) => obj.type === targetType)
+            .slice()
+            .sort((a, b) => {
+                const aNo =
+                    Number.isFinite(a.plantbedNo) && (a.plantbedNo ?? 0) > 0
+                        ? (a.plantbedNo as number)
+                        : Number.MAX_SAFE_INTEGER;
 
-            if (aNo !== bNo) return aNo - bNo;
-            return objects.indexOf(a) - objects.indexOf(b);
+                const bNo =
+                    Number.isFinite(b.plantbedNo) && (b.plantbedNo ?? 0) > 0
+                        ? (b.plantbedNo as number)
+                        : Number.MAX_SAFE_INTEGER;
+
+                if (aNo !== bNo) return aNo - bNo;
+                return nextObjects.indexOf(a) - nextObjects.indexOf(b);
+            });
+
+        const nextNoById = new Map<string, number>();
+        numberedObjectsSorted.forEach((obj, index) => {
+            nextNoById.set(obj.id, index + 1);
         });
 
-    const nextNoById = new Map<string, number>();
-    plantbedsSorted.forEach((obj, index) => {
-        nextNoById.set(obj.id, index + 1);
-    });
+        for (let i = 0; i < nextObjects.length; i += 1) {
+            const obj = nextObjects[i];
+            if (obj.type !== targetType) continue;
 
-    return objects.map((obj) => {
-        if (obj.type !== "plantbed") return obj;
+            const nextNo = nextNoById.get(obj.id);
+            if (nextNo === undefined) continue;
+            if (obj.plantbedNo === nextNo) continue;
 
-        const nextNo = nextNoById.get(obj.id);
-        if (nextNo === undefined) return obj;
+            nextObjects[i] = {
+                ...obj,
+                plantbedNo: nextNo,
+            };
+        }
+    }
 
-        if (obj.plantbedNo === nextNo) return obj;
-
-        return {
-            ...obj,
-            plantbedNo: nextNo,
-        };
-    });
+    return nextObjects;
 }
 
 function cleanupPoints(points: number[], eps = 1e-6) {
@@ -2465,11 +2492,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     getLinkedPlantIdsForPlantbed: (plantbedId) => {
         const state = get();
-        const isValidPlantbed = state.objects.some(
-            (obj) => obj.id === plantbedId && obj.type === "plantbed"
+        const isValidLinkedObject = state.objects.some(
+            (obj) => obj.id === plantbedId && isNumberedLinkableObjectType(obj.type)
         );
 
-        if (!isValidPlantbed) return [];
+        if (!isValidLinkedObject) return [];
         return state.plantbedLinks[plantbedId] ?? [];
     },
 
@@ -2477,7 +2504,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         const state = get();
         const validPlantbedIds = new Set(
             state.objects
-                .filter((obj) => obj.type === "plantbed")
+                .filter((obj) => isNumberedLinkableObjectType(obj.type))
                 .map((obj) => obj.id)
         );
 
@@ -2492,7 +2519,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         const total = state.plants.length;
         const validPlantbedIds = new Set(
             state.objects
-                .filter((obj) => obj.type === "plantbed")
+                .filter((obj) => isNumberedLinkableObjectType(obj.type))
                 .map((obj) => obj.id)
         );
 
@@ -2509,7 +2536,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     linkPlantToPlantbed: (plantId, plantbedId) =>
         set((state) => {
             const isValidPlantbed = state.objects.some(
-                (obj) => obj.id === plantbedId && obj.type === "plantbed"
+                (obj) => obj.id === plantbedId && isNumberedLinkableObjectType(obj.type)
             );
 
             if (!isValidPlantbed) return state;
@@ -2555,13 +2582,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     getPlantbedNo: (id) => {
         const o = get().objects.find((x) => x.id === id);
-        return o?.type === "plantbed" ? (o.plantbedNo ?? null) : null;
+        return o && isNumberedLinkableObjectType(o.type) ? (o.plantbedNo ?? null) : null;
     },
 
     getPlantbedLinkedCount: (id) => {
         const state = get();
         const isValidPlantbed = state.objects.some(
-            (obj) => obj.id === id && obj.type === "plantbed"
+            (obj) => obj.id === id && isNumberedLinkableObjectType(obj.type)
         );
 
         if (!isValidPlantbed) return 0;
@@ -2669,6 +2696,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         showAreaLabels: true,
         showGround: true,
         showBuildings: true,
+        showTrafficUse: true,
         showBoundaries: true,
         showPlantbeds: true,
         showTreebeds: true,
@@ -2894,17 +2922,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 state.objects.filter((o) => !isPolylineObject(o)) as PolyObject[]
             );
 
-            if (newObj.type === "plantbed") {
-                // ✅ laagste vrije plantvak-nummer zoeken (1,2,3...)
-                const used = new Set(
-                    state.objects
-                        .filter((o) => o.type === "plantbed")
-                        .map((o) => o.plantbedNo ?? 0)
-                        .filter((n) => n > 0)
+            if (newObj.type === "plantbed" || newObj.type === "hedge") {
+                const plantbedNo = getLowestFreePlantbedNoFromObjects(
+                    state.objects,
+                    newObj.type
                 );
-
-                let plantbedNo = 1;
-                while (used.has(plantbedNo)) plantbedNo++;
 
                 newObj = { ...newObj, plantbedNo };
             }
@@ -2922,6 +2944,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     id: newObj.id ?? makeId(),
                     type: "treebed",
                     holes: undefined,
+                    plantbedNo: getLowestFreePlantbedNoFromObjects(state.objects, "treebed"),
                     treebedVariant: newObj.treebedVariant ?? "standard",
                     rotationDeg: newObj.rotationDeg ?? 0,
                 };
@@ -3008,29 +3031,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     drawShapes = cut;
                 }
             }
+
             // 2️⃣ Plantbed logica (nooit unionen; wél overlap wegsnijden zodat plantvakken naast elkaar blijven)
             if (type === "plantbed") {
-                const existingPlantbeds = updatedObjects.filter((o) => o.type === "plantbed");
+                const existingSameTypeObjects = updatedObjects.filter((o) => o.type === type);
 
                 const finalShapes: number[][] = [];
 
                 for (const pts of drawShapes) {
                     const subject: PolyObject = { ...newObj, points: pts };
 
-                    // snijd nieuw plantvak weg door bestaande plantvakken
-                    const diff = subtractPolygons(subject, existingPlantbeds);
+                    // snijd nieuw plantvak weg door bestaande plantvakken van hetzelfde type
+                    const diff = subtractPolygons(subject, existingSameTypeObjects);
 
                     if (diff && diff.length) {
                         for (const d of diff) {
                             if (d.length >= 6) finalShapes.push(d);
                         }
                     } else {
-                        // niets overlapt -> behoud
                         if (pts.length >= 6) finalShapes.push(pts);
                     }
                 }
 
-                // niets over na clipping
                 if (finalShapes.length === 0) {
                     const cmd: Command = {
                         kind: "replaceMany",
@@ -3047,18 +3069,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         redoStack: [],
                     };
                 }
-                // ✅ gebruik het nummer dat je eerder al berekende (newObj.plantbedNo)
+
                 const assignedNo = newObj.plantbedNo ?? state.nextPlantbedNo;
-
-                // ✅ linkedCount mapping netjes bijwerken
                 const nextLinked = { ...state.plantbedLinkedCount };
-
                 const nextLinksMap = { ...state.plantbedLinks };
 
                 const newPlantbeds = finalShapes.map((pts) => {
                     const id = makeId();
                     nextLinked[id] = 0;
-                    nextLinksMap[id] = []; // ✅ init lege lijst
+                    nextLinksMap[id] = [];
+
                     return {
                         id,
                         type: "plantbed" as ObjectType,
@@ -3098,6 +3118,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     points: pts,
                 }));
 
+            // plantbed en hedge worden al eerder in addObject via hun eigen branch afgehandeld
+            const shouldNeverMergeSameType = false;
+
             // -------------------------------------------
             // ✅ Alleen "lokale" merge: laat ander gras met rust
             // -------------------------------------------
@@ -3130,10 +3153,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             // -------------------------------------------
             const mergeInput = [...candidates, ...drawPolys];
 
-            const useCellMerge = mergeInput.length >= 2 && shouldUseCellMerge(mergeInput);
+            const useCellMerge =
+                !shouldNeverMergeSameType &&
+                mergeInput.length >= 2 &&
+                shouldUseCellMerge(mergeInput);
 
             const mergedPieces =
-                mergeInput.length >= 2
+                !shouldNeverMergeSameType && mergeInput.length >= 2
                     ? (useCellMerge
                         ? mergeSameTypeViaCells(mergeInput, SNAP_GRID_SIZE)
                         : unionSameTypePolygons(mergeInput))
@@ -3169,11 +3195,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 return out;
             };
 
-            // Als er géén merge is: laat candidates staan en voeg drawPolys toe.
-            // Als er wél merge is: vervang alleen candidates door merged shapes.
             let nextTypeObjects: PolyObject[] = [];
 
-            if (!mergedPieces) {
+            if (shouldNeverMergeSameType) {
+                nextTypeObjects = [
+                    ...sameType,
+                    ...drawPolys.map((p) => ({
+                        id: makeId(),
+                        type,
+                        points: p.points,
+                        holes: p.holes?.length ? p.holes : undefined,
+                    })),
+                ];
+            } else if (!mergedPieces) {
                 nextTypeObjects = [
                     ...untouched,
                     ...candidates,
@@ -3338,7 +3372,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     moveObjectAndMerge: (id, toPoints, toHoles) =>
         set((state) => {
             const existing = state.objects.find((o) => o.id === id);
-
             if (!existing) return state;
 
             const fromPoints = existing.points;
@@ -3556,6 +3589,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     id: existing.id,
                     holes: nextHoles,
                     plantbedNo: existing.plantbedNo,
+                    customStyle: existing.customStyle,
                 };
 
                 const sameType = updatedObjects.filter((o) => o.type === movedWithHoles.type);
@@ -3605,6 +3639,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
                                 plantbedNo: candidate.plantbedNo,
+                                customStyle: candidate.customStyle,
                             });
                         }
                     }
@@ -3753,6 +3788,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
                             plantbedNo: pb.plantbedNo,
+                            customStyle: pb.customStyle,
                         });
                     });
                 }
@@ -3775,6 +3811,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     holes: toHoles !== undefined ? toHoles.map((h) => [...h]) : undefined,
 
                     plantbedNo: existing.plantbedNo,
+                    customStyle: existing.customStyle,
                 });
 
                 const movedPlantbeds: PolyObject[] = movedSeedPlantbeds.flatMap((seed, seedIdx) => {
@@ -4020,6 +4057,71 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     updateObjectPoints: (id, toPoints) => {
         get().moveObjectAndMerge(id, toPoints);
     },
+
+    updateObjectStyle: (id, style) =>
+        set((state) => {
+            const existing = state.objects.find((o) => o.id === id);
+            if (!existing) return state;
+
+            const nextObjects = state.objects.map((object) => {
+                if (object.id !== id) return object;
+
+                return {
+                    ...object,
+                    customStyle: {
+                        ...(object.customStyle ?? {}),
+                        ...style,
+                    },
+                };
+            });
+
+            const cmd: Command = {
+                kind: "replaceMany",
+                before: state.objects,
+                after: nextObjects,
+            };
+
+            return {
+                objects: applyCommand(state as ProjectState, cmd),
+                selectedObjectId: id,
+                selectedObjectIds: state.selectedObjectIds.includes(id)
+                    ? state.selectedObjectIds
+                    : [id],
+                undoStack: [...state.undoStack, cmd],
+                redoStack: [],
+            };
+        }),
+
+    resetObjectStyle: (id) =>
+        set((state) => {
+            const existing = state.objects.find((o) => o.id === id);
+            if (!existing) return state;
+
+            const nextObjects = state.objects.map((object) => {
+                if (object.id !== id) return object;
+
+                return {
+                    ...object,
+                    customStyle: undefined,
+                };
+            });
+
+            const cmd: Command = {
+                kind: "replaceMany",
+                before: state.objects,
+                after: nextObjects,
+            };
+
+            return {
+                objects: applyCommand(state as ProjectState, cmd),
+                selectedObjectId: id,
+                selectedObjectIds: state.selectedObjectIds.includes(id)
+                    ? state.selectedObjectIds
+                    : [id],
+                undoStack: [...state.undoStack, cmd],
+                redoStack: [],
+            };
+        }),
 
     changeObjectType: (id, nextType) =>
         set((state) => {

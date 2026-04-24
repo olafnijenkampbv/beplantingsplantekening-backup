@@ -46,7 +46,9 @@ function SidebarGroupButton(props: {
                             height: 16,
                             display: "block",
                             flex: "0 0 auto",
-                            filter: active ? "brightness(0) invert(1)" : "none",
+                            filter: active
+                                ? "brightness(0) invert(1)"
+                                : "brightness(0) saturate(100%) invert(36%) sepia(14%) saturate(756%) hue-rotate(52deg) brightness(90%) contrast(88%)",
                         }}
                     />
                 ) : null}

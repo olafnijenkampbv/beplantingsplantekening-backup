@@ -3,7 +3,8 @@
 import React from "react";
 import type { CSSProperties } from "react";
 import type { ObjectType, TreebedVariant } from "@/state/projectStore";
-import { OBJECT_STYLES } from "@/state/projectStore";
+import { OBJECT_STYLES, useProjectStore } from "@/state/projectStore";
+import ObjectColorPanel from "@/features/editor/components/editor/ObjectColorPanel";
 import { getObjectMenuSections } from "@/features/editor/components/editor/objectMenuConfig";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwatch";
@@ -24,14 +25,14 @@ export const LABEL_UI = {
     fontSizeTitle: 24,
     fontWeightTitle: 700,
 
-    fontSizeAction: 20,
+    fontSizeAction: 22,
     fontWeightAction: 400,
 
     swatchSize: 18,
     swatchRadius: 3,
 
-    badgeSize: 28,
-    badgeFontSize: 14,
+    badgeSize: 30,
+    badgeFontSize: 16,
 
     shadow: "0px 3px 8px 0px rgba(0,0,0,0.25)",
     borderColor: "#E3E2E2",
@@ -141,19 +142,33 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
         onTreebedVariantChanged,
     } = props;
 
-    const [open, setOpen] = React.useState(false);
+    const [openPanel, setOpenPanel] = React.useState<"object" | "color" | null>(null);
     const [hoverType, setHoverType] = React.useState<ObjectType | TreebedVariant | null>(null);
 
     const selectedLocationType = useRightStepMenuStore((s) => s.step1.locationType);
 
-    React.useEffect(() => {
-        if (!open) return;
+    const selectedObjectId = useProjectStore((s) => s.selectedObjectId);
+    const selectedObject = useProjectStore((s) =>
+        selectedObjectId ? s.objects.find((object) => object.id === selectedObjectId) ?? null : null
+    );
+    const updateObjectStyle = useProjectStore((s) => s.updateObjectStyle);
+    const resetObjectStyle = useProjectStore((s) => s.resetObjectStyle);
 
-        const onDown = () => setOpen(false);
+    const currentStyle = {
+        ...OBJECT_STYLES[currentType],
+        ...(selectedObject?.customStyle ?? {}),
+    };
+
+    const canChangeColor = currentType === "plantbed";
+
+    React.useEffect(() => {
+        if (!openPanel) return;
+
+        const onDown = () => setOpenPanel(null);
         window.addEventListener("mousedown", onDown);
 
         return () => window.removeEventListener("mousedown", onDown);
-    }, [open]);
+    }, [openPanel]);
 
     const treebedLabelParts = React.useMemo(() => {
         if (currentType !== "treebed") return null;
@@ -205,7 +220,13 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
     );
 
     const Swatch = ({ type }: { type: ObjectType }) => {
-        const s = OBJECT_STYLES[type];
+        const s =
+            selectedObject?.type === type
+                ? {
+                    ...OBJECT_STYLES[type],
+                    ...(selectedObject.customStyle ?? {}),
+                }
+                : OBJECT_STYLES[type];
 
         const isBuilding = isBuildingObjectType(type);
 
@@ -297,7 +318,14 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
     };
 
     return (
-        <div className="relative" style={{ display: "inline-flex" }}>
+        <div
+            className="relative"
+            style={{
+                display: "inline-flex",
+                position: "relative",
+                zIndex: openPanel ? 1600 : 1100,
+            }}
+        >
             <div
                 className="flex items-center border"
                 style={{
@@ -376,11 +404,11 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                                     width: LABEL_UI.badgeSize,
                                     height: LABEL_UI.badgeSize,
                                     borderRadius: 999,
-                                    background: COLORS.orange,
+                                    background: badgeCount > 0 ? COLORS.orange : "#FFE5DD",
                                     display: "inline-flex",
                                     alignItems: "center",
                                     justifyContent: "center",
-                                    color: "#ffffff",
+                                    color: badgeCount > 0 ? "#ffffff" : COLORS.orange,
                                     fontWeight: 700,
                                     fontSize: LABEL_UI.badgeFontSize,
                                     lineHeight: 1,
@@ -389,6 +417,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                                 {badgeCount}
                             </span>
                         )}
+                        
                     </div>
                 </div>
 
@@ -425,21 +454,51 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                             }}
                             onClick={(e) => {
                                 e.stopPropagation();
-                                setOpen((v) => !v);
+                                setOpenPanel((value) => value === "object" ? null : "object");
                             }}
                         >
-                            {currentType === "treebed" ? "Wijzig boomvorm" : "Wijzigen"}
+                            {currentType === "treebed" ? "Wijzig boomvorm" : "Wijzig object"}
                             <img
                                 src="/icons/chevron-right.svg"
                                 alt=""
                                 style={{
                                     width: 14,
                                     height: 14,
-                                    transform: open ? "rotate(90deg)" : "rotate(0deg)",
+                                    transform: openPanel === "object" ? "rotate(90deg)" : "rotate(0deg)",
                                     transition: "transform 120ms ease",
                                 }}
                             />
                         </button>
+
+                        {canChangeColor && (
+                            <>
+                                <div style={dividerStyle} />
+
+                                <button
+                                    type="button"
+                                    style={actionButtonStyle}
+                                    onMouseDown={(e) => {
+                                        e.stopPropagation();
+                                    }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenPanel((value) => value === "color" ? null : "color");
+                                    }}
+                                >
+                                    Wijzig kleur
+                                    <img
+                                        src="/icons/chevron-right.svg"
+                                        alt=""
+                                        style={{
+                                            width: 14,
+                                            height: 14,
+                                            transform: openPanel === "color" ? "rotate(90deg)" : "rotate(0deg)",
+                                            transition: "transform 120ms ease",
+                                        }}
+                                    />
+                                </button>
+                            </>
+                        )}
                     </>
                 )}
             </div>
@@ -498,10 +557,11 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                 />
             )}
 
-            {interactive && open && (
+            {interactive && openPanel === "object" && (
                 <div
-                    className="absolute rounded-xl border bg-white overflow-hidden z-50"
+                    className="absolute rounded-xl border bg-white overflow-hidden"
                     style={{
+                        zIndex: 1700,
                         borderColor: LABEL_UI.borderColor,
                         width: 300,
                         left: "calc(100% + 14px)",
@@ -551,7 +611,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                                         onMouseLeave={() => setHoverType(null)}
                                         onClick={(e) => {
                                             e.stopPropagation();
-                                            setOpen(false);
+                                            setOpenPanel(null);
 
                                             const fromVariant = currentTreebedVariant ?? "standard";
                                             const toVariant = item.key;
@@ -612,7 +672,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                                                 onMouseLeave={() => setHoverType(null)}
                                                 onClick={(e) => {
                                                     e.stopPropagation();
-                                                    setOpen(false);
+                                                    setOpenPanel(null);
                                                     onChangeType?.(item.id);
                                                 }}
                                             >
@@ -627,6 +687,20 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                             ))
                     )}
                 </div>
+            )}
+            {interactive && canChangeColor && openPanel === "color" && selectedObject && (
+                <ObjectColorPanel
+                    labelText={labelText}
+                    currentType={currentType}
+                    fill={currentStyle.fill}
+                    stroke={currentStyle.stroke}
+                    onApply={(style) => {
+                        updateObjectStyle(selectedObject.id, style);
+                    }}
+                    onClose={() => {
+                        setOpenPanel(null);
+                    }}
+                />
             )}
         </div>
     );

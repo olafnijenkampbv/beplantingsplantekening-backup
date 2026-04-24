@@ -62,6 +62,27 @@ export const APP_NOTIFICATIONS = {
         message: `${plantName} gekoppeld aan plantvak ${plantbedNo}`,
     }),
 
+    plantReplacedInSingleSlotObject: (
+        oldPlantName: string,
+        newPlantName: string,
+        objectLabel: string,
+        objectNo: number | string
+    ): AppNotificationDefinition => ({
+        kind: "success",
+        placement: "bottom-center",
+        message: `${oldPlantName} gewisseld door ${newPlantName} aan ${objectLabel} ${objectNo}`,
+    }),
+
+    plantUnlinkedFromObject: (
+        plantName: string,
+        objectLabel: string,
+        objectNo: number | string
+    ): AppNotificationDefinition => ({
+        kind: "success",
+        placement: "bottom-center",
+        message: `${plantName} verwijderd uit ${objectLabel} ${objectNo}`,
+    }),
+
     plantAlreadyLinkedToPlantbed: (plantbedNo: number | string): AppNotificationDefinition => ({
         kind: "warning",
         placement: "bottom-center",

@@ -315,7 +315,7 @@ export default function LeftObjectsMenu(props: Props) {
   }, []);
 
   const renderViewToggle = (label: string, key: ViewVisibilityKey) => {
-    const enabled = viewVisibility[key];
+    const enabled = viewVisibility[key] ?? true;
 
     return (
       <button
@@ -626,12 +626,13 @@ export default function LeftObjectsMenu(props: Props) {
           }}
         >
           <div className="p-2 flex flex-col gap-0.5">
-            {renderViewToggle("Toon plantnummers", "showPlantNumbers")}
+            {renderViewToggle("Toon nummers", "showPlantNumbers")}
             {renderViewToggle("Toon m²", "showAreaLabels")}
-            {renderViewToggle("Toon plantvakken", "showPlantbeds")}
+            {renderViewToggle("Toon plant/haagvakken", "showPlantbeds")}
             {renderViewToggle("Toon boomvakken", "showTreebeds")}
             {renderViewToggle("Toon ondergrond", "showGround")}
             {renderViewToggle("Toon gebouwen", "showBuildings")}
+            {renderViewToggle("Toon verkeer & gebruik", "showTrafficUse")}
             {renderViewToggle("Toon afbakening", "showBoundaries")}
           </div>
         </div>

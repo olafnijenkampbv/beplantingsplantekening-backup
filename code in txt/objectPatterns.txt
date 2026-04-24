@@ -3,6 +3,7 @@ import type { PolyObject } from "@/state/projectStore";
 import { OBJECT_STYLES } from "@/state/projectStore";
 import { EDITOR_GRID_SIZE } from "@/features/editor/constants/editorGeometry";
 import { bboxFromPoints } from "@/features/editor/lib/editorCanvasMath";
+import { formatSquareMeters, getObjectAreaInSquareMeters } from "@/state/areaMetrics";
 
 const GRID_SIZE = EDITOR_GRID_SIZE;
 
@@ -17,9 +18,11 @@ const PARKING_ICON_SRC = "/icons/park.svg";
 const PARKING_ICON_HIDE_SCALE = 0.1;
 const PARKING_ICON_MIN_SIZE = 18;
 const PARKING_ICON_MAX_SIZE = GRID_SIZE * 6;
-const PARKING_ICON_TOP_PADDING = GRID_SIZE * 0.4;
-const PARKING_ICON_TO_LABEL_GAP = GRID_SIZE * 1;
+const PARKING_ICON_TO_LABEL_GAP = GRID_SIZE * 0.75;
+const PARKING_AREA_LABEL_FONT_SIZE = 14;
 const PARKING_AREA_LABEL_HEIGHT_ESTIMATE = 16;
+const PARKING_BADGE_INNER_PADDING = GRID_SIZE * 0.35;
+const PARKING_BADGE_TEXT_COLOR = OBJECT_STYLES.parking.stroke;
 
 let parkingIconImage: HTMLImageElement | null = null;
 
@@ -113,48 +116,215 @@ function buildPolygonClipPath(
     }
 }
 
-function getParkingIconLayout(renderPoints: number[], stageScale: number) {
+function pointInPolygon(px: number, py: number, points: number[]) {
+    let inside = false;
+
+    for (let i = 0, j = points.length - 2; i < points.length; i += 2) {
+        const xi = points[i];
+        const yi = points[i + 1];
+        const xj = points[j];
+        const yj = points[j + 1];
+
+        const intersect =
+            (yi > py) !== (yj > py) &&
+            px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi;
+
+        if (intersect) inside = !inside;
+        j = i;
+    }
+
+    return inside;
+}
+
+function pointInPolygonWithHoles(
+    px: number,
+    py: number,
+    renderPoints: number[],
+    renderHoles: number[][]
+) {
+    if (!pointInPolygon(px, py, renderPoints)) return false;
+    return !renderHoles.some((hole) => pointInPolygon(px, py, hole));
+}
+
+function rectFitsInsidePolygonWithHoles(
+    rect: { x: number; y: number; w: number; h: number },
+    renderPoints: number[],
+    renderHoles: number[][]
+) {
+    const samplePoints = [
+        { x: rect.x, y: rect.y },
+        { x: rect.x + rect.w, y: rect.y },
+        { x: rect.x, y: rect.y + rect.h },
+        { x: rect.x + rect.w, y: rect.y + rect.h },
+        { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 },
+    ];
+
+    return samplePoints.every((point) =>
+        pointInPolygonWithHoles(point.x, point.y, renderPoints, renderHoles)
+    );
+}
+
+function estimateParkingAreaTextWidth(text: string, fontSize: number) {
+    return text.length * fontSize * 0.58;
+}
+
+function pointToSegmentDistance(
+    px: number,
+    py: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number
+) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+
+    if (dx === 0 && dy === 0) {
+        return Math.hypot(px - x1, py - y1);
+    }
+
+    const t = Math.max(
+        0,
+        Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy))
+    );
+
+    const projX = x1 + t * dx;
+    const projY = y1 + t * dy;
+
+    return Math.hypot(px - projX, py - projY);
+}
+
+function getDistanceToNearestPolygonEdge(
+    px: number,
+    py: number,
+    renderPoints: number[],
+    renderHoles: number[][]
+) {
+    let minDist = Infinity;
+
+    for (let i = 0; i < renderPoints.length; i += 2) {
+        const x1 = renderPoints[i];
+        const y1 = renderPoints[i + 1];
+        const x2 = renderPoints[(i + 2) % renderPoints.length];
+        const y2 = renderPoints[(i + 3) % renderPoints.length];
+
+        minDist = Math.min(
+            minDist,
+            pointToSegmentDistance(px, py, x1, y1, x2, y2)
+        );
+    }
+
+    for (const hole of renderHoles) {
+        if (!hole || hole.length < 6) continue;
+
+        for (let i = 0; i < hole.length; i += 2) {
+            const x1 = hole[i];
+            const y1 = hole[i + 1];
+            const x2 = hole[(i + 2) % hole.length];
+            const y2 = hole[(i + 3) % hole.length];
+
+            minDist = Math.min(
+                minDist,
+                pointToSegmentDistance(px, py, x1, y1, x2, y2)
+            );
+        }
+    }
+
+    return minDist;
+}
+
+function getParkingBadgeLayout(
+    renderPoints: number[],
+    renderHoles: number[][],
+    stageScale: number,
+    areaText: string
+) {
     if (stageScale < PARKING_ICON_HIDE_SCALE) return null;
     if (!renderPoints || renderPoints.length < 6) return null;
 
     const bb = bboxFromPoints(renderPoints);
     if (bb.w <= 0 || bb.h <= 0) return null;
 
-    const maxIconWidth = bb.w * 0.42;
-    const maxIconHeight = bb.h * 0.3;
-    const iconSize = Math.min(maxIconWidth, maxIconHeight, PARKING_ICON_MAX_SIZE);
+    const textWidth = estimateParkingAreaTextWidth(areaText, PARKING_AREA_LABEL_FONT_SIZE);
+    const textHeight = PARKING_AREA_LABEL_HEIGHT_ESTIMATE;
 
-    if (!Number.isFinite(iconSize) || iconSize < PARKING_ICON_MIN_SIZE) {
+    const maxIconWidth = bb.w * 0.42;
+    const maxIconHeight = bb.h * 0.28;
+    const rawIconSize = Math.min(maxIconWidth, maxIconHeight, PARKING_ICON_MAX_SIZE);
+
+    if (!Number.isFinite(rawIconSize) || rawIconSize < PARKING_ICON_MIN_SIZE) {
         return null;
     }
 
-    const requiredHeight =
-        PARKING_ICON_TOP_PADDING +
+    const iconSize = rawIconSize;
+    const blockWidth =
+        Math.max(iconSize, textWidth) + PARKING_BADGE_INNER_PADDING * 2;
+    const blockHeight =
         iconSize +
         PARKING_ICON_TO_LABEL_GAP +
-        PARKING_AREA_LABEL_HEIGHT_ESTIMATE +
-        GRID_SIZE * 0.2;
+        textHeight +
+        PARKING_BADGE_INNER_PADDING * 2;
 
-    if (requiredHeight > bb.h) {
+    const step = Math.max(4, GRID_SIZE / 3);
+    const startX = bb.x + blockWidth / 2;
+    const endX = bb.x + bb.w - blockWidth / 2;
+    const startY = bb.y + blockHeight / 2;
+    const endY = bb.y + bb.h - blockHeight / 2;
+
+    let bestCenter: { x: number; y: number; score: number } | null = null;
+
+    if (endX >= startX && endY >= startY) {
+        const bboxCenterX = bb.x + bb.w / 2;
+        const bboxCenterY = bb.y + bb.h / 2;
+
+        for (let y = startY; y <= endY; y += step) {
+            for (let x = startX; x <= endX; x += step) {
+                const rect = {
+                    x: x - blockWidth / 2,
+                    y: y - blockHeight / 2,
+                    w: blockWidth,
+                    h: blockHeight,
+                };
+
+                if (!rectFitsInsidePolygonWithHoles(rect, renderPoints, renderHoles)) {
+                    continue;
+                }
+
+                const edgeDistance = getDistanceToNearestPolygonEdge(
+                    x,
+                    y,
+                    renderPoints,
+                    renderHoles
+                );
+
+                const centerPenalty = Math.hypot(x - bboxCenterX, y - bboxCenterY) * 0.08;
+                const score = edgeDistance - centerPenalty;
+
+                if (!bestCenter || score > bestCenter.score) {
+                    bestCenter = { x, y, score };
+                }
+            }
+        }
+    }
+
+    if (!bestCenter) {
         return null;
     }
 
-    const centerX = bb.x + bb.w / 2;
-    const labelCenterY = bb.y + bb.h / 2;
-    const iconY =
-        labelCenterY -
-        PARKING_AREA_LABEL_HEIGHT_ESTIMATE / 2 -
-        PARKING_ICON_TO_LABEL_GAP -
-        iconSize;
-
-    if (iconY < bb.y + PARKING_ICON_TOP_PADDING) {
-        return null;
-    }
+    const blockY = bestCenter.y - blockHeight / 2;
 
     return {
-        x: centerX - iconSize / 2,
-        y: iconY,
-        size: iconSize,
+        iconX: bestCenter.x - iconSize / 2,
+        iconY: blockY + PARKING_BADGE_INNER_PADDING,
+        iconSize,
+        textX: bestCenter.x - textWidth / 2,
+        textY:
+            blockY +
+            PARKING_BADGE_INNER_PADDING +
+            iconSize +
+            PARKING_ICON_TO_LABEL_GAP,
+        textWidth,
+        text: areaText,
     };
 }
 
@@ -225,7 +395,20 @@ export function renderParkingPattern(
 ) {
     const renderPoints = pointsOverride ?? obj.points;
     const renderHoles = holesOverride ?? obj.holes ?? [];
-    const layout = getParkingIconLayout(renderPoints, stageScale);
+    const safeAreaText = formatSquareMeters(
+        getObjectAreaInSquareMeters({
+            type: obj.type,
+            points: renderPoints,
+            holes: renderHoles,
+        })
+    );
+
+    const layout = getParkingBadgeLayout(
+        renderPoints,
+        renderHoles,
+        stageScale,
+        safeAreaText
+    );
 
     if (!layout) return null;
 
@@ -248,9 +431,21 @@ export function renderParkingPattern(
                 }
 
                 ctx.save();
-                buildPolygonClipPath(ctx, renderPoints, renderHoles);
-                ctx.clip("evenodd");
-                ctx.drawImage(img, layout.x, layout.y, layout.size, layout.size);
+
+                ctx.drawImage(
+                    img,
+                    layout.iconX,
+                    layout.iconY,
+                    layout.iconSize,
+                    layout.iconSize
+                );
+
+                ctx.font = `700 ${PARKING_AREA_LABEL_FONT_SIZE}px sans-serif`;
+                ctx.fillStyle = PARKING_BADGE_TEXT_COLOR;
+                ctx.textAlign = "left";
+                ctx.textBaseline = "top";
+                ctx.fillText(layout.text, layout.textX, layout.textY);
+
                 ctx.restore();
 
                 ctx.fillStrokeShape(shape);

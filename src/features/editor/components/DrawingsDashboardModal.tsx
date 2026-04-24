@@ -5,6 +5,10 @@ type DrawingPreviewObject = {
     id: string;
     type: ObjectType;
     points: number[];
+    customStyle?: {
+        fill?: string;
+        stroke?: string;
+    };
     treebedVariant?: "standard" | "multi_stem" | "espalier" | "roof";
 };
 
@@ -122,8 +126,8 @@ function getObjectBounds(points: number[]) {
     };
 }
 
-function getPreviewStyle(type: ObjectType) {
-    if (type === "treebed") {
+function getPreviewStyle(obj: DrawingPreviewObject) {
+    if (obj.type === "treebed") {
         return {
             fill: "#008000",
             stroke: "#476D3C",
@@ -132,9 +136,12 @@ function getPreviewStyle(type: ObjectType) {
         };
     }
 
-    const baseStyle = OBJECT_STYLES[type] ?? { fill: "#E7EADF", stroke: "#B8BEB1" };
+    const baseStyle = {
+        ...(OBJECT_STYLES[obj.type] ?? { fill: "#E7EADF", stroke: "#B8BEB1" }),
+        ...(obj.customStyle ?? {}),
+    };
 
-    if (type === "fence" || type === "gate") {
+    if (obj.type === "fence" || obj.type === "gate") {
         return {
             fill: "none",
             stroke: baseStyle.stroke,
@@ -250,7 +257,7 @@ const DrawingCardPreview: React.FC<{ objects: DrawingPreviewObject[] }> = ({ obj
                 style={{ display: "block" }}
             >
                 {objects.map((obj) => {
-                    const previewStyle = getPreviewStyle(obj.type);
+                    const previewStyle = getPreviewStyle(obj);
                     const points = toSvgPoints(obj.points);
 
                     if (isLineOnlyType(obj.type)) {

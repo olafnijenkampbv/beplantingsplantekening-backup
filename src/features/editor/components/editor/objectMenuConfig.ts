@@ -249,6 +249,16 @@ export const OBJECT_LIBRARY = {
         visibilityGroup: "showPlantbeds",
         isAreaMeasurable: true,
     },
+
+    hedge: {
+        label: "Haag",
+        geometry: "polygon",
+        fill: "#95CE86",
+        stroke: "#56793E",
+        zIndex: 30,
+        visibilityGroup: "showPlantbeds",
+        isAreaMeasurable: true,
+    },
     treebed: {
         label: "Boomvak",
         geometry: "polygon",
@@ -479,6 +489,7 @@ const OBJECT_MENU_CONFIG: ObjectMenuConfigByLocation = {
             label: "Beplanting",
             items: [
                 { id: "plantbed", label: "Plantvak" },
+                { id: "hedge", label: "Haag" },
                 { id: "treebed", label: "Boomvak" },
             ],
         },
@@ -524,6 +535,7 @@ const OBJECT_MENU_CONFIG: ObjectMenuConfigByLocation = {
             label: "Beplanting",
             items: [
                 { id: "plantbed", label: "Plantvak" },
+                { id: "hedge", label: "Haag" },
                 { id: "treebed", label: "Boomvak" },
             ],
         },
@@ -564,6 +576,7 @@ const OBJECT_MENU_CONFIG: ObjectMenuConfigByLocation = {
             label: "Beplanting",
             items: [
                 { id: "plantbed", label: "Plantvak" },
+                { id: "hedge", label: "Haag" },
                 { id: "treebed", label: "Boomvak" },
             ],
         },
@@ -616,6 +629,7 @@ const OBJECT_MENU_CONFIG: ObjectMenuConfigByLocation = {
             label: "Beplanting",
             items: [
                 { id: "plantbed", label: "Plantvak" },
+                { id: "hedge", label: "Haag" },
                 { id: "treebed", label: "Boomvak" },
             ],
         },
@@ -668,6 +682,7 @@ const OBJECT_MENU_CONFIG: ObjectMenuConfigByLocation = {
             label: "Beplanting",
             items: [
                 { id: "plantbed", label: "Plantvak" },
+                { id: "hedge", label: "Haag" },
                 { id: "treebed", label: "Boomvak" },
             ],
         },
@@ -718,6 +733,7 @@ const OBJECT_MENU_CONFIG: ObjectMenuConfigByLocation = {
             label: "Beplanting",
             items: [
                 { id: "plantbed", label: "Plantvak" },
+                { id: "hedge", label: "Haag" },
                 { id: "treebed", label: "Boomvak" },
             ],
         },

@@ -1013,7 +1013,7 @@ export default function PlantSidebar(props: {
                                                         ) : (
                                                             <>
                                                                 <div className="text-[14px] mb-3 italic" style={{ color: "#000" }}>
-                                                                    Hier is een overzicht van de planten die je aan een plantvak, haag of boomvak hebt gekoppeld.
+                                                                   Hier vind je een overzicht van de planten die je aan de vakken hebt gekoppeld. In de volgende stap kun je de aantallen zelf aanpassen.
                                                                 </div>
 
                                                                 <div

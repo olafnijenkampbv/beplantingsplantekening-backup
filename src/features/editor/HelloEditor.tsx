@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Stage, Layer, Line, Rect, Group, Shape, Circle, Text } from "react-konva";
 import { Html } from "react-konva-utils";
 import { nanoid } from "nanoid";
-import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX, ViewVisibilityKey } from "@/state/projectStore";
+import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX, ViewVisibilityKey, CompassDirection } from "@/state/projectStore";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import EditorToolbar from "@/features/editor/components/EditorToolbar";
 import LeftObjectsMenu from "@/features/editor/components/LeftObjectsMenu";
@@ -113,7 +113,6 @@ const TOOLBAR_OFFSET = 12;
 const GRID_SIZE = EDITOR_GRID_SIZE;
 const FENCE_GATE_STROKE_WIDTH = 14;
 
-type CompassDirection = "noord" | "oost" | "zuid" | "west";
 const COMPASS_DIRECTIONS: CompassDirection[] = ["noord", "oost", "zuid", "west"];
 
 const TREEBED_DYNAMIC_STROKE = {
@@ -277,6 +276,63 @@ function rotatePointsQuarterTurnClockwise(
     }
 
     return next;
+}
+
+function rotateBoundaryPointsQuarterTurnClockwise(
+    points: number[],
+    cx: number,
+    cy: number,
+    gridSize: number
+) {
+    const next: number[] = [];
+
+    const wasClosed =
+        points.length >= 8 &&
+        Math.abs(points[0] - points[points.length - 2]) <= 1e-6 &&
+        Math.abs(points[1] - points[points.length - 1]) <= 1e-6;
+
+    const source = wasClosed ? points.slice(0, -2) : points;
+
+    for (let i = 0; i < source.length; i += 2) {
+        const dx = source[i] - cx;
+        const dy = source[i + 1] - cy;
+
+        const snapped = getBoundarySnapPoint(
+            cx - dy,
+            cy + dx,
+            gridSize
+        );
+
+        next.push(snapped.x, snapped.y);
+    }
+
+    if (wasClosed && next.length >= 2) {
+        next.push(next[0], next[1]);
+    }
+
+    return next;
+}
+
+function rotateEditorObjectQuarterTurnClockwise(
+    obj: PolyObject,
+    cx: number,
+    cy: number,
+    gridSize: number
+): PolyObject {
+    if (isUnifiedBoundaryType(obj.type)) {
+        return {
+            ...obj,
+            geometry: "polyline",
+            points: rotateBoundaryPointsQuarterTurnClockwise(
+                obj.points,
+                cx,
+                cy,
+                gridSize
+            ),
+        };
+    }
+
+    return rotateObjectQuarterTurnClockwise(obj, cx, cy, gridSize);
 }
 
 function getPlantbedOutlineSegments(plantbeds: PolyObject[]) {
@@ -1544,7 +1600,8 @@ export default function HelloEditor() {
     const [isRotateShiftHintDismissed, setIsRotateShiftHintDismissed] = useState(false);
     const [hasUsedShiftForRotateSnap, setHasUsedShiftForRotateSnap] = useState(false);
     const [isFenceHintDismissed, setIsFenceHintDismissed] = useState(false);
-    const [compassDirection, setCompassDirection] = useState<CompassDirection>("noord");
+    const compassDirection = useProjectStore((s) => s.compassDirection);
+    const setCompassDirection = useProjectStore((s) => s.setCompassDirection);
     const [selectedLinkedPlantPreview, setSelectedLinkedPlantPreview] = useState<{
         id: string;
         latin: string;
@@ -1729,9 +1786,8 @@ export default function HelloEditor() {
                 undoStack: [],
                 redoStack: [],
                 confirmModal: null,
+                compassDirection: safeSnapshot.compassDirection ?? "noord",
             });
-
-            setCompassDirection(safeSnapshot.compassDirection ?? "noord");
         },
         [
             buildPlantbedLinkedCountFromLinks,
@@ -2508,7 +2564,7 @@ export default function HelloEditor() {
     const moveObjectsBatch = useProjectStore((s) => s.moveObjectsBatch);
     const moveObjectAndMerge = useProjectStore((s) => s.moveObjectAndMerge);
     const moveObject = useProjectStore((s) => s.moveObject);
-    const setObjectsWithHistory = useProjectStore((s: any) => s.setObjectsWithHistory);
+    const rotateCanvasWithHistory = useProjectStore((s: any) => s.rotateCanvasWithHistory);
 
     const requestChangeObjectType = useProjectStore((s: any) => s.requestChangeObjectType);
     const changeTreebedVariant = useProjectStore((s: any) => s.changeTreebedVariant);
@@ -3175,25 +3231,16 @@ export default function HelloEditor() {
         workingHoles?: number[][];
     } | null>(null);
 
-    // ✅ Force rerender tijdens edge resize, maar gebruik dezelfde begrensde cadence
+    // ✅ Edge-resize moet frame-synchroon lopen, anders loopt fill/label/measurement visueel achter
     const [edgeResizeTick, setEdgeResizeTick] = useState(0);
     const edgeResizeRafRef = useRef<number | null>(null);
+
     const requestEdgeResizeRerender = useCallback(() => {
-        const now = performance.now();
-        const elapsed = now - lastInteractionRerenderAtRef.current;
-
-        if (elapsed >= INTERACTION_RERENDER_INTERVAL_MS) {
-            lastInteractionRerenderAtRef.current = now;
-            setEdgeResizeTick((t) => t + 1);
-            return;
-        }
-
         if (edgeResizeRafRef.current) return;
 
         edgeResizeRafRef.current = requestAnimationFrame(() => {
             edgeResizeRafRef.current = null;
-            lastInteractionRerenderAtRef.current = performance.now();
-            setEdgeResizeTick((t) => t + 1);
+            setEdgeResizeTick((tick) => tick + 1);
         });
     }, []);
 
@@ -5196,7 +5243,7 @@ export default function HelloEditor() {
         const centerY = worldBounds.y + worldBounds.h / 2;
 
         const nextObjects = currentObjects.map((obj) =>
-            rotateObjectQuarterTurnClockwise(obj, centerX, centerY, GRID_SIZE)
+            rotateEditorObjectQuarterTurnClockwise(obj, centerX, centerY, GRID_SIZE)
         );
 
         const nextSelectedIds =
@@ -5231,23 +5278,27 @@ export default function HelloEditor() {
             draftLayer.batchDraw();
         }
 
-        setObjectsWithHistory(nextObjects, nextSelectedIds[0] ?? null);
+        const currentCompassIndex = COMPASS_DIRECTIONS.indexOf(compassDirection);
+        const nextCompassDirection =
+            COMPASS_DIRECTIONS[(currentCompassIndex + 1) % COMPASS_DIRECTIONS.length];
+
+        rotateCanvasWithHistory(
+            nextObjects,
+            compassDirection,
+            nextCompassDirection,
+            nextSelectedIds[0] ?? null
+        );
 
         if (nextSelectedIds.length > 0) {
             selectObjects(nextSelectedIds);
         } else {
             clearSelection();
         }
-
-        setCompassDirection((prev) => {
-            const currentIndex = COMPASS_DIRECTIONS.indexOf(prev);
-            const nextIndex = (currentIndex + 1) % COMPASS_DIRECTIONS.length;
-            return COMPASS_DIRECTIONS[nextIndex];
-        });
     }, [
         selectedObjectId,
         selectedObjectIds,
-        setObjectsWithHistory,
+        rotateCanvasWithHistory,
+        compassDirection,
         selectObjects,
         clearSelection,
         setDraftPoints,
@@ -5322,7 +5373,7 @@ export default function HelloEditor() {
         liveSelectionDragDelta !== null ||
         isPanning ||
         isBoxSelecting;
-        
+
     const shouldHideSelectionLabelsForPerformance =
         isVertexDragging ||
         isEdgeResizing ||

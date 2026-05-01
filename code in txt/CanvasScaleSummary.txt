@@ -52,18 +52,33 @@ export default function CanvasScaleSummary({
         return selectedObjectId ? [selectedObjectId] : [];
     }, [selectedObjectId, selectedObjectIds]);
 
-    const totalAreaM2 = useMemo(() => {
-        return getTotalAreaInSquareMeters(objects ?? []);
+    const objectAreaById = useMemo(() => {
+        return new Map(
+            (objects ?? []).map((obj) => [
+                obj.id,
+                getTotalAreaInSquareMeters([obj]),
+            ])
+        );
     }, [objects]);
+
+    const totalAreaM2 = useMemo(() => {
+        let total = 0;
+
+        objectAreaById.forEach((area) => {
+            total += area;
+        });
+
+        return total;
+    }, [objectAreaById]);
 
     const selectedAreaM2 = useMemo(() => {
         if (!effectiveSelectedIds.length) return 0;
 
-        const selectedSet = new Set(effectiveSelectedIds);
-        const selectedObjects = (objects ?? []).filter((obj) => selectedSet.has(obj.id));
-
-        return getTotalAreaInSquareMeters(selectedObjects);
-    }, [objects, effectiveSelectedIds]);
+        return effectiveSelectedIds.reduce(
+            (sum, objectId) => sum + (objectAreaById.get(objectId) ?? 0),
+            0
+        );
+    }, [effectiveSelectedIds, objectAreaById]);
 
     const scaleWidthPx = gridSize * 10;
     const tickCount = 11;

@@ -119,6 +119,7 @@ const isTypeChangeAllowed = (fromType: ObjectType, toType: ObjectType) => {
 type TypeLabelCardProps = {
     currentType: ObjectType;
     currentTreebedVariant?: TreebedVariant;
+    currentCustomStyle?: Partial<(typeof OBJECT_STYLES)[ObjectType]>;
     labelText: string;
     badgeCount: number | null;
     interactive?: boolean;
@@ -128,10 +129,12 @@ type TypeLabelCardProps = {
     onChangeTreebedVariant?: (variant: TreebedVariant) => void;
     onTreebedVariantChanged?: (fromVariant: TreebedVariant, toVariant: TreebedVariant) => void;
 };
+
 export default function TypeLabelCard(props: TypeLabelCardProps) {
     const {
         currentType,
         currentTreebedVariant = "standard",
+        currentCustomStyle,
         labelText,
         badgeCount,
         interactive = false,
@@ -156,7 +159,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
 
     const currentStyle = {
         ...OBJECT_STYLES[currentType],
-        ...(selectedObject?.customStyle ?? {}),
+        ...(currentCustomStyle ?? (interactive ? selectedObject?.customStyle : {}) ?? {}),
     };
 
     const canChangeColor = currentType === "plantbed";
@@ -221,10 +224,10 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
 
     const Swatch = ({ type }: { type: ObjectType }) => {
         const s =
-            selectedObject?.type === type
+            type === currentType
                 ? {
                     ...OBJECT_STYLES[type],
-                    ...(selectedObject.customStyle ?? {}),
+                    ...(currentCustomStyle ?? (interactive ? selectedObject?.customStyle : {}) ?? {}),
                 }
                 : OBJECT_STYLES[type];
 

@@ -645,6 +645,8 @@ export type ViewVisibilityState = {
     showTreebeds: boolean;
 };
 
+export type CompassDirection = "noord" | "oost" | "zuid" | "west";
+
 // -----------------------------
 // ✅ Geometry helpers
 // -----------------------------
@@ -752,6 +754,13 @@ type Command =
     | { kind: "removeMany"; objects: PolyObject[] }
     | { kind: "addMany"; objects: PolyObject[] }
     | { kind: "replaceMany"; before: PolyObject[]; after: PolyObject[] }
+    | {
+        kind: "rotateCanvas";
+        before: PolyObject[];
+        after: PolyObject[];
+        compassBefore: CompassDirection;
+        compassAfter: CompassDirection;
+    }
 
     // ✅ NEW: type-change (replaceMany) + plantbed-links snapshot in 1 undo stap
     | {
@@ -782,6 +791,15 @@ type Command =
 
 type ProjectState = {
     objects: PolyObject[];
+
+    compassDirection: CompassDirection;
+    setCompassDirection: (direction: CompassDirection) => void;
+    rotateCanvasWithHistory: (
+        nextObjects: PolyObject[],
+        compassBefore: CompassDirection,
+        compassAfter: CompassDirection,
+        nextSelectionId?: string | null
+    ) => void;
 
     nextPlantbedNo: number;
 
@@ -1010,6 +1028,10 @@ function applyCommand(state: ProjectState, cmd: Command): PolyObject[] {
             return finalize([...remaining, ...toAdd]);
         }
 
+        case "rotateCanvas": {
+            return finalize(cmd.after);
+        }
+
         case "replaceManyWithPlantbedLinks": {
             const removeIds = new Set(cmd.before.map((o) => o.id));
             const remaining = state.objects.filter((o) => !removeIds.has(o.id));
@@ -1048,6 +1070,15 @@ function invertCommand(cmd: Command): Command {
             return { kind: "removeMany", objects: cmd.objects };
         case "replaceMany":
             return { kind: "replaceMany", before: cmd.after, after: cmd.before };
+
+        case "rotateCanvas":
+            return {
+                kind: "rotateCanvas",
+                before: cmd.after,
+                after: cmd.before,
+                compassBefore: cmd.compassAfter,
+                compassAfter: cmd.compassBefore,
+            };
 
         case "replaceManyWithPlantbedLinks":
             return {
@@ -2717,6 +2748,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             },
         })),
 
+    compassDirection: "noord",
+
+    setCompassDirection: (direction) =>
+        set({
+            compassDirection: direction,
+        }),
+
     undoStack: [],
     redoStack: [],
 
@@ -2816,6 +2854,54 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
             return {
                 objects: applyCommand(state as ProjectState, cmd),
+                selectedObjectId: selId,
+                selectedObjectIds: selIds,
+                nextPlantbedNo: recalcNextPlantbedNo(withPieces),
+                undoStack: [...state.undoStack, cmd],
+                redoStack: [],
+            };
+        }),
+
+    rotateCanvasWithHistory: (nextObjects, compassBefore, compassAfter, nextSelectionId = null) =>
+        set((state) => {
+            const normalized = (nextObjects ?? []).map((o) => {
+                const geometry = getGeometryForType((o as any).type);
+
+                if (geometry === "polyline") {
+                    return {
+                        ...o,
+                        geometry: "polyline" as const,
+                        points: preserveClosedBoundaryEndpoint(
+                            (o as any).points,
+                            (o as any).type
+                        ),
+                    };
+                }
+
+                return {
+                    ...o,
+                    geometry,
+                    points: cleanupPoints(o.points),
+                    holes: o.holes?.map((h) => cleanupPoints(h)),
+                };
+            }) as PolyObject[];
+
+            const withPieces = recalcLinePiecesForWorld(normalized);
+
+            const cmd: Command = {
+                kind: "rotateCanvas",
+                before: state.objects,
+                after: withPieces,
+                compassBefore,
+                compassAfter,
+            };
+
+            const selId = nextSelectionId;
+            const selIds = selId ? [selId] : [];
+
+            return {
+                objects: applyCommand(state as ProjectState, cmd),
+                compassDirection: compassAfter,
                 selectedObjectId: selId,
                 selectedObjectIds: selIds,
                 nextPlantbedNo: recalcNextPlantbedNo(withPieces),
@@ -3231,6 +3317,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 ];
             }
 
+            const nextLinksMap: PlantbedLinksMap = { ...state.plantbedLinks };
+            const nextCountsMap: Record<string, number> = { ...state.plantbedLinkedCount };
+
+            if (type === "hedge" && candidates.length > 0) {
+                const untouchedIds = new Set(untouched.map((object) => object.id));
+                const mergedTarget = nextTypeObjects.find((object) => !untouchedIds.has(object.id));
+                const mergedPlantIds = Array.from(
+                    new Set(
+                        candidates.flatMap((candidate) => state.plantbedLinks[candidate.id] ?? [])
+                    )
+                );
+
+                if (mergedTarget) {
+                    for (const candidate of candidates) {
+                        delete nextLinksMap[candidate.id];
+                        delete nextCountsMap[candidate.id];
+                    }
+
+                    nextLinksMap[mergedTarget.id] = mergedPlantIds;
+                    nextCountsMap[mergedTarget.id] = mergedPlantIds.length;
+                }
+            }
+
             // verwijder alle oude objects van dit type en voeg terug: untouched + (candidates/new merged)
             updatedObjects = updatedObjects.filter((o) => o.type !== type);
 
@@ -3247,6 +3356,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 objects: nextObjects,
                 selectedObjectId: null,
                 selectedObjectIds: [],
+                plantbedLinks: type === "hedge" ? nextLinksMap : state.plantbedLinks,
+                plantbedLinkedCount: type === "hedge" ? nextCountsMap : state.plantbedLinkedCount,
                 undoStack: [...state.undoStack, cmd],
                 redoStack: [],
             };
@@ -5205,6 +5316,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
             return {
                 objects: nextObjects,
+                compassDirection: inverse.kind === "rotateCanvas"
+                    ? inverse.compassAfter
+                    : state.compassDirection,
                 selectedObjectIds: nextSelectedIds,
                 selectedObjectId: nextSelectedIds.length > 0 ? nextSelectedIds[0] : null,
                 nextPlantbedNo: recalcNextPlantbedNo(nextObjects),
@@ -5299,6 +5413,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
             return {
                 objects: nextObjects,
+                compassDirection: cmd.kind === "rotateCanvas"
+                    ? cmd.compassAfter
+                    : state.compassDirection,
                 selectedObjectIds: nextSelectedIds,
                 selectedObjectId: nextSelectedIds.length > 0 ? nextSelectedIds[0] : null,
                 nextPlantbedNo: recalcNextPlantbedNo(nextObjects),

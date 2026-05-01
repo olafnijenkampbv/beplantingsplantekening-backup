@@ -9,6 +9,7 @@ import { getObjectMenuSections } from "@/features/editor/components/editor/objec
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwatch";
 import { isBuildingObjectType } from "@/features/editor/components/editor/objectMenuConfig";
+import PlantAdviceLabelPanel from "@/features/editor/components/editor/PlantAdviceLabelPanel";
 
 const COLORS = {
     orange: "#E94E1B",
@@ -116,9 +117,12 @@ const isTypeChangeAllowed = (fromType: ObjectType, toType: ObjectType) => {
     return true;
 };
 
+const EMPTY_LINKED_PLANT_IDS: string[] = [];
+
 type TypeLabelCardProps = {
     currentType: ObjectType;
     currentTreebedVariant?: TreebedVariant;
+    currentCustomStyle?: Partial<(typeof OBJECT_STYLES)[ObjectType]>;
     labelText: string;
     badgeCount: number | null;
     interactive?: boolean;
@@ -128,10 +132,12 @@ type TypeLabelCardProps = {
     onChangeTreebedVariant?: (variant: TreebedVariant) => void;
     onTreebedVariantChanged?: (fromVariant: TreebedVariant, toVariant: TreebedVariant) => void;
 };
+
 export default function TypeLabelCard(props: TypeLabelCardProps) {
     const {
         currentType,
         currentTreebedVariant = "standard",
+        currentCustomStyle,
         labelText,
         badgeCount,
         interactive = false,
@@ -153,10 +159,21 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
     );
     const updateObjectStyle = useProjectStore((s) => s.updateObjectStyle);
     const resetObjectStyle = useProjectStore((s) => s.resetObjectStyle);
+    const linkedPlantIdsForAdvice = useProjectStore((s: any) => {
+        if (!selectedObjectId) return EMPTY_LINKED_PLANT_IDS;
+
+        return s.plantbedLinks?.[selectedObjectId] ?? EMPTY_LINKED_PLANT_IDS;
+    });
+
+    const canShowAdvicePanel =
+        interactive &&
+        selectedObject !== null &&
+        (currentType === "plantbed" || currentType === "hedge") &&
+        linkedPlantIdsForAdvice.length > 0;
 
     const currentStyle = {
         ...OBJECT_STYLES[currentType],
-        ...(selectedObject?.customStyle ?? {}),
+        ...(currentCustomStyle ?? (interactive ? selectedObject?.customStyle : {}) ?? {}),
     };
 
     const canChangeColor = currentType === "plantbed";
@@ -221,10 +238,10 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
 
     const Swatch = ({ type }: { type: ObjectType }) => {
         const s =
-            selectedObject?.type === type
+            type === currentType
                 ? {
                     ...OBJECT_STYLES[type],
-                    ...(selectedObject.customStyle ?? {}),
+                    ...(currentCustomStyle ?? (interactive ? selectedObject?.customStyle : {}) ?? {}),
                 }
                 : OBJECT_STYLES[type];
 
@@ -322,6 +339,8 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
             className="relative"
             style={{
                 display: "inline-flex",
+                flexDirection: "column",
+                alignItems: "stretch",
                 position: "relative",
                 zIndex: openPanel ? 1600 : 1100,
             }}
@@ -333,7 +352,9 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                     borderColor: LABEL_UI.borderColor,
                     padding: `${LABEL_UI.paddingY}px ${LABEL_UI.paddingX}px`,
                     gap: LABEL_UI.gap,
-                    borderRadius: LABEL_UI.radius,
+                    borderRadius: canShowAdvicePanel
+                        ? `${LABEL_UI.radius}px ${LABEL_UI.radius}px 0 0`
+                        : LABEL_UI.radius,
                     boxShadow: LABEL_UI.shadow,
                     alignItems: "center",
                 }}
@@ -502,6 +523,18 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                     </>
                 )}
             </div>
+
+            {canShowAdvicePanel && (
+                <PlantAdviceLabelPanel
+                    selectedObject={selectedObject}
+                    currentType={currentType}
+                    labelText={labelText}
+                    linkedPlantIds={linkedPlantIdsForAdvice}
+                    borderRadius={LABEL_UI.radius}
+                    shadow={LABEL_UI.shadow}
+                    borderColor={LABEL_UI.borderColor}
+                />
+            )}
 
             {pointerSide === "bottom" && (
                 <div

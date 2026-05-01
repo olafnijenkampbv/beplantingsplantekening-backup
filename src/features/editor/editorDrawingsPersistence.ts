@@ -138,7 +138,12 @@ export function sanitizeDrawingDocument(value: any): PersistedDrawingDocument | 
 export function getValidPlantbedIdsFromObjects(objects: PolyObject[]) {
     return new Set(
         objects
-            .filter((obj) => obj.type === "plantbed")
+            .filter(
+                (obj) =>
+                    obj.type === "plantbed" ||
+                    obj.type === "hedge" ||
+                    obj.type === "treebed"
+            )
             .map((obj) => obj.id)
     );
 }

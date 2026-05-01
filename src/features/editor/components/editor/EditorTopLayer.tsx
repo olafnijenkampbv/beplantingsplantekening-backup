@@ -195,6 +195,151 @@ export function EditorTopLayer(props: any) {
 
         if (!showPlantNumber && !showAreaLabel) return null;
 
+        if (object.type === "treebed") {
+            const objectStyle = getObjectRenderStyle(object);
+            const labelColor = objectStyle.stroke;
+            const treebedVisual = getTreebedVisual(points, object.treebedVariant);
+
+            const numberTextWidth = showPlantNumber
+                ? estimateTextWidth(label.text, label.fontSize)
+                : 0;
+
+            const areaTextWidth = showAreaLabel
+                ? estimateTextWidth(label.areaText, label.areaFontSize)
+                : 0;
+
+            const safeTrunkRadius = Math.max(treebedVisual.trunkRadius ?? 10, 10);
+            const safeGap = Math.max(8, safeTrunkRadius * 0.7);
+
+            if (object.treebedVariant === "espalier") {
+                const p = points;
+
+                const edgeA =
+                    p.length >= 8
+                        ? { x: p[2] - p[0], y: p[3] - p[1] }
+                        : { x: 1, y: 0 };
+
+                const edgeB =
+                    p.length >= 8
+                        ? { x: p[4] - p[2], y: p[5] - p[3] }
+                        : { x: 0, y: 1 };
+
+                const lenA = Math.hypot(edgeA.x, edgeA.y);
+                const lenB = Math.hypot(edgeB.x, edgeB.y);
+
+                const labelAxis = lenA >= lenB ? edgeA : edgeB;
+                const labelAxisLength = Math.hypot(labelAxis.x, labelAxis.y) || 1;
+
+                let ux = labelAxis.x / labelAxisLength;
+                let uy = labelAxis.y / labelAxisLength;
+
+                if (ux < 0 || (Math.abs(ux) < 1e-6 && uy < 0)) {
+                    ux *= -1;
+                    uy *= -1;
+                }
+
+                const rotationDeg = Math.atan2(uy, ux) * (180 / Math.PI);
+
+                const numberDistance =
+                    safeTrunkRadius + safeGap + numberTextWidth / 2;
+
+                const areaDistance =
+                    safeTrunkRadius + safeGap + areaTextWidth / 2;
+
+                return (
+                    <React.Fragment key={`${keyPrefix}-treebed-${object.id}`}>
+                        {showPlantNumber && (
+                            <Group
+                                x={treebedVisual.cx - ux * numberDistance}
+                                y={treebedVisual.cy - uy * numberDistance}
+                                rotation={rotationDeg}
+                                listening={false}
+                            >
+                                <Text
+                                    x={-numberTextWidth / 2}
+                                    y={-label.fontSize / 2}
+                                    width={numberTextWidth}
+                                    align="center"
+                                    wrap="none"
+                                    text={label.text}
+                                    fontSize={label.fontSize}
+                                    fontStyle="bold"
+                                    fill={labelColor}
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                            </Group>
+                        )}
+
+                        {showAreaLabel && (
+                            <Group
+                                x={treebedVisual.cx + ux * areaDistance}
+                                y={treebedVisual.cy + uy * areaDistance}
+                                rotation={rotationDeg}
+                                listening={false}
+                            >
+                                <Text
+                                    x={-areaTextWidth / 2}
+                                    y={-label.areaFontSize / 2}
+                                    width={areaTextWidth}
+                                    align="center"
+                                    wrap="none"
+                                    text={label.areaText}
+                                    fontSize={label.areaFontSize}
+                                    fontStyle="700"
+                                    fill={labelColor}
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                            </Group>
+                        )}
+                    </React.Fragment>
+                );
+            }
+
+            const numberY =
+                treebedVisual.cy - safeTrunkRadius - safeGap - label.fontSize;
+
+            const areaY =
+                treebedVisual.cy + safeTrunkRadius + safeGap;
+
+            return (
+                <React.Fragment key={`${keyPrefix}-treebed-${object.id}`}>
+                    {showPlantNumber && (
+                        <Text
+                            x={treebedVisual.cx - numberTextWidth / 2}
+                            y={numberY}
+                            width={numberTextWidth}
+                            align="center"
+                            wrap="none"
+                            text={label.text}
+                            fontSize={label.fontSize}
+                            fontStyle="bold"
+                            fill={labelColor}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                        />
+                    )}
+
+                    {showAreaLabel && (
+                        <Text
+                            x={treebedVisual.cx - areaTextWidth / 2}
+                            y={areaY}
+                            width={areaTextWidth}
+                            align="center"
+                            wrap="none"
+                            text={label.areaText}
+                            fontSize={label.areaFontSize}
+                            fontStyle="700"
+                            fill={labelColor}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                        />
+                    )}
+                </React.Fragment>
+            );
+        }
+
         const objectStyle = getObjectRenderStyle(object);
         const labelColor =
             object.type === "plantbed"
@@ -204,11 +349,11 @@ export function EditorTopLayer(props: any) {
         const bbox = bboxFromPoints(points);
 
         const numberTextWidth = showPlantNumber
-            ? estimateTextWidth(label.text, label.fontSize)
+            ? Math.max(estimateTextWidth(label.text, label.fontSize), label.fontSize * 1.4)
             : 0;
 
         const areaTextWidth = showAreaLabel
-            ? estimateTextWidth(label.areaText, label.areaFontSize)
+            ? Math.max(estimateTextWidth(label.areaText, label.areaFontSize), label.areaFontSize * 4)
             : 0;
 
         const verticalGap = 4;
@@ -597,70 +742,70 @@ export function EditorTopLayer(props: any) {
                                             opacity={0.4}
                                             listening={true}
                                             perfectDrawEnabled={false}
-                                                onMouseEnter={() => {
-                                                    const st = stageRef.current;
-                                                    if (!st) return;
+                                            onMouseEnter={() => {
+                                                const st = stageRef.current;
+                                                if (!st) return;
 
-                                                    if (isPanning) {
-                                                        st.container().style.cursor = "grabbing";
-                                                        return;
-                                                    }
+                                                if (isPanning) {
+                                                    st.container().style.cursor = "grabbing";
+                                                    return;
+                                                }
 
-                                                    if (activeTool === "draw" || activeTool === "cut" || activeTool === "measure") {
-                                                        st.container().style.cursor = "crosshair";
-                                                        return;
-                                                    }
+                                                if (activeTool === "draw" || activeTool === "cut" || activeTool === "measure") {
+                                                    st.container().style.cursor = "crosshair";
+                                                    return;
+                                                }
 
-                                                    if (activeTool === "select") {
-                                                        st.container().style.cursor = "pointer";
-                                                        return;
-                                                    }
+                                                if (activeTool === "select") {
+                                                    st.container().style.cursor = "pointer";
+                                                    return;
+                                                }
 
-                                                    if (activeTool === "hand") {
-                                                        st.container().style.cursor = "grab";
-                                                        return;
-                                                    }
+                                                if (activeTool === "hand") {
+                                                    st.container().style.cursor = "grab";
+                                                    return;
+                                                }
 
-                                                    st.container().style.cursor = "default";
-                                                }}
-                                                onMouseLeave={() => {
-                                                    const st = stageRef.current;
-                                                    if (!st) return;
+                                                st.container().style.cursor = "default";
+                                            }}
+                                            onMouseLeave={() => {
+                                                const st = stageRef.current;
+                                                if (!st) return;
 
-                                                    st.container().style.cursor = isPanning
-                                                        ? "grabbing"
-                                                        : activeTool === "hand"
-                                                            ? "grab"
-                                                            : activeTool === "select"
-                                                                ? "default"
-                                                                : activeTool === "draw" || activeTool === "cut" || activeTool === "measure"
-                                                                    ? "crosshair"
-                                                                    : "default";
-                                                }}
-                                                onMouseDown={(evt) => {
-                                                    if (evt?.evt?.button === 1) {
-                                                        return;
-                                                    }
+                                                st.container().style.cursor = isPanning
+                                                    ? "grabbing"
+                                                    : activeTool === "hand"
+                                                        ? "grab"
+                                                        : activeTool === "select"
+                                                            ? "default"
+                                                            : activeTool === "draw" || activeTool === "cut" || activeTool === "measure"
+                                                                ? "crosshair"
+                                                                : "default";
+                                            }}
+                                            onMouseDown={(evt) => {
+                                                if (evt?.evt?.button === 1) {
+                                                    return;
+                                                }
 
-                                                    if (activeTool !== "select") return;
-                                                    evt.cancelBubble = true;
+                                                if (activeTool !== "select") return;
+                                                evt.cancelBubble = true;
 
-                                                    const multi = !!(evt.evt?.ctrlKey || evt.evt?.metaKey);
+                                                const multi = !!(evt.evt?.ctrlKey || evt.evt?.metaKey);
 
-                                                    if (!multi) {
-                                                        pendingPlantbedClickRef.current = {
-                                                            id: obj.id,
-                                                            startClientX: evt.evt?.clientX ?? 0,
-                                                            startClientY: evt.evt?.clientY ?? 0,
-                                                        };
-                                                        plantbedClickMovedRef.current = false;
-                                                    } else {
-                                                        pendingPlantbedClickRef.current = null;
-                                                        plantbedClickMovedRef.current = false;
-                                                    }
+                                                if (!multi) {
+                                                    pendingPlantbedClickRef.current = {
+                                                        id: obj.id,
+                                                        startClientX: evt.evt?.clientX ?? 0,
+                                                        startClientY: evt.evt?.clientY ?? 0,
+                                                    };
+                                                    plantbedClickMovedRef.current = false;
+                                                } else {
+                                                    pendingPlantbedClickRef.current = null;
+                                                    plantbedClickMovedRef.current = false;
+                                                }
 
-                                                    handleObjectSelection(obj.id, evt.evt);
-                                                }}
+                                                handleObjectSelection(obj.id, evt.evt);
+                                            }}
                                             onClick={(evt) => {
                                                 if (evt?.evt?.button === 1 || isPanning) {
                                                     evt.cancelBubble = true;
@@ -695,7 +840,7 @@ export function EditorTopLayer(props: any) {
                                     return renderNumberAreaLabel(
                                         obj,
                                         label,
-                                        obj.points,
+                                        liveTreebedPoints,
                                         "treebed-number-area"
                                     );
                                 })()}
@@ -1418,34 +1563,34 @@ export function EditorTopLayer(props: any) {
                                                 );
                                             });
 
-                                            const renderSelectionContour = (
-                                                ringPoints: number[],
-                                                key: string,
-                                                strokeWidth: number
-                                            ) =>
-                                                obj.type === "hedge" ? (
-                                                    <DynamicStrokeShape
-                                                        key={key}
-                                                        points={ringPoints}
-                                                        stroke={COLORS.orange}
-                                                        strokeWidth={strokeWidth}
-                                                        seedKey={`hedge-stroke:${obj.id}:selected:${key}`}
-                                                    />
-                                                ) : (
-                                                    <Line
-                                                        key={key}
-                                                        points={ringPoints}
-                                                        closed
-                                                        fillEnabled={false}
-                                                        stroke={COLORS.orange}
-                                                        strokeWidth={strokeWidth}
-                                                        lineCap="butt"
-                                                        lineJoin="miter"
-                                                        listening={false}
-                                                        perfectDrawEnabled={false}
-                                                        opacity={1}
-                                                    />
-                                                );
+                                        const renderSelectionContour = (
+                                            ringPoints: number[],
+                                            key: string,
+                                            strokeWidth: number
+                                        ) =>
+                                            obj.type === "hedge" ? (
+                                                <DynamicStrokeShape
+                                                    key={key}
+                                                    points={ringPoints}
+                                                    stroke={COLORS.orange}
+                                                    strokeWidth={strokeWidth}
+                                                    seedKey={`hedge-stroke:${obj.id}:selected:${key}`}
+                                                />
+                                            ) : (
+                                                <Line
+                                                    key={key}
+                                                    points={ringPoints}
+                                                    closed
+                                                    fillEnabled={false}
+                                                    stroke={COLORS.orange}
+                                                    strokeWidth={strokeWidth}
+                                                    lineCap="butt"
+                                                    lineJoin="miter"
+                                                    listening={false}
+                                                    perfectDrawEnabled={false}
+                                                    opacity={1}
+                                                />
+                                            );
 
                                         return (
                                             <React.Fragment key={`sel-hole-poly-${obj.id}`}>
@@ -1547,34 +1692,22 @@ export function EditorTopLayer(props: any) {
 
                                                 if (isUnifiedBoundaryType(obj.type)) {
                                                     const liveBoundaryShape = getBoundaryBandShape(livePoints, obj.type);
+                                                    const renderStyle = getObjectRenderStyle(obj);
 
                                                     return (
                                                         <React.Fragment key={`sel-${obj.id}`}>
                                                             <PolygonWithHoles
                                                                 points={liveBoundaryShape.outer}
                                                                 holes={liveBoundaryShape.holes}
-                                                                fill={getObjectRenderStyle(obj).fill}
+                                                                fill={renderStyle.fill}
                                                                 stroke={COLORS.orange}
-                                                                strokeWidth={3}
+                                                                strokeWidth={2}
                                                                 lineCap="butt"
                                                                 lineJoin="miter"
                                                                 opacity={1}
                                                                 draggable={false}
                                                                 onClick={(evt) => onSelectClick(evt)}
                                                                 perfectDrawEnabled={false}
-                                                            />
-
-                                                            <PolygonWithHoles
-                                                                points={liveBoundaryShape.outer}
-                                                                holes={liveBoundaryShape.holes}
-                                                                fill={undefined}
-                                                                stroke={getObjectRenderStyle(obj).stroke}
-                                                                strokeWidth={2}
-                                                                lineCap="butt"
-                                                                lineJoin="miter"
-                                                                listening={false}
-                                                                perfectDrawEnabled={false}
-                                                                opacity={1}
                                                             />
                                                         </React.Fragment>
                                                     );
@@ -1602,72 +1735,72 @@ export function EditorTopLayer(props: any) {
                                             ? getBuildingPatternCanvas(obj.type)
                                             : undefined;
 
-                                                return (
-                                                    <React.Fragment key={`sel-poly-${obj.id}`}>
-                                                        <>
-                                                            <Line
-                                                                ref={(node) => {
-                                                                    if (!node) return;
-                                                                    selectedLineRefs.current[obj.id] = node;
-                                                                }}
-                                                                points={livePolygonPoints}
-                                                                closed
-                                                                fill={selectedPatternImage ? undefined : getObjectRenderStyle(obj).fill}
-                                                                fillEnabled
-                                                                fillPriority={selectedPatternImage ? "pattern" : "color"}
-                                                                fillPatternImage={selectedPatternImage as unknown as HTMLImageElement | undefined}
-                                                                fillPatternRepeat={selectedPatternImage ? "repeat" : undefined}
-                                                                stroke={obj.type === "hedge" ? undefined : COLORS.orange}
-                                                                strokeEnabled={obj.type !== "hedge"}
-                                                                strokeWidth={obj.id === selectedObjectId ? 4 : 3}
-                                                                lineCap="butt"
-                                                                lineJoin="miter"
-                                                                opacity={1}
-                                                                draggable={false}
-                                                                onMouseEnter={() => {
-                                                                    const st = stageRef.current;
-                                                                    if (!st) return;
-                                                                    if (isEdgeResizingRef.current) return;
-                                                                    st.container().style.cursor = "move";
-                                                                }}
-                                                                onMouseLeave={() => {
-                                                                    const st = stageRef.current;
-                                                                    if (!st) return;
-                                                                    if (isEdgeResizingRef.current) return;
-                                                                    st.container().style.cursor =
-                                                                        activeTool === "hand"
-                                                                            ? "grab"
-                                                                            : activeTool === "select"
-                                                                                ? "default"
-                                                                                : activeTool === "draw" || activeTool === "cut"
-                                                                                    ? "crosshair"
-                                                                                    : "default";
-                                                                }}
-                                                                onClick={(evt) => onSelectClick(evt)}
-                                                            />
+                                        return (
+                                            <React.Fragment key={`sel-poly-${obj.id}`}>
+                                                <>
+                                                    <Line
+                                                        ref={(node) => {
+                                                            if (!node) return;
+                                                            selectedLineRefs.current[obj.id] = node;
+                                                        }}
+                                                        points={livePolygonPoints}
+                                                        closed
+                                                        fill={selectedPatternImage ? undefined : getObjectRenderStyle(obj).fill}
+                                                        fillEnabled
+                                                        fillPriority={selectedPatternImage ? "pattern" : "color"}
+                                                        fillPatternImage={selectedPatternImage as unknown as HTMLImageElement | undefined}
+                                                        fillPatternRepeat={selectedPatternImage ? "repeat" : undefined}
+                                                        stroke={obj.type === "hedge" ? undefined : COLORS.orange}
+                                                        strokeEnabled={obj.type !== "hedge"}
+                                                        strokeWidth={obj.id === selectedObjectId ? 4 : 3}
+                                                        lineCap="butt"
+                                                        lineJoin="miter"
+                                                        opacity={1}
+                                                        draggable={false}
+                                                        onMouseEnter={() => {
+                                                            const st = stageRef.current;
+                                                            if (!st) return;
+                                                            if (isEdgeResizingRef.current) return;
+                                                            st.container().style.cursor = "move";
+                                                        }}
+                                                        onMouseLeave={() => {
+                                                            const st = stageRef.current;
+                                                            if (!st) return;
+                                                            if (isEdgeResizingRef.current) return;
+                                                            st.container().style.cursor =
+                                                                activeTool === "hand"
+                                                                    ? "grab"
+                                                                    : activeTool === "select"
+                                                                        ? "default"
+                                                                        : activeTool === "draw" || activeTool === "cut"
+                                                                            ? "crosshair"
+                                                                            : "default";
+                                                        }}
+                                                        onClick={(evt) => onSelectClick(evt)}
+                                                    />
 
-                                                            {obj.type === "hedge" ? (
-                                                                <DynamicStrokeShape
-                                                                    points={livePolygonPoints}
-                                                                    stroke={COLORS.orange}
-                                                                    strokeWidth={obj.id === selectedObjectId ? 4 : 3}
-                                                                    seedKey={`hedge-stroke:${obj.id}:selected`}
-                                                                />
-                                                            ) : null}
+                                                    {obj.type === "hedge" ? (
+                                                        <DynamicStrokeShape
+                                                            points={livePolygonPoints}
+                                                            stroke={COLORS.orange}
+                                                            strokeWidth={obj.id === selectedObjectId ? 4 : 3}
+                                                            seedKey={`hedge-stroke:${obj.id}:selected`}
+                                                        />
+                                                    ) : null}
 
-                                                            {renderObjectPattern(
-                                                                obj,
-                                                                `selected-fill-pattern-${obj.id}`,
-                                                                stageScale,
-                                                                livePolygonPoints
-                                                            )}
-                                                        </>
+                                                    {renderObjectPattern(
+                                                        obj,
+                                                        `selected-fill-pattern-${obj.id}`,
+                                                        stageScale,
+                                                        livePolygonPoints
+                                                    )}
+                                                </>
 
-                                                        {activeTool === "select" &&
-                                                            selected.length === 1 &&
-                                                            !lineOnly &&
-                                                            (obj.holes?.length ?? 0) === 0 &&
-                                                            Array.from({ length: livePolygonPoints.length / 2 }).map((_, edgeIndex) => {
+                                                {activeTool === "select" &&
+                                                    selected.length === 1 &&
+                                                    !lineOnly &&
+                                                    (obj.holes?.length ?? 0) === 0 &&
+                                                    Array.from({ length: livePolygonPoints.length / 2 }).map((_, edgeIndex) => {
                                                         const pointCount = livePolygonPoints.length / 2;
                                                         const aIdx = edgeIndex * 2;
                                                         const bIdx = ((edgeIndex + 1) % pointCount) * 2;
@@ -1768,19 +1901,38 @@ export function EditorTopLayer(props: any) {
                                         Array.isArray(edgeResizeRef.current?.workingPoints) &&
                                         edgeResizeRef.current.workingPoints.length >= 6;
 
-                                    const isLiveEditingThisPlantbed =
-                                        isVertexEditingThisPlantbed || isEdgeEditingThisPlantbed;
+                                    const isTreebedResizeEditingThisPlantbed =
+                                        obj.type === "treebed" &&
+                                        treebedResizePreview?.objectId === obj.id &&
+                                        Array.isArray(treebedResizePreview?.points) &&
+                                        treebedResizePreview.points.length >= 6;
 
-                                    const livePoints = isVertexEditingThisPlantbed
-                                        ? vertexEditRef.current!.workingPoints
-                                        : isEdgeEditingThisPlantbed
-                                            ? edgeResizeRef.current!.workingPoints
-                                            : obj.points;
+                                    const isTreebedRotateEditingThisPlantbed =
+                                        obj.type === "treebed" &&
+                                        treebedRotatePreview?.objectId === obj.id &&
+                                        Array.isArray(treebedRotatePreview?.points) &&
+                                        treebedRotatePreview.points.length >= 6;
+
+                                    const isLiveEditingThisPlantbed =
+                                        isVertexEditingThisPlantbed ||
+                                        isEdgeEditingThisPlantbed ||
+                                        isTreebedResizeEditingThisPlantbed ||
+                                        isTreebedRotateEditingThisPlantbed;
+
+                                    const livePoints = isTreebedRotateEditingThisPlantbed
+                                        ? treebedRotatePreview!.points
+                                        : isTreebedResizeEditingThisPlantbed
+                                            ? treebedResizePreview!.points
+                                            : isVertexEditingThisPlantbed
+                                                ? vertexEditRef.current!.workingPoints
+                                                : isEdgeEditingThisPlantbed
+                                                    ? edgeResizeRef.current!.workingPoints
+                                                    : obj.points;
 
                                     const liveHoles = isVertexEditingThisPlantbed
-                                        ? (vertexEditRef.current!.workingHoles ?? obj.holes ?? [])
+                                        ? (vertexEditRef.current?.workingHoles ?? obj.holes ?? [])
                                         : isEdgeEditingThisPlantbed
-                                            ? (vertexEditRef.current!.workingHoles ?? obj.holes ?? [])
+                                            ? (edgeResizeRef.current?.workingHoles ?? obj.holes ?? [])
                                             : (obj.holes ?? []);
 
                                     const no = (obj as any).plantbedNo ?? 0;
@@ -2392,7 +2544,7 @@ export function EditorTopLayer(props: any) {
 
                                             const stackGap = STACK_GAP_PX / stageScale;
                                             const laneOffset = LANE_OFFSET_PX / stageScale;
-                                            
+
                                             const targetInsetCanvas = 8 / stageScale;
 
                                             const layoutLane = (
@@ -2513,18 +2665,25 @@ export function EditorTopLayer(props: any) {
                                                     )
                                                     : item.objectAnchorY;
 
+                                            const rawBusX =
+                                                item.laneSide === "left"
+                                                    ? selectionBounds.x - busInsetCanvas + item.laneIndex * busSpacingCanvas
+                                                    : item.laneSide === "right"
+                                                        ? selectionBounds.x + selectionBounds.w + busInsetCanvas - item.laneIndex * busSpacingCanvas
+                                                        : item.finalLabelX;
+
                                             const busX =
                                                 item.laneSide === "left"
-                                                    ? selectionBounds.x - busInsetCanvas - item.laneIndex * busSpacingCanvas
+                                                    ? Math.max(rawBusX, labelPointerAnchorX + labelStubCanvas)
                                                     : item.laneSide === "right"
-                                                        ? selectionBounds.x + selectionBounds.w + busInsetCanvas + item.laneIndex * busSpacingCanvas
+                                                        ? Math.min(rawBusX, labelPointerAnchorX - labelStubCanvas)
                                                         : item.finalLabelX;
 
                                             const labelStubEndX =
                                                 item.laneSide === "left"
-                                                    ? Math.min(busX, labelPointerAnchorX + labelStubCanvas)
+                                                    ? Math.max(labelPointerAnchorX + labelStubCanvas, busX)
                                                     : item.laneSide === "right"
-                                                        ? Math.max(busX, labelPointerAnchorX - labelStubCanvas)
+                                                        ? Math.min(labelPointerAnchorX - labelStubCanvas, busX)
                                                         : item.finalLabelX;
 
                                             const leaderLinePoints =
@@ -2624,6 +2783,7 @@ export function EditorTopLayer(props: any) {
                                                             <TypeLabelCard
                                                                 currentType={item.obj.type as ObjectType}
                                                                 currentTreebedVariant={item.obj.treebedVariant ?? "standard"}
+                                                                currentCustomStyle={item.obj.customStyle}
                                                                 labelText={item.labelText}
                                                                 badgeCount={item.count !== null ? Number(item.count) : null}
                                                                 interactive={item.isPrimary}

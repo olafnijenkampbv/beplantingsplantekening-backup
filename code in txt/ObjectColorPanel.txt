@@ -88,7 +88,6 @@ type ObjectColorPanelProps = {
     onApply: (style: PolyObjectStyle) => void;
     onClose: () => void;
 };
-
 function normalizeHexInput(value: string) {
     const clean = value.trim().replace(/[^#a-fA-F0-9]/g, "");
     if (!clean.startsWith("#")) return `#${clean}`.slice(0, 7);

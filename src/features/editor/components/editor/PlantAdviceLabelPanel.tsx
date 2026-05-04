@@ -179,7 +179,59 @@ function getHedgeOutlineSegments(points: number[]) {
     return segments;
 }
 
-function getEstimatedHedgeWidthInMeters(segments: HedgeOutlineSegment[]) {
+function getRingThicknessFromBoundingBoxes(
+    outerPoints: number[],
+    holes: number[][]
+) {
+    if (!holes || holes.length === 0) return null;
+
+    const getBox = (points: number[]) => {
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+
+        for (let index = 0; index < points.length; index += 2) {
+            minX = Math.min(minX, points[index]);
+            minY = Math.min(minY, points[index + 1]);
+            maxX = Math.max(maxX, points[index]);
+            maxY = Math.max(maxY, points[index + 1]);
+        }
+
+        return {
+            width: getMetersFromEditorUnits(maxX - minX),
+            height: getMetersFromEditorUnits(maxY - minY),
+        };
+    };
+
+    const outerBox = getBox(outerPoints);
+
+    const thicknessCandidates = holes
+        .flatMap((hole) => {
+            const holeBox = getBox(hole);
+
+            return [
+                (outerBox.width - holeBox.width) / 2,
+                (outerBox.height - holeBox.height) / 2,
+            ];
+        })
+        .filter((value) => Number.isFinite(value) && value > 0.05);
+
+    if (thicknessCandidates.length === 0) return null;
+
+    return Math.min(...thicknessCandidates);
+}
+
+function getEstimatedHedgeWidthInMeters(object: PolyObject, segments: HedgeOutlineSegment[]) {
+    const ringThickness = getRingThicknessFromBoundingBoxes(
+        object.points,
+        object.holes ?? []
+    );
+
+    if (ringThickness !== null) {
+        return ringThickness;
+    }
+
     const sortedLengths = segments
         .map((segment) => segment.length)
         .filter((length) => Number.isFinite(length) && length > 0.05)
@@ -190,12 +242,28 @@ function getEstimatedHedgeWidthInMeters(segments: HedgeOutlineSegment[]) {
 
 function getEstimatedHedgeLengthInMeters(object: PolyObject, totalSquareMeters: number) {
     const segments = getHedgeOutlineSegments(object.points);
-    const estimatedWidth = getEstimatedHedgeWidthInMeters(segments);
+    const estimatedWidth = getEstimatedHedgeWidthInMeters(object, segments);
 
-    if (!estimatedWidth || estimatedWidth <= 0 || segments.length === 0) {
+    if (!estimatedWidth || estimatedWidth <= 0) {
         return {
             hedgeLengthMeters: totalSquareMeters,
             hedgeWidthMeters: null,
+        };
+    }
+
+    if ((object.holes?.length ?? 0) > 0) {
+        const hedgeLengthMeters = totalSquareMeters / estimatedWidth;
+
+        return {
+            hedgeLengthMeters: hedgeLengthMeters > 0 ? hedgeLengthMeters : totalSquareMeters,
+            hedgeWidthMeters: estimatedWidth,
+        };
+    }
+
+    if (segments.length === 0) {
+        return {
+            hedgeLengthMeters: totalSquareMeters,
+            hedgeWidthMeters: estimatedWidth,
         };
     }
 

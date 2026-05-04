@@ -48,9 +48,9 @@ const PANEL_UI = {
     tableHeaderSubFontSize: 16,
     tableRowMinHeight: 82,
 
-    plantNameFontSize: 20,
+    plantNameFontSize: 21,
     plantNameFontWeight: 800,
-    plantSubNameFontSize: 17,
+    plantSubNameFontSize: 19,
 
     valueFontSize: 20,
     valueFontWeight: 500,
@@ -89,7 +89,7 @@ const ICON_FILTERS = {
 };
 
 const TABLE_GRID_TEMPLATE =
-    "minmax(230px, 1.7fr) minmax(105px, 0.7fr) minmax(140px, 0.9fr) minmax(170px, 1fr) minmax(115px, 0.7fr)";
+    "260px minmax(105px, 0.7fr) minmax(140px, 0.9fr) minmax(170px, 1fr) minmax(115px, 0.7fr)";
 
 type ProjectPlantLike = {
     id: string;
@@ -149,23 +149,14 @@ function formatAdviceMeasureValue(value: number, measurementMode: AdviceMeasurem
     return formatSquareMeters(value);
 }
 
-type HedgeSegment = {
-    angle: number;
-    offset: number;
-    start: number;
-    end: number;
+type HedgeOutlineSegment = {
     length: number;
 };
 
-function normalizeAngleRadians(angle: number) {
-    const normalized = angle < 0 ? angle + Math.PI : angle;
-    return normalized >= Math.PI ? normalized - Math.PI : normalized;
-}
-
-function getHedgeSegments(points: number[]) {
+function getHedgeOutlineSegments(points: number[]) {
     if (!points || points.length < 6) return [];
 
-    const segments: HedgeSegment[] = [];
+    const segments: HedgeOutlineSegment[] = [];
     const pointCount = points.length / 2;
 
     for (let index = 0; index < pointCount; index += 1) {
@@ -177,35 +168,18 @@ function getHedgeSegments(points: number[]) {
         const bx = points[nextIndex];
         const by = points[nextIndex + 1];
 
-        const dx = bx - ax;
-        const dy = by - ay;
-        const editorLength = Math.hypot(dx, dy);
+        const editorLength = Math.hypot(bx - ax, by - ay);
         const length = getMetersFromEditorUnits(editorLength);
 
-        if (!Number.isFinite(length) || length <= 0.05) continue;
-
-        const angle = normalizeAngleRadians(Math.atan2(dy, dx));
-        const ux = Math.cos(angle);
-        const uy = Math.sin(angle);
-        const nx = -uy;
-        const ny = ux;
-
-        const startEditor = ax * ux + ay * uy;
-        const endEditor = bx * ux + by * uy;
-
-        segments.push({
-            angle,
-            offset: getMetersFromEditorUnits(ax * nx + ay * ny),
-            start: getMetersFromEditorUnits(Math.min(startEditor, endEditor)),
-            end: getMetersFromEditorUnits(Math.max(startEditor, endEditor)),
-            length,
-        });
+        if (Number.isFinite(length) && length > 0.05) {
+            segments.push({ length });
+        }
     }
 
     return segments;
 }
 
-function getEstimatedHedgeWidthInMeters(segments: HedgeSegment[]) {
+function getEstimatedHedgeWidthInMeters(segments: HedgeOutlineSegment[]) {
     const sortedLengths = segments
         .map((segment) => segment.length)
         .filter((length) => Number.isFinite(length) && length > 0.05)
@@ -214,41 +188,8 @@ function getEstimatedHedgeWidthInMeters(segments: HedgeSegment[]) {
     return sortedLengths[0] ?? null;
 }
 
-function getMergedIntervalLength(intervals: Array<{ start: number; end: number }>, mergeGap: number) {
-    const sortedIntervals = intervals
-        .map((interval) => ({
-            start: Math.min(interval.start, interval.end),
-            end: Math.max(interval.start, interval.end),
-        }))
-        .sort((a, b) => a.start - b.start);
-
-    let total = 0;
-    let current: { start: number; end: number } | null = null;
-
-    for (const interval of sortedIntervals) {
-        if (!current) {
-            current = { ...interval };
-            continue;
-        }
-
-        if (interval.start <= current.end + mergeGap) {
-            current.end = Math.max(current.end, interval.end);
-            continue;
-        }
-
-        total += current.end - current.start;
-        current = { ...interval };
-    }
-
-    if (current) {
-        total += current.end - current.start;
-    }
-
-    return total;
-}
-
 function getEstimatedHedgeLengthInMeters(object: PolyObject, totalSquareMeters: number) {
-    const segments = getHedgeSegments(object.points);
+    const segments = getHedgeOutlineSegments(object.points);
     const estimatedWidth = getEstimatedHedgeWidthInMeters(segments);
 
     if (!estimatedWidth || estimatedWidth <= 0 || segments.length === 0) {
@@ -258,53 +199,18 @@ function getEstimatedHedgeLengthInMeters(object: PolyObject, totalSquareMeters: 
         };
     }
 
-    const angleTolerance = Math.PI / 24;
-    const offsetTolerance = estimatedWidth * 1.75;
-    const mergeGap = estimatedWidth * 1.75;
+    const widthSegmentThreshold = estimatedWidth * 1.8;
 
-    const angleGroups: HedgeSegment[][] = [];
+    const hedgeDirectionSegments = segments.filter(
+        (segment) => segment.length > widthSegmentThreshold
+    );
 
-    for (const segment of segments) {
-        let group = angleGroups.find(
-            (items) => Math.abs(items[0].angle - segment.angle) <= angleTolerance
-        );
+    const hedgeOutlineLength = hedgeDirectionSegments.reduce(
+        (total, segment) => total + segment.length,
+        0
+    );
 
-        if (!group) {
-            group = [];
-            angleGroups.push(group);
-        }
-
-        group.push(segment);
-    }
-
-    let hedgeLengthMeters = 0;
-
-    for (const angleGroup of angleGroups) {
-        const offsetGroups: HedgeSegment[][] = [];
-
-        for (const segment of angleGroup.sort((a, b) => a.offset - b.offset)) {
-            let group = offsetGroups.find(
-                (items) => Math.abs(items[0].offset - segment.offset) <= offsetTolerance
-            );
-
-            if (!group) {
-                group = [];
-                offsetGroups.push(group);
-            }
-
-            group.push(segment);
-        }
-
-        for (const offsetGroup of offsetGroups) {
-            hedgeLengthMeters += getMergedIntervalLength(
-                offsetGroup.map((segment) => ({
-                    start: segment.start,
-                    end: segment.end,
-                })),
-                mergeGap
-            );
-        }
-    }
+    const hedgeLengthMeters = hedgeOutlineLength / 2;
 
     return {
         hedgeLengthMeters: hedgeLengthMeters > 0 ? hedgeLengthMeters : totalSquareMeters,
@@ -653,7 +559,15 @@ function AdviceTable(props: {
                         borderBottom: `1px solid ${COLORS.border}`,
                     }}
                 >
-                    <div style={{ minWidth: 0 }}>
+                    <div
+                        style={{
+                            width: 260,
+                            minWidth: 0,
+                            whiteSpace: "normal",
+                            overflowWrap: "break-word",
+                            wordBreak: "break-word",
+                        }}
+                    >
                         <div
                             style={{
                                 fontSize: PANEL_UI.plantNameFontSize,

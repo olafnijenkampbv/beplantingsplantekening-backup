@@ -33,8 +33,10 @@ import {
 } from "@/features/editor/lib/editorCanvasPrimitives";
 import {
     isUnifiedBoundaryType,
+    getBoundarySnapPoint,
     getBoundaryBandPoints,
     getBoundaryBandShape,
+    getBoundaryBandShapeForObject,
     getBoundaryPreviewOutlinePaths,
     getBoundaryVertexPoints,
 } from "@/features/editor/lib/boundarySystem";
@@ -112,6 +114,9 @@ export function EditorTopLayer(props: any) {
         selectObjects,
         moveObjectAndMerge,
         moveObjectsBatch,
+        alignmentGuides,
+        setAlignmentGuides,
+        getAlignmentSnapForSelection,
         liveSelectionDragDelta,
         setLiveSelectionDragDelta,
         isVertexDragging,
@@ -121,6 +126,7 @@ export function EditorTopLayer(props: any) {
         isBoxSelecting,
         shouldHideSelectionLabelsForPerformance,
         viewVisibility,
+        showPlantLinkInfoInLabels,
 
         treebedRotatePreview,
         treebedResizePreview,
@@ -178,6 +184,259 @@ export function EditorTopLayer(props: any) {
     const renderTilesPatternSafe = renderTilesPatternProp ?? renderTilesPattern;
     const createTreebedPointsFromCenterDragSafe =
         createTreebedPointsFromCenterDragProp ?? createTreebedPointsFromCenterDrag;
+
+    const getBoundaryEditableSegments = (object: PolyObject) => {
+        const sourceSegments =
+            object.boundarySegments && object.boundarySegments.length > 0
+                ? object.boundarySegments
+                : [object.points];
+
+        return sourceSegments
+            .map((segment) => [...segment])
+            .filter((segment) => segment.length >= 4);
+    };
+
+    const getBoundaryEditableHandles = (object: PolyObject) => {
+        const segments = getBoundaryEditableSegments(object);
+        const handleMap = new Map<
+            string,
+            {
+                x: number;
+                y: number;
+                matches: Array<{ segmentIndex: number; vertexIndex: number }>;
+            }
+        >();
+
+        segments.forEach((segment, segmentIndex) => {
+            for (let index = 0; index < segment.length; index += 2) {
+                const x = segment[index];
+                const y = segment[index + 1];
+                const key = `${Math.round(x * 1000) / 1000}:${Math.round(y * 1000) / 1000}`;
+
+                const existing = handleMap.get(key);
+                if (existing) {
+                    existing.matches.push({ segmentIndex, vertexIndex: index });
+                    continue;
+                }
+
+                handleMap.set(key, {
+                    x,
+                    y,
+                    matches: [{ segmentIndex, vertexIndex: index }],
+                });
+            }
+        });
+
+        return Array.from(handleMap.values());
+    };
+
+    const getLiveBoundaryObject = (object: PolyObject): PolyObject => {
+        const edit = vertexEditRef.current;
+
+        if (
+            edit?.objectId === object.id &&
+            Array.isArray(edit.workingBoundarySegments) &&
+            edit.workingBoundarySegments.length > 0
+        ) {
+            const safeSegments = edit.workingBoundarySegments
+                .map((segment: number[]) => [...segment])
+                .filter((segment: number[]) => segment.length >= 4);
+
+            if (safeSegments.length > 0) {
+                return {
+                    ...object,
+                    geometry: "polyline",
+                    points: safeSegments[0],
+                    boundarySegments: safeSegments,
+                };
+            }
+        }
+
+        return object;
+    };
+
+    const getBoundaryPointKey = (x: number, y: number) => {
+        return `${Math.round(x * 1000) / 1000}:${Math.round(y * 1000) / 1000}`;
+    };
+
+    const areBoundaryPointsEqual = (
+        ax: number,
+        ay: number,
+        bx: number,
+        by: number,
+        eps = 1e-6
+    ) => {
+        return Math.abs(ax - bx) <= eps && Math.abs(ay - by) <= eps;
+    };
+
+    const isBoundaryPointOnSegment = (
+        px: number,
+        py: number,
+        ax: number,
+        ay: number,
+        bx: number,
+        by: number,
+        eps = 1e-6
+    ) => {
+        const cross =
+            (bx - ax) * (py - ay) -
+            (by - ay) * (px - ax);
+
+        if (Math.abs(cross) > eps) return false;
+
+        const dot =
+            (px - ax) * (bx - ax) +
+            (py - ay) * (by - ay);
+
+        if (dot < -eps) return false;
+
+        const squaredLength =
+            (bx - ax) * (bx - ax) +
+            (by - ay) * (by - ay);
+
+        if (dot - squaredLength > eps) return false;
+
+        return true;
+    };
+
+    const getBoundaryMatchesAtPoint = (
+        segments: number[][],
+        x: number,
+        y: number
+    ) => {
+        const matches: Array<{ segmentIndex: number; vertexIndex: number }> = [];
+
+        segments.forEach((segment, segmentIndex) => {
+            for (let index = 0; index < segment.length; index += 2) {
+                if (
+                    areBoundaryPointsEqual(
+                        segment[index],
+                        segment[index + 1],
+                        x,
+                        y
+                    )
+                ) {
+                    matches.push({ segmentIndex, vertexIndex: index });
+                }
+            }
+        });
+
+        return matches;
+    };
+
+    const splitBoundarySegmentsAtPoint = (
+        sourceSegments: number[][],
+        x: number,
+        y: number
+    ) => {
+        const nextSegments: number[][] = [];
+
+        sourceSegments.forEach((segment) => {
+            if (!segment || segment.length < 4) return;
+
+            for (let index = 0; index < segment.length - 2; index += 2) {
+                const ax = segment[index];
+                const ay = segment[index + 1];
+                const bx = segment[index + 2];
+                const by = segment[index + 3];
+
+                if (areBoundaryPointsEqual(ax, ay, bx, by)) continue;
+
+                const isOnSegment = isBoundaryPointOnSegment(
+                    x,
+                    y,
+                    ax,
+                    ay,
+                    bx,
+                    by
+                );
+
+                const isEndpoint =
+                    areBoundaryPointsEqual(x, y, ax, ay) ||
+                    areBoundaryPointsEqual(x, y, bx, by);
+
+                if (!isOnSegment || isEndpoint) {
+                    nextSegments.push([ax, ay, bx, by]);
+                    continue;
+                }
+
+                nextSegments.push([ax, ay, x, y]);
+                nextSegments.push([x, y, bx, by]);
+            }
+        });
+
+        const uniqueSegments = new Map<string, number[]>();
+
+        nextSegments.forEach((segment) => {
+            const ax = segment[0];
+            const ay = segment[1];
+            const bx = segment[2];
+            const by = segment[3];
+
+            if (areBoundaryPointsEqual(ax, ay, bx, by)) return;
+
+            const keyA = getBoundaryPointKey(ax, ay);
+            const keyB = getBoundaryPointKey(bx, by);
+            const key = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`;
+
+            if (!uniqueSegments.has(key)) {
+                uniqueSegments.set(key, segment);
+            }
+        });
+
+        return Array.from(uniqueSegments.values());
+    };
+
+    const replaceBoundaryHandleInSegments = (
+        sourceSegments: number[][],
+        matches: Array<{ segmentIndex: number; vertexIndex: number }>,
+        nextX: number,
+        nextY: number
+    ) => {
+        const movedSegments = sourceSegments.map((segment) => [...segment]);
+
+        matches.forEach(({ segmentIndex, vertexIndex }) => {
+            const segment = movedSegments[segmentIndex];
+            if (!segment) return;
+            if (vertexIndex < 0 || vertexIndex + 1 >= segment.length) return;
+
+            segment[vertexIndex] = nextX;
+            segment[vertexIndex + 1] = nextY;
+        });
+
+        const splitSegments = splitBoundarySegmentsAtPoint(
+            movedSegments,
+            nextX,
+            nextY
+        );
+
+        return {
+            segments: splitSegments,
+            matches: getBoundaryMatchesAtPoint(splitSegments, nextX, nextY),
+        };
+    };
+
+    const updateBoundarySegmentsLive = (
+        objectId: string,
+        nextBoundarySegments: number[][]
+    ) => {
+        useProjectStore.setState((state: any) => ({
+            objects: state.objects.map((object: PolyObject) => {
+                if (object.id !== objectId) return object;
+
+                const safeSegments = nextBoundarySegments.filter(
+                    (segment) => Array.isArray(segment) && segment.length >= 4
+                );
+
+                return {
+                    ...object,
+                    geometry: "polyline",
+                    points: safeSegments[0] ?? object.points,
+                    boundarySegments: safeSegments,
+                };
+            }),
+        }));
+    };
 
     const isVertexHandleHoveredRef = React.useRef(false);
     const [isSelectionDragging, setIsSelectionDragging] = React.useState(false);
@@ -904,6 +1163,71 @@ export function EditorTopLayer(props: any) {
                     );
                 })()}
 
+                {(alignmentGuides ?? []).map((guide: any) => {
+                    const [x1, y1, x2, y2] = guide.points;
+                    const crossSize = Math.max(1.5, 2 / Math.max(stageScale, 0.1));
+                    const strokeWidth = Math.max(0.75, 0.75 / Math.max(stageScale, 0.1));
+
+                    const renderCross = (x: number, y: number, key: string) => (
+                        <React.Fragment key={key}>
+                            <Line
+                                points={[
+                                    x - crossSize,
+                                    y - crossSize,
+                                    x + crossSize,
+                                    y + crossSize,
+                                ]}
+                                closed={false}
+                                fillEnabled={false}
+                                stroke={COLORS.orange}
+                                strokeWidth={strokeWidth}
+                                lineCap="butt"
+                                lineJoin="miter"
+                                listening={false}
+                                perfectDrawEnabled={false}
+                                opacity={0.95}
+                            />
+                            <Line
+                                points={[
+                                    x - crossSize,
+                                    y + crossSize,
+                                    x + crossSize,
+                                    y - crossSize,
+                                ]}
+                                closed={false}
+                                fillEnabled={false}
+                                stroke={COLORS.orange}
+                                strokeWidth={strokeWidth}
+                                lineCap="butt"
+                                lineJoin="miter"
+                                listening={false}
+                                perfectDrawEnabled={false}
+                                opacity={0.95}
+                            />
+                        </React.Fragment>
+                    );
+
+                    return (
+                        <React.Fragment key={guide.id}>
+                            <Line
+                                points={guide.points}
+                                closed={false}
+                                fillEnabled={false}
+                                stroke={COLORS.orange}
+                                strokeWidth={strokeWidth}
+                                lineCap="butt"
+                                lineJoin="miter"
+                                listening={false}
+                                perfectDrawEnabled={false}
+                                opacity={0.95}
+                            />
+
+                            {renderCross(x1, y1, `${guide.id}-cross-start`)}
+                            {renderCross(x2, y2, `${guide.id}-cross-end`)}
+                        </React.Fragment>
+                    );
+                })}
+
                 {/* Selected */}
                 {selected.length > 0 && (
                     <Group
@@ -919,6 +1243,24 @@ export function EditorTopLayer(props: any) {
                             }
                         }}
                         onDragStart={(evt) => {
+                            if (evt.target !== evt.currentTarget) {
+                                evt.cancelBubble = true;
+                                return;
+                            }
+
+                            if (
+                                isVertexDraggingRef.current ||
+                                isEdgeResizingRef.current ||
+                                treebedResizeRef.current ||
+                                treebedRotateRef.current
+                            ) {
+                                evt.cancelBubble = true;
+                                evt.target.stopDrag();
+                                setIsSelectionDragging(false);
+                                setLiveSelectionDragDelta(null);
+                                return;
+                            }
+
                             if (activeTool !== "select") {
                                 evt.target.stopDrag();
                                 return;
@@ -930,12 +1272,30 @@ export function EditorTopLayer(props: any) {
                             }
 
                             setIsSelectionDragging(true);
+                            setAlignmentGuides?.([]);
                             setLiveSelectionDragDelta({ x: 0, y: 0 });
 
                             // ✅ drag gestart -> eventuele “klik na drag” blokkeren
                             suppressPlantbedFocusRef.current = true;
                         }}
                         onDragMove={(evt) => {
+                            if (evt.target !== evt.currentTarget) {
+                                evt.cancelBubble = true;
+                                return;
+                            }
+
+                            if (
+                                isVertexDraggingRef.current ||
+                                isEdgeResizingRef.current ||
+                                treebedResizeRef.current ||
+                                treebedRotateRef.current
+                            ) {
+                                evt.cancelBubble = true;
+                                setIsSelectionDragging(false);
+                                setLiveSelectionDragDelta(null);
+                                return;
+                            }
+
                             if (activeTool !== "select") return;
 
                             const g = evt.target;
@@ -948,8 +1308,22 @@ export function EditorTopLayer(props: any) {
                             const isTreebedOnlySelection =
                                 selectedTyped.length > 0 && selectedTyped.every((o: PolyObject) => o.type === "treebed");
 
-                            const effectiveDx = isTreebedOnlySelection ? rawDx : snappedDx;
-                            const effectiveDy = isTreebedOnlySelection ? rawDy : snappedDy;
+                            const baseDx = isTreebedOnlySelection ? rawDx : snappedDx;
+                            const baseDy = isTreebedOnlySelection ? rawDy : snappedDy;
+
+                            const shouldUseAlignmentGuides =
+                                selectedTyped.length > 0 &&
+                                selectedTyped.every((object: PolyObject) => object.type !== "treebed");
+
+                            const alignmentSnap =
+                                shouldUseAlignmentGuides && getAlignmentSnapForSelection
+                                    ? getAlignmentSnapForSelection(selectedTyped, baseDx, baseDy)
+                                    : { dx: baseDx, dy: baseDy, guides: [] };
+
+                            const effectiveDx = alignmentSnap.dx;
+                            const effectiveDy = alignmentSnap.dy;
+
+                            setAlignmentGuides?.(alignmentSnap.guides ?? []);
 
                             if (effectiveDx === 0 && effectiveDy === 0) {
                                 setLiveSelectionDragDelta(null);
@@ -962,6 +1336,26 @@ export function EditorTopLayer(props: any) {
                             });
                         }}
                         onDragEnd={(evt) => {
+                            if (evt.target !== evt.currentTarget) {
+                                evt.cancelBubble = true;
+                                setIsSelectionDragging(false);
+                                setLiveSelectionDragDelta(null);
+                                return;
+                            }
+
+                            if (
+                                isVertexDraggingRef.current ||
+                                isEdgeResizingRef.current ||
+                                treebedResizeRef.current ||
+                                treebedRotateRef.current
+                            ) {
+                                evt.cancelBubble = true;
+                                evt.target.position({ x: 0, y: 0 });
+                                setIsSelectionDragging(false);
+                                setLiveSelectionDragDelta(null);
+                                return;
+                            }
+
                             setIsSelectionDragging(false);
 
                             if (activeTool !== "select") {
@@ -983,8 +1377,22 @@ export function EditorTopLayer(props: any) {
                             const isTreebedOnlySelection =
                                 selectedTyped.length > 0 && selectedTyped.every((o: PolyObject) => o.type === "treebed");
 
-                            const effectiveDx = isTreebedOnlySelection ? rawDx : snappedDx;
-                            const effectiveDy = isTreebedOnlySelection ? rawDy : snappedDy;
+                            const baseDx = isTreebedOnlySelection ? rawDx : snappedDx;
+                            const baseDy = isTreebedOnlySelection ? rawDy : snappedDy;
+
+                            const shouldUseAlignmentGuides =
+                                selectedTyped.length > 0 &&
+                                selectedTyped.every((object: PolyObject) => object.type !== "treebed");
+
+                            const alignmentSnap =
+                                shouldUseAlignmentGuides && getAlignmentSnapForSelection
+                                    ? getAlignmentSnapForSelection(selectedTyped, baseDx, baseDy)
+                                    : { dx: baseDx, dy: baseDy, guides: [] };
+
+                            const effectiveDx = alignmentSnap.dx;
+                            const effectiveDy = alignmentSnap.dy;
+
+                            setAlignmentGuides?.([]);
 
                             if (effectiveDx === 0 && effectiveDy === 0) {
                                 requestAnimationFrame(() => {
@@ -996,8 +1404,8 @@ export function EditorTopLayer(props: any) {
                             if (selected.length === 1) {
                                 const o = selected[0];
 
-                                const dx = o.type === "treebed" ? rawDx : snappedDx;
-                                const dy = o.type === "treebed" ? rawDy : snappedDy;
+                                const dx = effectiveDx;
+                                const dy = effectiveDy;
 
                                 const newPoints: number[] = [];
                                 for (let i = 0; i < o.points.length; i += 2) {
@@ -1012,8 +1420,8 @@ export function EditorTopLayer(props: any) {
                             }
 
                             const batch = selectedTyped.map((o: PolyObject) => {
-                                const dx = o.type === "treebed" ? rawDx : snappedDx;
-                                const dy = o.type === "treebed" ? rawDy : snappedDy;
+                                const dx = effectiveDx;
+                                const dy = effectiveDy;
 
                                 const newPoints: number[] = [];
                                 for (let i = 0; i < o.points.length; i += 2) {
@@ -1691,7 +2099,8 @@ export function EditorTopLayer(props: any) {
                                         };
 
                                                 if (isUnifiedBoundaryType(obj.type)) {
-                                                    const liveBoundaryShape = getBoundaryBandShape(livePoints, obj.type);
+                                                    const liveBoundaryObject = getLiveBoundaryObject(obj);
+                                                    const liveBoundaryShape = getBoundaryBandShapeForObject(liveBoundaryObject);
                                                     const renderStyle = getObjectRenderStyle(obj);
 
                                                     return (
@@ -1964,7 +2373,186 @@ export function EditorTopLayer(props: any) {
                                     );
                                 })()}
 
-                                {activeTool === "select" && obj.type !== "treebed" && (() => {
+                                {activeTool === "select" && isUnifiedBoundaryType(obj.type) && selected.length === 1 && (() => {
+                                    const liveBoundaryObject = getLiveBoundaryObject(obj);
+                                    const boundaryHandles = getBoundaryEditableHandles(liveBoundaryObject);
+                                    const handleRadius = 6;
+
+                                    if (!vertexHandleRefs.current[obj.id]) {
+                                        vertexHandleRefs.current[obj.id] = {};
+                                    }
+
+                                    return (
+                                        <React.Fragment key={`${obj.id}-boundary-segment-handles`}>
+                                            {boundaryHandles.map((handle, handleIndex) => (
+                                                <Circle
+                                                    key={`${obj.id}-boundary-handle-${handleIndex}`}
+                                                    x={handle.x}
+                                                    y={handle.y}
+                                                    radius={handleRadius}
+                                                    fill="#ffffff"
+                                                    stroke={COLORS.orange}
+                                                    strokeWidth={2}
+                                                    opacity={1}
+                                                    perfectDrawEnabled={false}
+                                                    shadowForStrokeEnabled={false}
+                                                    ref={(node) => {
+                                                        if (!node) return;
+                                                        vertexHandleRefs.current[obj.id][`boundary-${handleIndex}`] = node;
+                                                    }}
+                                                    draggable
+                                                    onMouseDown={(evt) => {
+                                                        if (evt?.evt?.button === 1 || isPanning) {
+                                                            evt.cancelBubble = true;
+                                                            return;
+                                                        }
+
+                                                        evt.cancelBubble = true;
+                                                        evt.evt?.preventDefault?.();
+
+                                                        suppressPlantbedFocusRef.current = true;
+                                                        pendingPlantbedClickRef.current = null;
+                                                        plantbedClickMovedRef.current = false;
+
+                                                        isVertexHandleHoveredRef.current = true;
+                                                        isVertexDraggingRef.current = true;
+                                                        setIsVertexDragging(true);
+
+                                                        const sourceSegments = getBoundaryEditableSegments(obj);
+
+                                                        vertexEditRef.current = {
+                                                            objectId: obj.id,
+                                                            vertexIndex: handle.matches[0]?.vertexIndex ?? 0,
+                                                            holeIndex: null,
+                                                            workingPoints: [...obj.points],
+                                                            workingHoles: obj.holes?.map((hole: number[]) => [...hole]),
+                                                            boundaryBeforeObject: {
+                                                                ...obj,
+                                                                points: [...obj.points],
+                                                                boundarySegments: obj.boundarySegments?.map((segment: number[]) => [...segment]),
+                                                                holes: obj.holes?.map((hole: number[]) => [...hole]),
+                                                            },
+                                                            boundaryHandleMatches: handle.matches,
+                                                            workingBoundarySegments: sourceSegments,
+                                                        };
+
+                                                        const st = stageRef.current;
+                                                        if (st) st.container().style.cursor = "grabbing";
+                                                    }}
+                                                    onDragMove={(evt) => {
+                                                        evt.cancelBubble = true;
+                                                        evt.evt?.preventDefault?.();
+
+                                                        const edit = vertexEditRef.current;
+                                                        if (!edit?.workingBoundarySegments || !edit.boundaryHandleMatches) return;
+
+                                                        const st = stageRef.current;
+                                                        if (!st) return;
+
+                                                        const pointer = st.getPointerPosition();
+                                                        if (!pointer) return;
+
+                                                        const transform = st.getAbsoluteTransform().copy().invert();
+                                                        const worldPoint = transform.point(pointer);
+
+                                                        const snapped = getBoundarySnapPoint(
+                                                            worldPoint.x,
+                                                            worldPoint.y,
+                                                            GRID_SIZE
+                                                        );
+
+                                                        const nextX = snapped.x;
+                                                        const nextY = snapped.y;
+
+                                                        const nextBoundaryEdit = replaceBoundaryHandleInSegments(
+                                                            edit.workingBoundarySegments,
+                                                            edit.boundaryHandleMatches,
+                                                            nextX,
+                                                            nextY
+                                                        );
+
+                                                        edit.workingBoundarySegments = nextBoundaryEdit.segments;
+                                                        edit.boundaryHandleMatches = nextBoundaryEdit.matches;
+                                                        edit.workingPoints = nextBoundaryEdit.segments[0] ?? edit.workingPoints;
+
+                                                        evt.target.position({
+                                                            x: nextX,
+                                                            y: nextY,
+                                                        });
+
+                                                        updateBoundarySegmentsLive(obj.id, nextBoundaryEdit.segments);
+                                                    }}
+                                                    onDragEnd={(evt) => {
+                                                        evt.cancelBubble = true;
+                                                        evt.evt?.preventDefault?.();
+
+                                                        const edit = vertexEditRef.current;
+
+                                                        vertexEditRef.current = null;
+                                                        activeVertexIndexRef.current = null;
+
+                                                        isVertexHandleHoveredRef.current = false;
+                                                        isVertexDraggingRef.current = false;
+                                                        setIsVertexDragging(false);
+                                                        suppressPlantbedFocusRef.current = false;
+
+                                                        const beforeObject = edit?.boundaryBeforeObject as PolyObject | undefined;
+                                                        const afterSegments = edit?.workingBoundarySegments as number[][] | undefined;
+
+                                                        if (beforeObject && afterSegments && afterSegments.length > 0) {
+                                                            useProjectStore
+                                                                .getState()
+                                                                .commitBoundarySegmentsEdit(obj.id, beforeObject, afterSegments);
+                                                        }
+
+                                                        requestAnimationFrame(() => {
+                                                            suppressPlantbedFocusRef.current = false;
+
+                                                            const st = stageRef.current;
+                                                            if (!st) return;
+                                                            st.container().style.cursor = "default";
+                                                        });
+                                                    }}
+                                                    onMouseEnter={(evt) => {
+                                                        evt.cancelBubble = true;
+
+                                                        const st = stageRef.current;
+                                                        if (!st) return;
+
+                                                        isVertexHandleHoveredRef.current = true;
+                                                        st.container().style.cursor = isVertexDraggingRef.current ? "grabbing" : "grab";
+                                                    }}
+                                                    onMouseMove={(evt) => {
+                                                        evt.cancelBubble = true;
+
+                                                        const st = stageRef.current;
+                                                        if (!st) return;
+
+                                                        isVertexHandleHoveredRef.current = true;
+                                                        st.container().style.cursor = isVertexDraggingRef.current ? "grabbing" : "grab";
+                                                    }}
+                                                    onMouseLeave={(evt) => {
+                                                        evt.cancelBubble = true;
+
+                                                        const st = stageRef.current;
+                                                        if (!st) return;
+
+                                                        isVertexHandleHoveredRef.current = false;
+
+                                                        if (isVertexDraggingRef.current) {
+                                                            st.container().style.cursor = "grabbing";
+                                                            return;
+                                                        }
+
+                                                        st.container().style.cursor = "default";
+                                                    }}
+                                                />
+                                            ))}
+                                        </React.Fragment>
+                                    );
+                                })()}
+
+                                {activeTool === "select" && obj.type !== "treebed" && !isUnifiedBoundaryType(obj.type) && (() => {
                                     const isVertexEditingThisPolygon =
                                         isVertexDraggingRef.current &&
                                         vertexEditRef.current?.objectId === obj.id &&
@@ -2786,6 +3374,7 @@ export function EditorTopLayer(props: any) {
                                                                 currentCustomStyle={item.obj.customStyle}
                                                                 labelText={item.labelText}
                                                                 badgeCount={item.count !== null ? Number(item.count) : null}
+                                                                showPlantLinkInfo={showPlantLinkInfoInLabels}
                                                                 interactive={item.isPrimary}
                                                                 pointerSide={
                                                                     item.laneSide === "left"

@@ -94,6 +94,11 @@ import BaseStrokeLayer from "@/features/editor/components/editor/BaseStrokeLayer
 import TypeLabelCard from "@/features/editor/components/editor/TypeLabelCard";
 import { getObjectMenuSections } from "@/features/editor/components/editor/objectMenuConfig";
 import { EditorTopLayer } from "@/features/editor/components/editor/EditorTopLayer";
+import {
+    calculateAlignmentSnapForSelection,
+    calculateAlignmentSnapForEdgeResize,
+    type AlignmentGuide,
+} from "@/features/editor/lib/alignmentGuides";
 
 type DrawMode = "draw";
 type EditorRightPanelMode = "steps" | "plants";
@@ -1816,6 +1821,7 @@ export default function HelloEditor() {
     const persistRightStepTimerRef = useRef<number | null>(null);
     const isRestoringDrawingRef = useRef(false);
     const isRestoringRightStepMenuRef = useRef(false);
+    const lastAutoCenteredDrawingIdRef = useRef<string | null>(null);
 
     const activeDrawing = useMemo(() => {
         return editorDrawings.find((drawing) => drawing.id === activeDrawingId) ?? null;
@@ -2223,14 +2229,103 @@ export default function HelloEditor() {
     const [topLeftNoticeLeft, setTopLeftNoticeLeft] = useState(0);
 
     // Viewport
-    // Viewport
     const [stageScale, setStageScale] = useState(BASE_SCALE);
     const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
-    const PAN_LIMIT = 3000;
 
-    const showCenterButton =
-        Math.abs(stagePos.x) > PAN_LIMIT ||
-        Math.abs(stagePos.y) > PAN_LIMIT;
+    const showCenterButton = (() => {
+        const stage = stageRef.current;
+        const container: HTMLDivElement | null = stage?.container?.() ?? null;
+
+        const viewportW = container?.clientWidth ?? 0;
+        const viewportH = container?.clientHeight ?? 0;
+
+        if (!viewportW || !viewportH || stageScale <= 0) {
+            return false;
+        }
+
+        const drawableObjects = (useProjectStore.getState().objects as PolyObject[]).filter(
+            (object) =>
+                Array.isArray(object.points) &&
+                object.points.length >= 4
+        );
+
+        if (drawableObjects.length === 0) {
+            return false;
+        }
+
+        const allPoints = drawableObjects.flatMap((object) => {
+            const boundarySegmentPoints =
+                object.boundarySegments?.flatMap((segment) => segment) ?? [];
+
+            const holePoints =
+                object.holes?.flatMap((hole) => hole) ?? [];
+
+            return [
+                ...object.points,
+                ...boundarySegmentPoints,
+                ...holePoints,
+            ];
+        });
+
+        if (allPoints.length < 4) {
+            return false;
+        }
+
+        const bounds = bboxFromPoints(allPoints);
+
+        const viewportWorldLeft = -stagePos.x / stageScale;
+        const viewportWorldTop = -stagePos.y / stageScale;
+        const viewportWorldRight = viewportWorldLeft + viewportW / stageScale;
+        const viewportWorldBottom = viewportWorldTop + viewportH / stageScale;
+
+        const drawingLeft = bounds.x;
+        const drawingTop = bounds.y;
+        const drawingRight = bounds.x + bounds.w;
+        const drawingBottom = bounds.y + bounds.h;
+
+        const visibleLeft = Math.max(viewportWorldLeft, drawingLeft);
+        const visibleTop = Math.max(viewportWorldTop, drawingTop);
+        const visibleRight = Math.min(viewportWorldRight, drawingRight);
+        const visibleBottom = Math.min(viewportWorldBottom, drawingBottom);
+
+        const visibleW = Math.max(0, visibleRight - visibleLeft);
+        const visibleH = Math.max(0, visibleBottom - visibleTop);
+
+        const drawingArea = Math.max(1, bounds.w * bounds.h);
+        const visibleRatio = (visibleW * visibleH) / drawingArea;
+
+        const drawingCenterX = bounds.x + bounds.w / 2;
+        const drawingCenterY = bounds.y + bounds.h / 2;
+
+        const viewportCenterX = viewportWorldLeft + (viewportW / stageScale) / 2;
+        const viewportCenterY = viewportWorldTop + (viewportH / stageScale) / 2;
+
+        const viewportWorldW = viewportW / stageScale;
+        const viewportWorldH = viewportH / stageScale;
+
+        const distanceFromDrawingCenter = Math.hypot(
+            viewportCenterX - drawingCenterX,
+            viewportCenterY - drawingCenterY
+        );
+
+        const allowedDistance = Math.max(
+            GRID_SIZE * 8,
+            Math.min(viewportWorldW, viewportWorldH) * 3,
+            Math.max(bounds.w, bounds.h) * 0.55
+        );
+
+        const drawingIsUsablyVisible =
+            visibleRatio >= 0.35 ||
+            (
+                visibleW >= Math.min(bounds.w, viewportWorldW) * 0.65 &&
+                visibleH >= Math.min(bounds.h, viewportWorldH) * 0.65
+            );
+
+        const viewportIsNearDrawing =
+            distanceFromDrawingCenter <= allowedDistance;
+
+        return !drawingIsUsablyVisible && !viewportIsNearDrawing;
+    })();
 
     // Refs (stale-closure proof)
     const stageScaleRef = useRef(stageScale);
@@ -2442,9 +2537,58 @@ export default function HelloEditor() {
     }, [duplicateSelected]);
 
     const handleCenterCanvas = useCallback(() => {
+        const stage = stageRef.current;
+        const container: HTMLDivElement | null = stage?.container?.() ?? null;
+
+        const viewportW = container?.clientWidth ?? 0;
+        const viewportH = container?.clientHeight ?? 0;
+
+        const drawableObjects = (useProjectStore.getState().objects as PolyObject[]).filter(
+            (object) =>
+                Array.isArray(object.points) &&
+                object.points.length >= 4
+        );
+
+        if (!viewportW || !viewportH || drawableObjects.length === 0) {
+            scheduleViewportState({
+                scale: BASE_SCALE,
+                pos: { x: 0, y: 0 },
+            });
+            return;
+        }
+
+        const allPoints = drawableObjects.flatMap((object) => {
+            const boundarySegmentPoints =
+                object.boundarySegments?.flatMap((segment) => segment) ?? [];
+
+            const holePoints =
+                object.holes?.flatMap((hole) => hole) ?? [];
+
+            return [
+                ...object.points,
+                ...boundarySegmentPoints,
+                ...holePoints,
+            ];
+        });
+
+        if (allPoints.length < 4) {
+            scheduleViewportState({
+                scale: BASE_SCALE,
+                pos: { x: 0, y: 0 },
+            });
+            return;
+        }
+
+        const bounds = bboxFromPoints(allPoints);
+        const centerX = bounds.x + bounds.w / 2;
+        const centerY = bounds.y + bounds.h / 2;
+
         scheduleViewportState({
             scale: BASE_SCALE,
-            pos: { x: 0, y: 0 },
+            pos: {
+                x: viewportW / 2 - centerX * BASE_SCALE,
+                y: viewportH / 2 - centerY * BASE_SCALE,
+            },
         });
     }, [scheduleViewportState]);
 
@@ -2687,6 +2831,8 @@ export default function HelloEditor() {
         y: number;
     } | null>(null);
 
+    const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
+
     const [activeTreebedDrawVariant, setActiveTreebedDrawVariant] = useState<TreebedVariant>("standard");
 
     const translatePoints = useCallback((points: number[], dx: number, dy: number) => {
@@ -2695,6 +2841,38 @@ export default function HelloEditor() {
             next.push(points[i] + dx, points[i + 1] + dy);
         }
         return next;
+    }, []);
+
+    const getAlignmentSnapForSelection = useCallback((
+        selectedObjects: PolyObject[],
+        dx: number,
+        dy: number
+    ) => {
+        return calculateAlignmentSnapForSelection({
+            selectedObjects,
+            objects: objectsRef.current as PolyObject[],
+            dx,
+            dy,
+            stageScale: stageScaleRef.current,
+        });
+    }, []);
+
+    const getAlignmentSnapForEdgeResize = useCallback((
+        objectId: string,
+        orientation: "vertical" | "horizontal",
+        x: number,
+        y: number,
+        workingPoints: number[]
+    ) => {
+        return calculateAlignmentSnapForEdgeResize({
+            objectId,
+            orientation,
+            x,
+            y,
+            workingPoints,
+            objects: objectsRef.current as PolyObject[],
+            stageScale: stageScaleRef.current,
+        });
     }, []);
 
     const draftRedoPointsRef = useRef<number[]>([]);
@@ -3104,6 +3282,77 @@ export default function HelloEditor() {
     }, [isPanning, moveObject]);
 
     useEffect(() => {
+        const finishActiveEditorInteraction = () => {
+            if (treebedResizeRef.current) {
+                finishTreebedResize();
+                return true;
+            }
+
+            if (treebedRotateRef.current) {
+                finishTreebedRotate();
+                return true;
+            }
+
+            if (isEdgeResizingRef.current) {
+                const edit = edgeResizeRef.current;
+
+                edgeResizeRef.current = null;
+                isEdgeResizingRef.current = false;
+                setIsEdgeResizing(false);
+                setAlignmentGuides([]);
+
+                if (edit) {
+                    moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
+                }
+
+                requestAnimationFrame(() => {
+                    suppressPlantbedFocusRef.current = false;
+
+                    const st = stageRef.current;
+                    if (st) {
+                        st.container().style.cursor = "default";
+                    }
+                });
+
+                return true;
+            }
+
+            if (isVertexDraggingRef.current) {
+                const edit = vertexEditRef.current;
+
+                vertexEditRef.current = null;
+                activeVertexIndexRef.current = null;
+
+                isVertexDraggingRef.current = false;
+                setIsVertexDragging(false);
+
+                if (edit?.boundaryBeforeObject && edit.workingBoundarySegments?.length) {
+                    useProjectStore
+                        .getState()
+                        .commitBoundarySegmentsEdit(
+                            edit.objectId,
+                            edit.boundaryBeforeObject,
+                            edit.workingBoundarySegments
+                        );
+                } else if (edit) {
+                    moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
+                }
+
+                requestAnimationFrame(() => {
+                    suppressPlantbedFocusRef.current = false;
+
+                    const st = stageRef.current;
+                    if (st) {
+                        st.container().style.cursor = "default";
+                    }
+                });
+
+                return true;
+            }
+
+            return false;
+        };
+
         const handleMouseMove = (e: MouseEvent) => {
             lastPointerClientPosRef.current = {
                 x: e.clientX,
@@ -3131,18 +3380,12 @@ export default function HelloEditor() {
         };
 
         const handleMouseUp = () => {
-            if (treebedResizeRef.current) {
-                finishTreebedResize();
-                return;
-            }
-
-            if (treebedRotateRef.current) {
-                finishTreebedRotate();
-            }
+            finishActiveEditorInteraction();
         };
 
         const handleWindowBlur = () => {
             clearCursorCrosshair();
+            finishActiveEditorInteraction();
         };
 
         window.addEventListener("mousemove", handleMouseMove);
@@ -3164,6 +3407,7 @@ export default function HelloEditor() {
         activeDrawType,
         updateCursorCrosshairFromClient,
         clearCursorCrosshair,
+        moveObjectAndMerge,
     ]);
 
     // ✅ Force React rerender tijdens vertex-drag / live edit, maar begrensd
@@ -3216,6 +3460,9 @@ export default function HelloEditor() {
         holeIndex: number | null; // null = outer ring, anders index in holes[]
         workingPoints: number[];
         workingHoles?: number[][];
+        boundaryBeforeObject?: PolyObject;
+        boundaryHandleMatches?: Array<{ segmentIndex: number; vertexIndex: number }>;
+        workingBoundarySegments?: number[][];
     } | null>(null);
 
     const [isEdgeResizing, setIsEdgeResizing] = useState(false);
@@ -3618,6 +3865,30 @@ export default function HelloEditor() {
             setDragOverPlantbedId(null);
         };
 
+        const isPlantDropTargetVisible = (object: PolyObject) => {
+            const currentViewVisibility = useProjectStore.getState().viewVisibility;
+
+            if (object.type === "plantbed" || object.type === "hedge") {
+                return currentViewVisibility.showPlantbeds !== false;
+            }
+
+            if (object.type === "treebed") {
+                return currentViewVisibility.showTreebeds !== false;
+            }
+
+            return false;
+        };
+
+        const getVisiblePlantDropTargets = (sourceObjects: PolyObject[]) => {
+            return sourceObjects.filter(
+                (object) =>
+                    (object.type === "plantbed" ||
+                        object.type === "hedge" ||
+                        object.type === "treebed") &&
+                    isPlantDropTargetVisible(object)
+            );
+        };
+
         const onDragOver = (e: DragEvent) => {
             if (!hasPlantPayloadType(e)) {
                 clearDragOverPlantbed();
@@ -3626,9 +3897,7 @@ export default function HelloEditor() {
 
             const world = clientToWorld(e.clientX, e.clientY);
             const objs = objectsRef.current as PolyObject[];
-            const plantbeds = objs.filter(
-                (o) => o.type === "plantbed" || o.type === "hedge" || o.type === "treebed"
-            );
+            const plantbeds = getVisiblePlantDropTargets(objs);
 
             const hit = getPlantbedHitAtWorldPoint(world.x, world.y, plantbeds);
             const nextId = hit ? hit.id : null;
@@ -3679,9 +3948,7 @@ export default function HelloEditor() {
 
             const world = clientToWorld(e.clientX, e.clientY);
             const objs = useProjectStore.getState().objects as PolyObject[];
-            const plantbeds = objs.filter(
-                (o) => o.type === "plantbed" || o.type === "hedge" || o.type === "treebed"
-            );
+            const plantbeds = getVisiblePlantDropTargets(objs);
 
             let hit = getPlantbedHitAtWorldPoint(world.x, world.y, plantbeds);
 
@@ -3753,9 +4020,17 @@ export default function HelloEditor() {
                 return;
             }
 
-            linkPlantToPlantbed(plantId, plantbedId);
+            const didLink = useProjectStore
+                .getState()
+                .linkPlantToPlantbed(plantId, plantbedId);
 
             clearDragOverPlantbed();
+
+            if (!didLink) {
+                notify(APP_NOTIFICATIONS.plantsOnlyInPlantbeds());
+                return;
+            }
+
             notify(APP_NOTIFICATIONS.plantLinkedToPlantbed(plantName, objectNo));
         };
 
@@ -4632,8 +4907,18 @@ export default function HelloEditor() {
                     objectsRef.current as PolyObject[]
                 );
 
-                const cx = snapped.x;
-                const cy = snapped.y;
+                const alignmentSnap = getAlignmentSnapForEdgeResize(
+                    edit.objectId,
+                    edit.orientation,
+                    snapped.x,
+                    snapped.y,
+                    edit.workingPoints
+                );
+
+                const cx = alignmentSnap.x;
+                const cy = alignmentSnap.y;
+
+                setAlignmentGuides(alignmentSnap.guides);
 
                 if (edit.holeIndex !== null) {
                     const nextHoles = (edit.workingHoles ?? []).map((h) => [...h]);
@@ -4904,12 +5189,14 @@ export default function HelloEditor() {
                     suppressPlantbedFocusRef.current = false;
                 }
             }
+
             if (isEdgeResizingRef.current && evt.button === 0) {
                 const edit = edgeResizeRef.current;
 
                 edgeResizeRef.current = null;
                 isEdgeResizingRef.current = false;
                 setIsEdgeResizing(false);
+                setAlignmentGuides([]);
 
                 if (edit) {
                     moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
@@ -4936,7 +5223,15 @@ export default function HelloEditor() {
                 isVertexDraggingRef.current = false;
                 setIsVertexDragging(false);
 
-                if (edit) {
+                if (edit?.boundaryBeforeObject && edit.workingBoundarySegments?.length) {
+                    useProjectStore
+                        .getState()
+                        .commitBoundarySegmentsEdit(
+                            edit.objectId,
+                            edit.boundaryBeforeObject,
+                            edit.workingBoundarySegments
+                        );
+                } else if (edit) {
                     moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
                 }
 
@@ -5312,6 +5607,33 @@ export default function HelloEditor() {
     const handleResetView = useCallback(() => {
         handleCenterCanvas();
     }, [handleCenterCanvas]);
+
+    useEffect(() => {
+        if (!isDrawingsHydrated || !activeDrawingId) return;
+        if (!canvasSize.w || !canvasSize.h) return;
+
+        if (lastAutoCenteredDrawingIdRef.current === activeDrawingId) {
+            return;
+        }
+
+        const drawableObjects = (useProjectStore.getState().objects as PolyObject[]).filter(
+            (object) =>
+                Array.isArray(object.points) &&
+                object.points.length >= 4
+        );
+
+        if (drawableObjects.length === 0) return;
+
+        lastAutoCenteredDrawingIdRef.current = activeDrawingId;
+        handleCenterCanvas();
+    }, [
+        isDrawingsHydrated,
+        activeDrawingId,
+        canvasSize.w,
+        canvasSize.h,
+        objects.length,
+        handleCenterCanvas,
+    ]);
 
     useEffect(() => {
         if (!isDrawingsHydrated || !activeDrawingId) return;
@@ -5796,50 +6118,52 @@ export default function HelloEditor() {
             <AppNotificationsRenderer topLeftLeftOffset={topLeftNoticeLeft} />
 
             <div className="w-full relative z-50" style={{ height: HEADER_HEIGHT, background: COLORS.green }}>
-                <button
-                    type="button"
-                    onClick={goToPlantSelectionPage}
-                    style={{
-                        position: "absolute",
-                        left: 16,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        color: "#ffffff",
-                        background: "transparent",
-                        border: "none",
-                        padding: 0,
-                        fontSize: 14,
-                        fontWeight: 500,
-                        cursor: "pointer",
-                        textDecoration: "none",
-                    }}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.textDecoration = "underline";
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.textDecoration = "none";
-                    }}
-                >
-                    <img
-                        src="/icons/arrow-left.svg"
-                        alt=""
+                {shouldShowPlantSidebar && (
+                    <button
+                        type="button"
+                        onClick={goToPlantSelectionPage}
                         style={{
-                            width: 16,
-                            height: 16,
-                            display: "block",
-                            filter: "brightness(0) invert(1)",
+                            position: "absolute",
+                            left: 16,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            color: "#ffffff",
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            fontSize: 14,
+                            fontWeight: 500,
+                            cursor: "pointer",
+                            textDecoration: "none",
                         }}
-                    />
-                    <span>Ga terug naar plantenlijst</span>
-                </button>
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.textDecoration = "underline";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.textDecoration = "none";
+                        }}
+                    >
+                        <img
+                            src="/icons/arrow-left.svg"
+                            alt=""
+                            style={{
+                                width: 16,
+                                height: 16,
+                                display: "block",
+                                filter: "brightness(0) invert(1)",
+                            }}
+                        />
+                        <span>Ga terug naar plantenlijst</span>
+                    </button>
+                )}
 
                 <div
                     style={{
                         position: "absolute",
-                        left: 200,
+                        left: shouldShowPlantSidebar ? 200 : 14,
                         top: "50%",
                         transform: "translateY(-50%)",
                     }}
@@ -6223,7 +6547,7 @@ export default function HelloEditor() {
 
                     <div
                         ref={canvasWrapRef}
-                        className="h-full w-full relative z-0 overflow-hidden"
+                        className="h-full w-full relative overflow-hidden"
                         style={{ background: COLORS.greenLight }}
                     >
                         <Stage
@@ -6469,6 +6793,9 @@ export default function HelloEditor() {
                                             selectObjects={selectObjects}
                                             moveObjectAndMerge={moveObjectAndMerge}
                                             moveObjectsBatch={moveObjectsBatch}
+                                            alignmentGuides={alignmentGuides}
+                                            setAlignmentGuides={setAlignmentGuides}
+                                            getAlignmentSnapForSelection={getAlignmentSnapForSelection}
                                             setLiveSelectionDragDelta={setLiveSelectionDragDelta}
                                             isVertexDragging={isVertexDragging}
                                             isEdgeResizing={isEdgeResizing}
@@ -6477,6 +6804,7 @@ export default function HelloEditor() {
                                             isBoxSelecting={isBoxSelecting}
                                             shouldHideSelectionLabelsForPerformance={shouldHideSelectionLabelsForPerformance}
                                             viewVisibility={viewVisibility}
+                                            showPlantLinkInfoInLabels={shouldShowPlantSidebar}
 
                                             treebedRotatePreview={treebedRotatePreview}
                                             treebedResizePreview={treebedResizePreview}

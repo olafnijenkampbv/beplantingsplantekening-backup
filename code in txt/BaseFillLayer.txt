@@ -2,7 +2,7 @@ import React from "react";
 import { Group, Layer, Line, Text } from "react-konva";
 import { PolyObject, OBJECT_STYLES, ObjectType } from "@/state/projectStore";
 import { renderObjectPattern } from "@/features/editor/lib/objectPatterns";
-import { isUnifiedBoundaryType, getBoundaryBandShape } from "@/features/editor/lib/boundarySystem";
+import { isUnifiedBoundaryType, getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
 import { bboxFromPoints, estimateTextWidth } from "@/features/editor/lib/editorCanvasMath";
 import {
     PolygonWithHoles,
@@ -125,7 +125,7 @@ export default function BaseFillLayer({
                 const hasHoles = (obj.holes?.length ?? 0) > 0;
                 const isUnifiedBoundary = isUnifiedBoundaryType(obj.type);
                 const boundaryBandShape = isUnifiedBoundary
-                    ? getBoundaryBandShape(obj.points, obj.type)
+                    ? getBoundaryBandShapeForObject(obj)
                     : null;
                 const patternImage = isBuildingType(obj.type)
                     ? getBuildingPatternCanvas(obj.type)

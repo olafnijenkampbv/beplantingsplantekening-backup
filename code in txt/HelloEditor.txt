@@ -1816,6 +1816,7 @@ export default function HelloEditor() {
     const persistRightStepTimerRef = useRef<number | null>(null);
     const isRestoringDrawingRef = useRef(false);
     const isRestoringRightStepMenuRef = useRef(false);
+    const lastAutoCenteredDrawingIdRef = useRef<string | null>(null);
 
     const activeDrawing = useMemo(() => {
         return editorDrawings.find((drawing) => drawing.id === activeDrawingId) ?? null;
@@ -2223,14 +2224,103 @@ export default function HelloEditor() {
     const [topLeftNoticeLeft, setTopLeftNoticeLeft] = useState(0);
 
     // Viewport
-    // Viewport
     const [stageScale, setStageScale] = useState(BASE_SCALE);
     const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
-    const PAN_LIMIT = 3000;
 
-    const showCenterButton =
-        Math.abs(stagePos.x) > PAN_LIMIT ||
-        Math.abs(stagePos.y) > PAN_LIMIT;
+    const showCenterButton = (() => {
+        const stage = stageRef.current;
+        const container: HTMLDivElement | null = stage?.container?.() ?? null;
+
+        const viewportW = container?.clientWidth ?? 0;
+        const viewportH = container?.clientHeight ?? 0;
+
+        if (!viewportW || !viewportH || stageScale <= 0) {
+            return false;
+        }
+
+        const drawableObjects = (useProjectStore.getState().objects as PolyObject[]).filter(
+            (object) =>
+                Array.isArray(object.points) &&
+                object.points.length >= 4
+        );
+
+        if (drawableObjects.length === 0) {
+            return false;
+        }
+
+        const allPoints = drawableObjects.flatMap((object) => {
+            const boundarySegmentPoints =
+                object.boundarySegments?.flatMap((segment) => segment) ?? [];
+
+            const holePoints =
+                object.holes?.flatMap((hole) => hole) ?? [];
+
+            return [
+                ...object.points,
+                ...boundarySegmentPoints,
+                ...holePoints,
+            ];
+        });
+
+        if (allPoints.length < 4) {
+            return false;
+        }
+
+        const bounds = bboxFromPoints(allPoints);
+
+        const viewportWorldLeft = -stagePos.x / stageScale;
+        const viewportWorldTop = -stagePos.y / stageScale;
+        const viewportWorldRight = viewportWorldLeft + viewportW / stageScale;
+        const viewportWorldBottom = viewportWorldTop + viewportH / stageScale;
+
+        const drawingLeft = bounds.x;
+        const drawingTop = bounds.y;
+        const drawingRight = bounds.x + bounds.w;
+        const drawingBottom = bounds.y + bounds.h;
+
+        const visibleLeft = Math.max(viewportWorldLeft, drawingLeft);
+        const visibleTop = Math.max(viewportWorldTop, drawingTop);
+        const visibleRight = Math.min(viewportWorldRight, drawingRight);
+        const visibleBottom = Math.min(viewportWorldBottom, drawingBottom);
+
+        const visibleW = Math.max(0, visibleRight - visibleLeft);
+        const visibleH = Math.max(0, visibleBottom - visibleTop);
+
+        const drawingArea = Math.max(1, bounds.w * bounds.h);
+        const visibleRatio = (visibleW * visibleH) / drawingArea;
+
+        const drawingCenterX = bounds.x + bounds.w / 2;
+        const drawingCenterY = bounds.y + bounds.h / 2;
+
+        const viewportCenterX = viewportWorldLeft + (viewportW / stageScale) / 2;
+        const viewportCenterY = viewportWorldTop + (viewportH / stageScale) / 2;
+
+        const viewportWorldW = viewportW / stageScale;
+        const viewportWorldH = viewportH / stageScale;
+
+        const distanceFromDrawingCenter = Math.hypot(
+            viewportCenterX - drawingCenterX,
+            viewportCenterY - drawingCenterY
+        );
+
+        const allowedDistance = Math.max(
+            GRID_SIZE * 8,
+            Math.min(viewportWorldW, viewportWorldH) * 3,
+            Math.max(bounds.w, bounds.h) * 0.55
+        );
+
+        const drawingIsUsablyVisible =
+            visibleRatio >= 0.35 ||
+            (
+                visibleW >= Math.min(bounds.w, viewportWorldW) * 0.65 &&
+                visibleH >= Math.min(bounds.h, viewportWorldH) * 0.65
+            );
+
+        const viewportIsNearDrawing =
+            distanceFromDrawingCenter <= allowedDistance;
+
+        return !drawingIsUsablyVisible && !viewportIsNearDrawing;
+    })();
 
     // Refs (stale-closure proof)
     const stageScaleRef = useRef(stageScale);
@@ -2442,9 +2532,58 @@ export default function HelloEditor() {
     }, [duplicateSelected]);
 
     const handleCenterCanvas = useCallback(() => {
+        const stage = stageRef.current;
+        const container: HTMLDivElement | null = stage?.container?.() ?? null;
+
+        const viewportW = container?.clientWidth ?? 0;
+        const viewportH = container?.clientHeight ?? 0;
+
+        const drawableObjects = (useProjectStore.getState().objects as PolyObject[]).filter(
+            (object) =>
+                Array.isArray(object.points) &&
+                object.points.length >= 4
+        );
+
+        if (!viewportW || !viewportH || drawableObjects.length === 0) {
+            scheduleViewportState({
+                scale: BASE_SCALE,
+                pos: { x: 0, y: 0 },
+            });
+            return;
+        }
+
+        const allPoints = drawableObjects.flatMap((object) => {
+            const boundarySegmentPoints =
+                object.boundarySegments?.flatMap((segment) => segment) ?? [];
+
+            const holePoints =
+                object.holes?.flatMap((hole) => hole) ?? [];
+
+            return [
+                ...object.points,
+                ...boundarySegmentPoints,
+                ...holePoints,
+            ];
+        });
+
+        if (allPoints.length < 4) {
+            scheduleViewportState({
+                scale: BASE_SCALE,
+                pos: { x: 0, y: 0 },
+            });
+            return;
+        }
+
+        const bounds = bboxFromPoints(allPoints);
+        const centerX = bounds.x + bounds.w / 2;
+        const centerY = bounds.y + bounds.h / 2;
+
         scheduleViewportState({
             scale: BASE_SCALE,
-            pos: { x: 0, y: 0 },
+            pos: {
+                x: viewportW / 2 - centerX * BASE_SCALE,
+                y: viewportH / 2 - centerY * BASE_SCALE,
+            },
         });
     }, [scheduleViewportState]);
 
@@ -2687,6 +2826,14 @@ export default function HelloEditor() {
         y: number;
     } | null>(null);
 
+    type AlignmentGuide = {
+        id: string;
+        orientation: "vertical" | "horizontal";
+        points: number[];
+    };
+
+    const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
+
     const [activeTreebedDrawVariant, setActiveTreebedDrawVariant] = useState<TreebedVariant>("standard");
 
     const translatePoints = useCallback((points: number[], dx: number, dy: number) => {
@@ -2696,6 +2843,578 @@ export default function HelloEditor() {
         }
         return next;
     }, []);
+
+    const getAlignmentBoxForObject = useCallback((object: PolyObject) => {
+        const boundarySegmentPoints =
+            object.boundarySegments?.flatMap((segment) => segment) ?? [];
+
+        const holePoints =
+            object.holes?.flatMap((hole) => hole) ?? [];
+
+        const allPoints = [
+            ...object.points,
+            ...boundarySegmentPoints,
+            ...holePoints,
+        ];
+
+        return bboxFromPoints(allPoints.length >= 4 ? allPoints : object.points);
+    }, []);
+
+    const getAlignmentSnapForSelection = useCallback((
+        selectedObjects: PolyObject[],
+        dx: number,
+        dy: number
+    ) => {
+        if (selectedObjects.length === 0) {
+            return { dx, dy, guides: [] as AlignmentGuide[] };
+        }
+
+        const selectedIds = new Set(selectedObjects.map((object) => object.id));
+        const targetObjects = (objectsRef.current as PolyObject[]).filter(
+            (object) =>
+                object.type !== "treebed" &&
+                !selectedIds.has(object.id) &&
+                Array.isArray(object.points) &&
+                object.points.length >= 4
+        );
+
+        if (targetObjects.length === 0) {
+            return { dx, dy, guides: [] as AlignmentGuide[] };
+        }
+
+        const selectedPoints = selectedObjects.flatMap((object) => {
+            const boundarySegmentPoints =
+                object.boundarySegments?.flatMap((segment) => segment) ?? [];
+
+            const holePoints =
+                object.holes?.flatMap((hole) => hole) ?? [];
+
+            return [
+                ...object.points,
+                ...boundarySegmentPoints,
+                ...holePoints,
+            ];
+        });
+
+        if (selectedPoints.length < 4) {
+            return { dx, dy, guides: [] as AlignmentGuide[] };
+        }
+
+        const sourceBox = bboxFromPoints(
+            selectedPoints.map((value, index) =>
+                index % 2 === 0 ? value + dx : value + dy
+            )
+        );
+
+        const sourceAnchorsX = [
+            { kind: "left", value: sourceBox.x },
+            { kind: "right", value: sourceBox.x + sourceBox.w },
+        ];
+
+        const sourceAnchorsY = [
+            { kind: "top", value: sourceBox.y },
+            { kind: "bottom", value: sourceBox.y + sourceBox.h },
+        ];
+
+        const snapThreshold = Math.max(4, 10 / Math.max(stageScaleRef.current, 0.1));
+
+        const getRangeGap = (
+            aStart: number,
+            aEnd: number,
+            bStart: number,
+            bEnd: number
+        ) => {
+            const overlap = Math.min(aEnd, bEnd) - Math.max(aStart, bStart);
+
+            if (overlap >= 0) {
+                return 0;
+            }
+
+            return Math.max(aStart, bStart) - Math.min(aEnd, bEnd);
+        };
+
+        const getAlignmentCandidateScore = (
+            snapDistance: number,
+            crossAxisGap: number
+        ) => {
+            return snapDistance * 1000 + crossAxisGap;
+        };
+
+        const isVerticalGuideBlocked = (
+            guideX: number,
+            source: { x: number; y: number; w: number; h: number },
+            target: { x: number; y: number; w: number; h: number },
+            targetObjectId: string
+        ) => {
+            const sourceBottom = source.y + source.h;
+            const targetBottom = target.y + target.h;
+
+            const gapTop = Math.min(sourceBottom, targetBottom);
+            const gapBottom = Math.max(source.y, target.y);
+
+            if (gapBottom <= gapTop) return false;
+
+            return targetObjects.some((object) => {
+                if (object.id === targetObjectId) return false;
+
+                const box = getAlignmentBoxForObject(object);
+                const boxBottom = box.y + box.h;
+
+                const crossesGuideX =
+                    box.x <= guideX &&
+                    box.x + box.w >= guideX;
+
+                const intersectsGapY =
+                    box.y < gapBottom &&
+                    boxBottom > gapTop;
+
+                return crossesGuideX && intersectsGapY;
+            });
+        };
+
+        const isHorizontalGuideBlocked = (
+            guideY: number,
+            source: { x: number; y: number; w: number; h: number },
+            target: { x: number; y: number; w: number; h: number },
+            targetObjectId: string
+        ) => {
+            const sourceRight = source.x + source.w;
+            const targetRight = target.x + target.w;
+
+            const gapLeft = Math.min(sourceRight, targetRight);
+            const gapRight = Math.max(source.x, target.x);
+
+            if (gapRight <= gapLeft) return false;
+
+            return targetObjects.some((object) => {
+                if (object.id === targetObjectId) return false;
+
+                const box = getAlignmentBoxForObject(object);
+                const boxRight = box.x + box.w;
+
+                const crossesGuideY =
+                    box.y <= guideY &&
+                    box.y + box.h >= guideY;
+
+                const intersectsGapX =
+                    box.x < gapRight &&
+                    boxRight > gapLeft;
+
+                return crossesGuideY && intersectsGapX;
+            });
+        };
+
+        const bestXRef: {
+            current: {
+                delta: number;
+                distance: number;
+                crossAxisGap: number;
+                score: number;
+                guide: AlignmentGuide;
+            } | null;
+        } = { current: null };
+
+        const bestYRef: {
+            current: {
+                delta: number;
+                distance: number;
+                crossAxisGap: number;
+                score: number;
+                guide: AlignmentGuide;
+            } | null;
+        } = { current: null };
+
+        const verticalGuideCandidates: Array<{
+            sourceKind: string;
+            delta: number;
+            distance: number;
+            crossAxisGap: number;
+            score: number;
+            guide: AlignmentGuide;
+        }> = [];
+
+        const horizontalGuideCandidates: Array<{
+            sourceKind: string;
+            delta: number;
+            distance: number;
+            crossAxisGap: number;
+            score: number;
+            guide: AlignmentGuide;
+        }> = [];
+
+
+        targetObjects.forEach((targetObject) => {
+            const targetBox = getAlignmentBoxForObject(targetObject);
+
+            const crossAxisGapY = getRangeGap(
+                sourceBox.y,
+                sourceBox.y + sourceBox.h,
+                targetBox.y,
+                targetBox.y + targetBox.h
+            );
+
+            const crossAxisGapX = getRangeGap(
+                sourceBox.x,
+                sourceBox.x + sourceBox.w,
+                targetBox.x,
+                targetBox.x + targetBox.w
+            );
+
+            const targetAnchorsX = [
+                targetBox.x,
+                targetBox.x + targetBox.w,
+            ];
+
+            const targetAnchorsY = [
+                targetBox.y,
+                targetBox.y + targetBox.h,
+            ];
+
+            sourceAnchorsX.forEach((sourceAnchor) => {
+                targetAnchorsX.forEach((targetX) => {
+                    const delta = targetX - sourceAnchor.value;
+                    const distance = Math.abs(delta);
+
+                    if (distance > snapThreshold) return;
+                    if (isVerticalGuideBlocked(targetX, sourceBox, targetBox, targetObject.id)) return;
+
+                    const score = getAlignmentCandidateScore(distance, crossAxisGapY);
+                    const minY = Math.min(sourceBox.y, targetBox.y);
+                    const maxY = Math.max(sourceBox.y + sourceBox.h, targetBox.y + targetBox.h);
+
+                    const candidate = {
+                        sourceKind: sourceAnchor.kind,
+                        delta,
+                        distance,
+                        crossAxisGap: crossAxisGapY,
+                        score,
+                        guide: {
+                            id: `vertical-${targetObject.id}-${sourceAnchor.kind}-${targetX}`,
+                            orientation: "vertical" as const,
+                            points: [targetX, minY, targetX, maxY],
+                        },
+                    };
+
+                    verticalGuideCandidates.push(candidate);
+
+                    if (!bestXRef.current || score < bestXRef.current.score) {
+                        bestXRef.current = candidate;
+                    }
+                });
+            });
+
+            sourceAnchorsY.forEach((sourceAnchor) => {
+                targetAnchorsY.forEach((targetY) => {
+                    const delta = targetY - sourceAnchor.value;
+                    const distance = Math.abs(delta);
+
+                    if (distance > snapThreshold) return;
+                    if (isHorizontalGuideBlocked(targetY, sourceBox, targetBox, targetObject.id)) return;
+
+                    const score = getAlignmentCandidateScore(distance, crossAxisGapX);
+
+                    const minX = Math.min(sourceBox.x, targetBox.x);
+                    const maxX = Math.max(sourceBox.x + sourceBox.w, targetBox.x + targetBox.w);
+
+                    const candidate = {
+                        sourceKind: sourceAnchor.kind,
+                        delta,
+                        distance,
+                        crossAxisGap: crossAxisGapX,
+                        score,
+                        guide: {
+                            id: `horizontal-${targetObject.id}-${sourceAnchor.kind}-${targetY}`,
+                            orientation: "horizontal" as const,
+                            points: [minX, targetY, maxX, targetY],
+                        },
+                    };
+
+                    horizontalGuideCandidates.push(candidate);
+
+                    if (!bestYRef.current || score < bestYRef.current.score) {
+                        bestYRef.current = candidate;
+                    }
+                });
+            });
+        });
+
+        const bestX = bestXRef.current;
+        const bestY = bestYRef.current;
+
+        const sameDeltaEpsilon = 1e-6;
+
+        const pickClosestGuidePerSourceKind = (
+            candidates: Array<{
+                sourceKind: string;
+                delta: number;
+                distance: number;
+                crossAxisGap: number;
+                score: number;
+                guide: AlignmentGuide;
+            }>,
+            targetDelta: number
+        ) => {
+            const bySourceKind = new Map<
+                string,
+                {
+                    sourceKind: string;
+                    delta: number;
+                    distance: number;
+                    crossAxisGap: number;
+                    score: number;
+                    guide: AlignmentGuide;
+                }
+            >();
+
+            candidates
+                .filter((candidate) =>
+                    Math.abs(candidate.delta - targetDelta) <= sameDeltaEpsilon
+                )
+                .forEach((candidate) => {
+                    const existing = bySourceKind.get(candidate.sourceKind);
+
+                    if (!existing || candidate.score < existing.score) {
+                        bySourceKind.set(candidate.sourceKind, candidate);
+                    }
+                });
+
+            return Array.from(bySourceKind.values())
+                .sort((a, b) => a.score - b.score)
+                .map((candidate) => candidate.guide);
+        };
+
+        const verticalGuides = bestX
+            ? pickClosestGuidePerSourceKind(verticalGuideCandidates, bestX.delta)
+            : [];
+
+        const horizontalGuides = bestY
+            ? pickClosestGuidePerSourceKind(horizontalGuideCandidates, bestY.delta)
+            : [];
+
+        const guidesById = new Map<string, AlignmentGuide>();
+
+        [...verticalGuides, ...horizontalGuides].forEach((guide) => {
+            guidesById.set(guide.id, guide);
+        });
+
+        return {
+            dx: dx + (bestX?.delta ?? 0),
+            dy: dy + (bestY?.delta ?? 0),
+            guides: Array.from(guidesById.values()),
+        };
+    }, [getAlignmentBoxForObject]);
+
+    const getAlignmentSnapForEdgeResize = useCallback((
+        objectId: string,
+        orientation: "vertical" | "horizontal",
+        x: number,
+        y: number,
+        workingPoints: number[]
+    ) => {
+        const targetObjects = (objectsRef.current as PolyObject[]).filter(
+            (object) =>
+                object.type !== "treebed" &&
+                object.id !== objectId &&
+                Array.isArray(object.points) &&
+                object.points.length >= 4
+        );
+        if (targetObjects.length === 0 || workingPoints.length < 4) {
+            return { x, y, guides: [] as AlignmentGuide[] };
+        }
+
+        const sourceBox = bboxFromPoints(workingPoints);
+        const snapThreshold = Math.max(4, 10 / Math.max(stageScaleRef.current, 0.1));
+
+        const getRangeGap = (
+            aStart: number,
+            aEnd: number,
+            bStart: number,
+            bEnd: number
+        ) => {
+            const overlap = Math.min(aEnd, bEnd) - Math.max(aStart, bStart);
+
+            if (overlap >= 0) {
+                return 0;
+            }
+
+            return Math.max(aStart, bStart) - Math.min(aEnd, bEnd);
+        };
+
+        const getAlignmentCandidateScore = (
+            snapDistance: number,
+            crossAxisGap: number
+        ) => {
+            return crossAxisGap * 1000 + snapDistance;
+        };
+
+        const isVerticalGuideBlocked = (
+            guideX: number,
+            source: { x: number; y: number; w: number; h: number },
+            target: { x: number; y: number; w: number; h: number },
+            targetObjectId: string
+        ) => {
+            const sourceBottom = source.y + source.h;
+            const targetBottom = target.y + target.h;
+
+            const gapTop = Math.min(sourceBottom, targetBottom);
+            const gapBottom = Math.max(source.y, target.y);
+
+            if (gapBottom <= gapTop) return false;
+
+            return targetObjects.some((object) => {
+                if (object.id === targetObjectId) return false;
+
+                const box = getAlignmentBoxForObject(object);
+                const boxBottom = box.y + box.h;
+
+                const crossesGuideX =
+                    box.x <= guideX &&
+                    box.x + box.w >= guideX;
+
+                const intersectsGapY =
+                    box.y < gapBottom &&
+                    boxBottom > gapTop;
+
+                return crossesGuideX && intersectsGapY;
+            });
+        };
+
+        const isHorizontalGuideBlocked = (
+            guideY: number,
+            source: { x: number; y: number; w: number; h: number },
+            target: { x: number; y: number; w: number; h: number },
+            targetObjectId: string
+        ) => {
+            const sourceRight = source.x + source.w;
+            const targetRight = target.x + target.w;
+
+            const gapLeft = Math.min(sourceRight, targetRight);
+            const gapRight = Math.max(source.x, target.x);
+
+            if (gapRight <= gapLeft) return false;
+
+            return targetObjects.some((object) => {
+                if (object.id === targetObjectId) return false;
+
+                const box = getAlignmentBoxForObject(object);
+                const boxRight = box.x + box.w;
+
+                const crossesGuideY =
+                    box.y <= guideY &&
+                    box.y + box.h >= guideY;
+
+                const intersectsGapX =
+                    box.x < gapRight &&
+                    boxRight > gapLeft;
+
+                return crossesGuideY && intersectsGapX;
+            });
+        };
+
+        const bestGuideRef: {
+            current: {
+                value: number;
+                distance: number;
+                crossAxisGap: number;
+                score: number;
+                guide: AlignmentGuide;
+            } | null;
+        } = { current: null };
+
+        targetObjects.forEach((targetObject) => {
+            const targetBox = getAlignmentBoxForObject(targetObject);
+
+            const crossAxisGapY = getRangeGap(
+                sourceBox.y,
+                sourceBox.y + sourceBox.h,
+                targetBox.y,
+                targetBox.y + targetBox.h
+            );
+
+            const crossAxisGapX = getRangeGap(
+                sourceBox.x,
+                sourceBox.x + sourceBox.w,
+                targetBox.x,
+                targetBox.x + targetBox.w
+            );
+
+            if (orientation === "vertical") {
+                const targetAnchorsX = [
+                    targetBox.x,
+                    targetBox.x + targetBox.w,
+                ];
+
+                targetAnchorsX.forEach((targetX) => {
+                    const distance = Math.abs(targetX - x);
+
+                    if (distance > snapThreshold) return;
+                    if (isVerticalGuideBlocked(targetX, sourceBox, targetBox, targetObject.id)) return;
+
+                    const score = getAlignmentCandidateScore(distance, crossAxisGapY);
+
+                    if (bestGuideRef.current && score >= bestGuideRef.current.score) return;
+
+                    const minY = Math.min(sourceBox.y, targetBox.y);
+                    const maxY = Math.max(sourceBox.y + sourceBox.h, targetBox.y + targetBox.h);
+
+                    bestGuideRef.current = {
+                        value: targetX,
+                        distance,
+                        crossAxisGap: crossAxisGapY,
+                        score,
+                        guide: {
+                            id: `vertical-resize-${targetObject.id}-${targetX}`,
+                            orientation: "vertical",
+                            points: [targetX, minY, targetX, maxY],
+                        },
+                    };
+                });
+
+                return;
+            }
+
+            const targetAnchorsY = [
+                targetBox.y,
+                targetBox.y + targetBox.h,
+            ];
+
+            targetAnchorsY.forEach((targetY) => {
+                const distance = Math.abs(targetY - y);
+
+                if (distance > snapThreshold) return;
+                if (isHorizontalGuideBlocked(targetY, sourceBox, targetBox, targetObject.id)) return;
+
+                const score = getAlignmentCandidateScore(distance, crossAxisGapX);
+
+                if (bestGuideRef.current && score >= bestGuideRef.current.score) return;
+
+                const minX = Math.min(sourceBox.x, targetBox.x);
+                const maxX = Math.max(sourceBox.x + sourceBox.w, targetBox.x + targetBox.w);
+
+                bestGuideRef.current = {
+                    value: targetY,
+                    distance,
+                    crossAxisGap: crossAxisGapX,
+                    score,
+                    guide: {
+                        id: `horizontal-resize-${targetObject.id}-${targetY}`,
+                        orientation: "horizontal",
+                        points: [minX, targetY, maxX, targetY],
+                    },
+                };
+            });
+        });
+
+        const bestGuide = bestGuideRef.current;
+
+        if (!bestGuide) {
+            return { x, y, guides: [] as AlignmentGuide[] };
+        }
+
+        return orientation === "vertical"
+            ? { x: bestGuide.value, y, guides: [bestGuide.guide] }
+            : { x, y: bestGuide.value, guides: [bestGuide.guide] };
+    }, [getAlignmentBoxForObject]);
 
     const draftRedoPointsRef = useRef<number[]>([]);
     useEffect(() => void (draftRedoPointsRef.current = draftRedoPoints), [draftRedoPoints]);
@@ -3104,6 +3823,77 @@ export default function HelloEditor() {
     }, [isPanning, moveObject]);
 
     useEffect(() => {
+        const finishActiveEditorInteraction = () => {
+            if (treebedResizeRef.current) {
+                finishTreebedResize();
+                return true;
+            }
+
+            if (treebedRotateRef.current) {
+                finishTreebedRotate();
+                return true;
+            }
+
+            if (isEdgeResizingRef.current) {
+                const edit = edgeResizeRef.current;
+
+                edgeResizeRef.current = null;
+                isEdgeResizingRef.current = false;
+                setIsEdgeResizing(false);
+                setAlignmentGuides([]);
+
+                if (edit) {
+                    moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
+                }
+
+                requestAnimationFrame(() => {
+                    suppressPlantbedFocusRef.current = false;
+
+                    const st = stageRef.current;
+                    if (st) {
+                        st.container().style.cursor = "default";
+                    }
+                });
+
+                return true;
+            }
+
+            if (isVertexDraggingRef.current) {
+                const edit = vertexEditRef.current;
+
+                vertexEditRef.current = null;
+                activeVertexIndexRef.current = null;
+
+                isVertexDraggingRef.current = false;
+                setIsVertexDragging(false);
+
+                if (edit?.boundaryBeforeObject && edit.workingBoundarySegments?.length) {
+                    useProjectStore
+                        .getState()
+                        .commitBoundarySegmentsEdit(
+                            edit.objectId,
+                            edit.boundaryBeforeObject,
+                            edit.workingBoundarySegments
+                        );
+                } else if (edit) {
+                    moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
+                }
+
+                requestAnimationFrame(() => {
+                    suppressPlantbedFocusRef.current = false;
+
+                    const st = stageRef.current;
+                    if (st) {
+                        st.container().style.cursor = "default";
+                    }
+                });
+
+                return true;
+            }
+
+            return false;
+        };
+
         const handleMouseMove = (e: MouseEvent) => {
             lastPointerClientPosRef.current = {
                 x: e.clientX,
@@ -3131,18 +3921,12 @@ export default function HelloEditor() {
         };
 
         const handleMouseUp = () => {
-            if (treebedResizeRef.current) {
-                finishTreebedResize();
-                return;
-            }
-
-            if (treebedRotateRef.current) {
-                finishTreebedRotate();
-            }
+            finishActiveEditorInteraction();
         };
 
         const handleWindowBlur = () => {
             clearCursorCrosshair();
+            finishActiveEditorInteraction();
         };
 
         window.addEventListener("mousemove", handleMouseMove);
@@ -3164,6 +3948,7 @@ export default function HelloEditor() {
         activeDrawType,
         updateCursorCrosshairFromClient,
         clearCursorCrosshair,
+        moveObjectAndMerge,
     ]);
 
     // ✅ Force React rerender tijdens vertex-drag / live edit, maar begrensd
@@ -3216,6 +4001,9 @@ export default function HelloEditor() {
         holeIndex: number | null; // null = outer ring, anders index in holes[]
         workingPoints: number[];
         workingHoles?: number[][];
+        boundaryBeforeObject?: PolyObject;
+        boundaryHandleMatches?: Array<{ segmentIndex: number; vertexIndex: number }>;
+        workingBoundarySegments?: number[][];
     } | null>(null);
 
     const [isEdgeResizing, setIsEdgeResizing] = useState(false);
@@ -3231,25 +4019,16 @@ export default function HelloEditor() {
         workingHoles?: number[][];
     } | null>(null);
 
-    // ✅ Force rerender tijdens edge resize, maar gebruik dezelfde begrensde cadence
+    // ✅ Edge-resize moet frame-synchroon lopen, anders loopt fill/label/measurement visueel achter
     const [edgeResizeTick, setEdgeResizeTick] = useState(0);
     const edgeResizeRafRef = useRef<number | null>(null);
+
     const requestEdgeResizeRerender = useCallback(() => {
-        const now = performance.now();
-        const elapsed = now - lastInteractionRerenderAtRef.current;
-
-        if (elapsed >= INTERACTION_RERENDER_INTERVAL_MS) {
-            lastInteractionRerenderAtRef.current = now;
-            setEdgeResizeTick((t) => t + 1);
-            return;
-        }
-
         if (edgeResizeRafRef.current) return;
 
         edgeResizeRafRef.current = requestAnimationFrame(() => {
             edgeResizeRafRef.current = null;
-            lastInteractionRerenderAtRef.current = performance.now();
-            setEdgeResizeTick((t) => t + 1);
+            setEdgeResizeTick((tick) => tick + 1);
         });
     }, []);
 
@@ -3627,6 +4406,30 @@ export default function HelloEditor() {
             setDragOverPlantbedId(null);
         };
 
+        const isPlantDropTargetVisible = (object: PolyObject) => {
+            const currentViewVisibility = useProjectStore.getState().viewVisibility;
+
+            if (object.type === "plantbed" || object.type === "hedge") {
+                return currentViewVisibility.showPlantbeds !== false;
+            }
+
+            if (object.type === "treebed") {
+                return currentViewVisibility.showTreebeds !== false;
+            }
+
+            return false;
+        };
+
+        const getVisiblePlantDropTargets = (sourceObjects: PolyObject[]) => {
+            return sourceObjects.filter(
+                (object) =>
+                    (object.type === "plantbed" ||
+                        object.type === "hedge" ||
+                        object.type === "treebed") &&
+                    isPlantDropTargetVisible(object)
+            );
+        };
+
         const onDragOver = (e: DragEvent) => {
             if (!hasPlantPayloadType(e)) {
                 clearDragOverPlantbed();
@@ -3635,9 +4438,7 @@ export default function HelloEditor() {
 
             const world = clientToWorld(e.clientX, e.clientY);
             const objs = objectsRef.current as PolyObject[];
-            const plantbeds = objs.filter(
-                (o) => o.type === "plantbed" || o.type === "hedge" || o.type === "treebed"
-            );
+            const plantbeds = getVisiblePlantDropTargets(objs);
 
             const hit = getPlantbedHitAtWorldPoint(world.x, world.y, plantbeds);
             const nextId = hit ? hit.id : null;
@@ -3688,9 +4489,7 @@ export default function HelloEditor() {
 
             const world = clientToWorld(e.clientX, e.clientY);
             const objs = useProjectStore.getState().objects as PolyObject[];
-            const plantbeds = objs.filter(
-                (o) => o.type === "plantbed" || o.type === "hedge" || o.type === "treebed"
-            );
+            const plantbeds = getVisiblePlantDropTargets(objs);
 
             let hit = getPlantbedHitAtWorldPoint(world.x, world.y, plantbeds);
 
@@ -4641,8 +5440,18 @@ export default function HelloEditor() {
                     objectsRef.current as PolyObject[]
                 );
 
-                const cx = snapped.x;
-                const cy = snapped.y;
+                const alignmentSnap = getAlignmentSnapForEdgeResize(
+                    edit.objectId,
+                    edit.orientation,
+                    snapped.x,
+                    snapped.y,
+                    edit.workingPoints
+                );
+
+                const cx = alignmentSnap.x;
+                const cy = alignmentSnap.y;
+
+                setAlignmentGuides(alignmentSnap.guides);
 
                 if (edit.holeIndex !== null) {
                     const nextHoles = (edit.workingHoles ?? []).map((h) => [...h]);
@@ -4913,12 +5722,14 @@ export default function HelloEditor() {
                     suppressPlantbedFocusRef.current = false;
                 }
             }
+
             if (isEdgeResizingRef.current && evt.button === 0) {
                 const edit = edgeResizeRef.current;
 
                 edgeResizeRef.current = null;
                 isEdgeResizingRef.current = false;
                 setIsEdgeResizing(false);
+                setAlignmentGuides([]);
 
                 if (edit) {
                     moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
@@ -4945,7 +5756,15 @@ export default function HelloEditor() {
                 isVertexDraggingRef.current = false;
                 setIsVertexDragging(false);
 
-                if (edit) {
+                if (edit?.boundaryBeforeObject && edit.workingBoundarySegments?.length) {
+                    useProjectStore
+                        .getState()
+                        .commitBoundarySegmentsEdit(
+                            edit.objectId,
+                            edit.boundaryBeforeObject,
+                            edit.workingBoundarySegments
+                        );
+                } else if (edit) {
                     moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
                 }
 
@@ -5321,6 +6140,33 @@ export default function HelloEditor() {
     const handleResetView = useCallback(() => {
         handleCenterCanvas();
     }, [handleCenterCanvas]);
+
+    useEffect(() => {
+        if (!isDrawingsHydrated || !activeDrawingId) return;
+        if (!canvasSize.w || !canvasSize.h) return;
+
+        if (lastAutoCenteredDrawingIdRef.current === activeDrawingId) {
+            return;
+        }
+
+        const drawableObjects = (useProjectStore.getState().objects as PolyObject[]).filter(
+            (object) =>
+                Array.isArray(object.points) &&
+                object.points.length >= 4
+        );
+
+        if (drawableObjects.length === 0) return;
+
+        lastAutoCenteredDrawingIdRef.current = activeDrawingId;
+        handleCenterCanvas();
+    }, [
+        isDrawingsHydrated,
+        activeDrawingId,
+        canvasSize.w,
+        canvasSize.h,
+        objects.length,
+        handleCenterCanvas,
+    ]);
 
     useEffect(() => {
         if (!isDrawingsHydrated || !activeDrawingId) return;
@@ -5805,50 +6651,52 @@ export default function HelloEditor() {
             <AppNotificationsRenderer topLeftLeftOffset={topLeftNoticeLeft} />
 
             <div className="w-full relative z-50" style={{ height: HEADER_HEIGHT, background: COLORS.green }}>
-                <button
-                    type="button"
-                    onClick={goToPlantSelectionPage}
-                    style={{
-                        position: "absolute",
-                        left: 16,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        color: "#ffffff",
-                        background: "transparent",
-                        border: "none",
-                        padding: 0,
-                        fontSize: 14,
-                        fontWeight: 500,
-                        cursor: "pointer",
-                        textDecoration: "none",
-                    }}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.textDecoration = "underline";
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.textDecoration = "none";
-                    }}
-                >
-                    <img
-                        src="/icons/arrow-left.svg"
-                        alt=""
+                {shouldShowPlantSidebar && (
+                    <button
+                        type="button"
+                        onClick={goToPlantSelectionPage}
                         style={{
-                            width: 16,
-                            height: 16,
-                            display: "block",
-                            filter: "brightness(0) invert(1)",
+                            position: "absolute",
+                            left: 16,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            color: "#ffffff",
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            fontSize: 14,
+                            fontWeight: 500,
+                            cursor: "pointer",
+                            textDecoration: "none",
                         }}
-                    />
-                    <span>Ga terug naar plantenlijst</span>
-                </button>
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.textDecoration = "underline";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.textDecoration = "none";
+                        }}
+                    >
+                        <img
+                            src="/icons/arrow-left.svg"
+                            alt=""
+                            style={{
+                                width: 16,
+                                height: 16,
+                                display: "block",
+                                filter: "brightness(0) invert(1)",
+                            }}
+                        />
+                        <span>Ga terug naar plantenlijst</span>
+                    </button>
+                )}
 
                 <div
                     style={{
                         position: "absolute",
-                        left: 200,
+                        left: shouldShowPlantSidebar ? 200 : 14,
                         top: "50%",
                         transform: "translateY(-50%)",
                     }}
@@ -6232,7 +7080,7 @@ export default function HelloEditor() {
 
                     <div
                         ref={canvasWrapRef}
-                        className="h-full w-full relative z-0 overflow-hidden"
+                        className="h-full w-full relative overflow-hidden"
                         style={{ background: COLORS.greenLight }}
                     >
                         <Stage
@@ -6478,6 +7326,9 @@ export default function HelloEditor() {
                                             selectObjects={selectObjects}
                                             moveObjectAndMerge={moveObjectAndMerge}
                                             moveObjectsBatch={moveObjectsBatch}
+                                            alignmentGuides={alignmentGuides}
+                                            setAlignmentGuides={setAlignmentGuides}
+                                            getAlignmentSnapForSelection={getAlignmentSnapForSelection}
                                             setLiveSelectionDragDelta={setLiveSelectionDragDelta}
                                             isVertexDragging={isVertexDragging}
                                             isEdgeResizing={isEdgeResizing}

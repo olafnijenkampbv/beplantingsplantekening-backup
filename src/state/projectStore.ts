@@ -6,6 +6,8 @@ import {
     isUnifiedBoundaryType,
     getBoundaryBandPoints,
     getBoundaryBandShape,
+    getBoundaryBandShapeForObject,
+    mergeConnectedBoundaryPolylines,
 } from "@/features/editor/lib/boundarySystem";
 
 function rectsIntersect(
@@ -539,6 +541,15 @@ export type PlantItem = {
 
 export type PlantbedLinksMap = Record<string, string[]>; // key = plantbedId, value = plantIds[]
 
+function clonePlantbedLinks(links: PlantbedLinksMap = {}) {
+    return Object.fromEntries(
+        Object.entries(links).map(([plantbedId, plantIds]) => [
+            plantbedId,
+            [...plantIds],
+        ])
+    ) as PlantbedLinksMap;
+}
+
 // -----------------------------
 // ✅ Dummy plants (kan later vervangen worden door echte setPlants(...))
 // -----------------------------
@@ -612,9 +623,17 @@ export type PolyObject = {
     renderSide?: 1 | -1;
 
     /**
+ * ✅ Alleen voor polyline/boundary objects:
+ * Losse centerline-segmenten binnen één boundary-object.
+ * Hiermee kan één schutting meerdere uiteindes/aftakkingen hebben zonder
+ * dat de lijn als één ingeklapte polyline terug naar het aansluitpunt hoeft te lopen.
+ */
+    boundarySegments?: number[][];
+
+    /**
      * ✅ Alleen voor polyline objects (fence/gate):
      * Render-stukken (polygons) zodat de "dikke lijn" NIET door vlakken heen tekent.
-     * Dit is afgeleid/cached; source of truth blijft points[] (centerline).
+     * Dit is afgeleid/cached; source of truth blijft points[] + boundarySegments[].
      */
     renderPieces?: number[][];
 
@@ -732,14 +751,640 @@ function preserveClosedBoundaryEndpoint(points: number[], type: ObjectType) {
     return [...cleaned, cleanedFirstX, cleanedFirstY];
 }
 
-function createBoundaryDifferenceCutter(obj: PolyObject): PolyObject | null {
-    if (!isUnifiedBoundaryType(obj.type)) return null;
+function getBoundarySegmentsForObject(obj: PolyObject) {
+    if (obj.boundarySegments?.length) {
+        return obj.boundarySegments;
+    }
 
-    const shape = getBoundaryBandShape(obj.points, obj.type, SNAP_GRID_SIZE);
-    if (!shape.outer || shape.outer.length < 6) return null;
+    return [obj.points];
+}
+
+function isBoundaryPointOnSegmentForSplit(
+    point: BoundaryPoint,
+    a: BoundaryPoint,
+    b: BoundaryPoint,
+    eps = 1e-6
+) {
+    const crossValue =
+        (b.x - a.x) * (point.y - a.y) -
+        (b.y - a.y) * (point.x - a.x);
+
+    if (Math.abs(crossValue) > eps) return false;
+
+    const dotValue =
+        (point.x - a.x) * (b.x - a.x) +
+        (point.y - a.y) * (b.y - a.y);
+
+    if (dotValue < -eps) return false;
+
+    const squaredLength =
+        (b.x - a.x) * (b.x - a.x) +
+        (b.y - a.y) * (b.y - a.y);
+
+    if (dotValue - squaredLength > eps) return false;
+
+    return true;
+}
+
+function getBoundarySegmentSplitT(
+    point: BoundaryPoint,
+    a: BoundaryPoint,
+    b: BoundaryPoint
+) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const squaredLength = dx * dx + dy * dy;
+
+    if (squaredLength <= 1e-9) return 0;
+
+    return (
+        ((point.x - a.x) * dx + (point.y - a.y) * dy) /
+        squaredLength
+    );
+}
+
+function pointKeyForBoundarySplit(point: BoundaryPoint) {
+    return `${Math.round(point.x * 1000) / 1000}:${Math.round(point.y * 1000) / 1000}`;
+}
+
+function getBoundarySegmentIntersectionPoint(
+    a: BoundaryPoint,
+    b: BoundaryPoint,
+    c: BoundaryPoint,
+    d: BoundaryPoint
+): BoundaryPoint | null {
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const cdx = d.x - c.x;
+    const cdy = d.y - c.y;
+
+    const det = abx * cdy - aby * cdx;
+    if (Math.abs(det) < 1e-9) return null;
+
+    const t = ((c.x - a.x) * cdy - (c.y - a.y) * cdx) / det;
+    const u = ((c.x - a.x) * aby - (c.y - a.y) * abx) / det;
+
+    if (t < -1e-6 || t > 1 + 1e-6) return null;
+    if (u < -1e-6 || u > 1 + 1e-6) return null;
+
+    return {
+        x: a.x + t * abx,
+        y: a.y + t * aby,
+    };
+}
+
+function splitBoundarySegmentsAtJunctions(segments: number[][]) {
+    const sourceSegments = segments
+        .map((segment) => cleanupPolylineCommitPoints(segment))
+        .filter((segment) => segment.length >= 4);
+
+    const allPoints: BoundaryPoint[] = [];
+    const atomicSegments: Array<{ a: BoundaryPoint; b: BoundaryPoint }> = [];
+
+    for (const segment of sourceSegments) {
+        const points = boundaryPointsToPointList(segment);
+
+        for (let index = 0; index < points.length; index += 1) {
+            allPoints.push(points[index]);
+        }
+
+        for (let index = 0; index < points.length - 1; index += 1) {
+            atomicSegments.push({
+                a: points[index],
+                b: points[index + 1],
+            });
+        }
+    }
+
+    for (let index = 0; index < atomicSegments.length; index += 1) {
+        const current = atomicSegments[index];
+
+        for (let compareIndex = index + 1; compareIndex < atomicSegments.length; compareIndex += 1) {
+            const candidate = atomicSegments[compareIndex];
+
+            const intersection = getBoundarySegmentIntersectionPoint(
+                current.a,
+                current.b,
+                candidate.a,
+                candidate.b
+            );
+
+            if (!intersection) continue;
+
+            allPoints.push(intersection);
+        }
+    }
+
+    const nextSegments: number[][] = [];
+
+    for (const segment of sourceSegments) {
+        const points = boundaryPointsToPointList(segment);
+
+        for (let index = 0; index < points.length - 1; index += 1) {
+            const a = points[index];
+            const b = points[index + 1];
+
+            const splitPointsByKey = new Map<string, BoundaryPoint>();
+            splitPointsByKey.set(pointKeyForBoundarySplit(a), a);
+            splitPointsByKey.set(pointKeyForBoundarySplit(b), b);
+
+            for (const candidate of allPoints) {
+                if (!isBoundaryPointOnSegmentForSplit(candidate, a, b)) continue;
+
+                splitPointsByKey.set(pointKeyForBoundarySplit(candidate), candidate);
+            }
+
+            const splitPoints = Array.from(splitPointsByKey.values()).sort(
+                (p1, p2) =>
+                    getBoundarySegmentSplitT(p1, a, b) -
+                    getBoundarySegmentSplitT(p2, a, b)
+            );
+
+            for (let splitIndex = 0; splitIndex < splitPoints.length - 1; splitIndex += 1) {
+                const from = splitPoints[splitIndex];
+                const to = splitPoints[splitIndex + 1];
+
+                if (areBoundaryPointsEqual(from, to)) continue;
+
+                nextSegments.push([from.x, from.y, to.x, to.y]);
+            }
+        }
+    }
+
+    const uniqueSegments = new Map<string, number[]>();
+
+    for (const segment of nextSegments) {
+        const a = { x: segment[0], y: segment[1] };
+        const b = { x: segment[2], y: segment[3] };
+
+        const keyA = pointKeyForBoundarySplit(a);
+        const keyB = pointKeyForBoundarySplit(b);
+        const key = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`;
+
+        if (!uniqueSegments.has(key)) {
+            uniqueSegments.set(key, segment);
+        }
+    }
+
+    return simplifyCollinearBoundarySegments(
+        Array.from(uniqueSegments.values())
+    );
+}
+
+function simplifyCollinearBoundarySegments(segments: number[][]) {
+    let currentSegments = segments.filter((segment) => segment.length >= 4);
+    let changed = true;
+
+    while (changed) {
+        changed = false;
+
+        const pointToSegments = new Map<string, number[]>();
+
+        currentSegments.forEach((segment, segmentIndex) => {
+            const start = { x: segment[0], y: segment[1] };
+            const end = { x: segment[2], y: segment[3] };
+
+            const startKey = pointKeyForBoundarySplit(start);
+            const endKey = pointKeyForBoundarySplit(end);
+
+            pointToSegments.set(startKey, [
+                ...(pointToSegments.get(startKey) ?? []),
+                segmentIndex,
+            ]);
+
+            pointToSegments.set(endKey, [
+                ...(pointToSegments.get(endKey) ?? []),
+                segmentIndex,
+            ]);
+        });
+
+        for (const [pointKey, segmentIndexes] of pointToSegments.entries()) {
+            if (segmentIndexes.length !== 2) continue;
+
+            const [firstIndex, secondIndex] = segmentIndexes;
+            const firstSegment = currentSegments[firstIndex];
+            const secondSegment = currentSegments[secondIndex];
+
+            if (!firstSegment || !secondSegment) continue;
+
+            const middlePoint = (() => {
+                const [xRaw, yRaw] = pointKey.split(":");
+                return {
+                    x: Number(xRaw),
+                    y: Number(yRaw),
+                };
+            })();
+
+            if (!Number.isFinite(middlePoint.x) || !Number.isFinite(middlePoint.y)) continue;
+
+            const firstOtherPoint =
+                areBoundaryPointsEqual(
+                    { x: firstSegment[0], y: firstSegment[1] },
+                    middlePoint
+                )
+                    ? { x: firstSegment[2], y: firstSegment[3] }
+                    : { x: firstSegment[0], y: firstSegment[1] };
+
+            const secondOtherPoint =
+                areBoundaryPointsEqual(
+                    { x: secondSegment[0], y: secondSegment[1] },
+                    middlePoint
+                )
+                    ? { x: secondSegment[2], y: secondSegment[3] }
+                    : { x: secondSegment[0], y: secondSegment[1] };
+
+            const crossValue =
+                (middlePoint.x - firstOtherPoint.x) *
+                (secondOtherPoint.y - middlePoint.y) -
+                (middlePoint.y - firstOtherPoint.y) *
+                (secondOtherPoint.x - middlePoint.x);
+
+            if (Math.abs(crossValue) > 1e-6) continue;
+
+            const mergedSegment = [
+                firstOtherPoint.x,
+                firstOtherPoint.y,
+                secondOtherPoint.x,
+                secondOtherPoint.y,
+            ];
+
+            currentSegments = currentSegments.filter(
+                (_segment, index) => index !== firstIndex && index !== secondIndex
+            );
+
+            currentSegments.push(mergedSegment);
+
+            changed = true;
+            break;
+        }
+    }
+
+    const uniqueSegments = new Map<string, number[]>();
+
+    for (const segment of currentSegments) {
+        const a = { x: segment[0], y: segment[1] };
+        const b = { x: segment[2], y: segment[3] };
+
+        if (areBoundaryPointsEqual(a, b)) continue;
+
+        const keyA = pointKeyForBoundarySplit(a);
+        const keyB = pointKeyForBoundarySplit(b);
+        const key = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`;
+
+        if (!uniqueSegments.has(key)) {
+            uniqueSegments.set(key, segment);
+        }
+    }
+
+    return Array.from(uniqueSegments.values());
+}
+
+function normalizeBoundaryObjectSegments(obj: PolyObject): PolyObject {
+    if (!isPolylineObject(obj)) return obj;
+
+    const segments = splitBoundarySegmentsAtJunctions(
+        getBoundarySegmentsForObject(obj)
+            .map((segment) => preserveClosedBoundaryEndpoint(segment, obj.type))
+            .filter((segment) => segment.length >= 4)
+    );
 
     return {
         ...obj,
+        geometry: "polyline",
+        points: segments[0] ?? preserveClosedBoundaryEndpoint(obj.points, obj.type),
+        boundarySegments: segments,
+    };
+}
+
+function translateBoundarySegments(
+    segments: number[][] | undefined,
+    dx: number,
+    dy: number
+) {
+    if (!segments || segments.length === 0) return segments;
+
+    return segments.map((segment) => translatePoints(segment, dx, dy));
+}
+
+type BoundaryPoint = {
+    x: number;
+    y: number;
+};
+
+function boundaryPointsToPointList(points: number[]): BoundaryPoint[] {
+    const out: BoundaryPoint[] = [];
+
+    for (let i = 0; i < points.length; i += 2) {
+        out.push({
+            x: points[i],
+            y: points[i + 1],
+        });
+    }
+
+    return out;
+}
+
+function boundaryPointListToPoints(points: BoundaryPoint[]): number[] {
+    return points.flatMap((point) => [point.x, point.y]);
+}
+
+function areBoundaryPointsEqual(a: BoundaryPoint, b: BoundaryPoint, eps = 1e-6) {
+    return Math.abs(a.x - b.x) <= eps && Math.abs(a.y - b.y) <= eps;
+}
+
+function findBoundaryOverlapLength(a: BoundaryPoint[], b: BoundaryPoint[]) {
+    const maxOverlap = Math.min(a.length, b.length);
+
+    for (let overlap = maxOverlap; overlap >= 1; overlap -= 1) {
+        let matches = true;
+
+        for (let index = 0; index < overlap; index += 1) {
+            const aPoint = a[a.length - overlap + index];
+            const bPoint = b[index];
+
+            if (!areBoundaryPointsEqual(aPoint, bPoint)) {
+                matches = false;
+                break;
+            }
+        }
+
+        if (matches) return overlap;
+    }
+
+    return 0;
+}
+
+function getClosestBoundaryPointOnSegment(
+    point: BoundaryPoint,
+    a: BoundaryPoint,
+    b: BoundaryPoint
+): {
+    point: BoundaryPoint;
+    distance: number;
+    t: number;
+} {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const squaredLength = dx * dx + dy * dy;
+
+    if (squaredLength <= 1e-9) {
+        return {
+            point: a,
+            distance: Math.hypot(point.x - a.x, point.y - a.y),
+            t: 0,
+        };
+    }
+
+    const rawT =
+        ((point.x - a.x) * dx + (point.y - a.y) * dy) /
+        squaredLength;
+
+    const t = Math.max(0, Math.min(1, rawT));
+
+    const projected = {
+        x: a.x + dx * t,
+        y: a.y + dy * t,
+    };
+
+    return {
+        point: projected,
+        distance: Math.hypot(point.x - projected.x, point.y - projected.y),
+        t,
+    };
+}
+
+function insertBoundaryBranchAtSegment(
+    current: BoundaryPoint[],
+    branch: BoundaryPoint[]
+): BoundaryPoint[] | null {
+    if (current.length < 2 || branch.length < 2) return null;
+
+    const branchStart = branch[0];
+    const maxAttachDistance = SNAP_GRID_SIZE;
+
+    let best:
+        | {
+            index: number;
+            attachPoint: BoundaryPoint;
+            distance: number;
+            t: number;
+        }
+        | null = null;
+
+    for (let index = 0; index < current.length - 1; index += 1) {
+        const a = current[index];
+        const b = current[index + 1];
+
+        const candidate = getClosestBoundaryPointOnSegment(branchStart, a, b);
+
+        if (candidate.distance > maxAttachDistance) continue;
+
+        if (!best || candidate.distance < best.distance) {
+            best = {
+                index,
+                attachPoint: candidate.point,
+                distance: candidate.distance,
+                t: candidate.t,
+            };
+        }
+    }
+
+    if (!best) return null;
+
+    const a = current[best.index];
+    const b = current[best.index + 1];
+
+    const normalizedAttachPoint =
+        areBoundaryPointsEqual(best.attachPoint, a)
+            ? a
+            : areBoundaryPointsEqual(best.attachPoint, b)
+                ? b
+                : best.attachPoint;
+
+    const normalizedBranch =
+        areBoundaryPointsEqual(branchStart, normalizedAttachPoint)
+            ? branch
+            : [normalizedAttachPoint, ...branch.slice(1)];
+
+    const before = current.slice(0, best.index + 1);
+    const after = current.slice(best.index + 1);
+
+    const splitPoint =
+        areBoundaryPointsEqual(a, normalizedAttachPoint) ||
+            areBoundaryPointsEqual(b, normalizedAttachPoint)
+            ? []
+            : [normalizedAttachPoint];
+
+    return [
+        ...before,
+        ...splitPoint,
+        ...normalizedBranch.slice(1),
+        normalizedAttachPoint,
+        ...after,
+    ];
+}
+
+function mergeBoundaryPointArrays(
+    currentPoints: number[],
+    candidatePoints: number[],
+    type: ObjectType
+): number[] | null {
+    const current = boundaryPointsToPointList(
+        cleanupPolylineCommitPoints(currentPoints)
+    );
+
+    const candidate = boundaryPointsToPointList(
+        cleanupPolylineCommitPoints(candidatePoints)
+    );
+
+    if (current.length < 2 || candidate.length < 2) return null;
+
+    const currentVariants = [
+        current,
+        [...current].reverse(),
+    ];
+
+    const candidateVariants = [
+        candidate,
+        [...candidate].reverse(),
+    ];
+
+    let bestMerged: BoundaryPoint[] | null = null;
+    let bestScore = -Infinity;
+
+    for (const currentVariant of currentVariants) {
+        for (const candidateVariant of candidateVariants) {
+            const overlapForward = findBoundaryOverlapLength(
+                currentVariant,
+                candidateVariant
+            );
+
+            if (overlapForward > 0) {
+                const merged = [
+                    ...currentVariant,
+                    ...candidateVariant.slice(overlapForward),
+                ];
+
+                const score = overlapForward * 100000 + merged.length;
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMerged = merged;
+                }
+            }
+
+            const overlapBackward = findBoundaryOverlapLength(
+                candidateVariant,
+                currentVariant
+            );
+
+            if (overlapBackward > 0) {
+                const merged = [
+                    ...candidateVariant,
+                    ...currentVariant.slice(overlapBackward),
+                ];
+
+                const score = overlapBackward * 100000 + merged.length;
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMerged = merged;
+                }
+            }
+
+            const branchMerged = insertBoundaryBranchAtSegment(
+                currentVariant,
+                candidateVariant
+            );
+
+            if (branchMerged) {
+                const score = 50000 + branchMerged.length;
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMerged = branchMerged;
+                }
+            }
+
+            const reverseBranchMerged = insertBoundaryBranchAtSegment(
+                currentVariant,
+                [...candidateVariant].reverse()
+            );
+
+            if (reverseBranchMerged) {
+                const score = 50000 + reverseBranchMerged.length;
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMerged = reverseBranchMerged;
+                }
+            }
+        }
+    }
+
+    if (!bestMerged || bestMerged.length < 2) return null;
+
+    return preserveClosedBoundaryEndpoint(
+        cleanupPolylineCommitPoints(boundaryPointListToPoints(bestMerged)),
+        type
+    );
+}
+
+function mergeConnectedBoundaryObjects(
+    baseObj: PolyObject,
+    candidates: PolyObject[]
+): {
+    mergedObject: PolyObject;
+    mergedCandidateIds: string[];
+} {
+    let mergedObject: PolyObject = {
+        ...baseObj,
+        points: preserveClosedBoundaryEndpoint(baseObj.points, baseObj.type),
+    };
+
+    const mergedCandidateIds: string[] = [];
+    let changed = true;
+
+    while (changed) {
+        changed = false;
+
+        for (const candidate of candidates) {
+            if (mergedCandidateIds.includes(candidate.id)) continue;
+
+            const mergedPoints = mergeBoundaryPointArrays(
+                mergedObject.points,
+                candidate.points,
+                mergedObject.type
+            );
+
+            if (!mergedPoints) continue;
+
+            mergedObject = {
+                ...mergedObject,
+                points: mergedPoints,
+            };
+
+            mergedCandidateIds.push(candidate.id);
+            changed = true;
+        }
+    }
+
+    return {
+        mergedObject,
+        mergedCandidateIds,
+    };
+}
+
+function createBoundaryDifferenceCutter(obj: PolyObject): PolyObject | null {
+    if (!isUnifiedBoundaryType(obj.type)) return null;
+
+    const normalizedBoundary = normalizeBoundaryObjectSegments(obj);
+    const shape = getBoundaryBandShapeForObject(normalizedBoundary, SNAP_GRID_SIZE);
+
+    if (!shape.outer || shape.outer.length < 6) return null;
+
+    return {
+        ...normalizedBoundary,
         geometry: "polygon",
         points: shape.outer,
         holes: shape.holes?.length ? shape.holes : undefined,
@@ -762,13 +1407,20 @@ type Command =
         compassAfter: CompassDirection;
     }
 
-    // ✅ NEW: type-change (replaceMany) + plantbed-links snapshot in 1 undo stap
+    // ✅ NEW: type-change / merge (replaceMany) + plantbed-links snapshot in 1 undo stap
     | {
         kind: "replaceManyWithPlantbedLinks";
         before: PolyObject[];
         after: PolyObject[];
         removedLinks: PlantbedLinksMap;          // plantbedId -> plantIds[]
         removedCounts: Record<string, number>;   // plantbedId -> count
+
+        // ✅ Optioneel volledig snapshot voor acties waarbij links verplaatst worden,
+        // zoals hedge-merge. Hiermee blijven undo/redo en PlantSidebar altijd synchroon.
+        beforeLinks?: PlantbedLinksMap;
+        beforeCounts?: Record<string, number>;
+        afterLinks?: PlantbedLinksMap;
+        afterCounts?: Record<string, number>;
     }
 
     // ✅ Plant-links undo/redo
@@ -827,7 +1479,7 @@ type ProjectState = {
 
     getLinkedProgress: () => { linked: number; total: number };
 
-    linkPlantToPlantbed: (plantId: string, plantbedId: string) => void;
+    linkPlantToPlantbed: (plantId: string, plantbedId: string) => boolean;
     unlinkPlantFromPlantbedByPlantId: (plantbedId: string, plantId: string) => void;
 
     // ✅ UI focus trigger voor PlantSidebar (tab + plantvak openzetten)
@@ -872,6 +1524,11 @@ type ProjectState = {
     moveObjectsBatch: (items: { id: string; toPoints: number[] }[]) => void;
     moveObjectAndMerge: (id: string, toPoints: number[], toHoles?: number[][]) => void;
     updateObjectPoints: (id: string, toPoints: number[]) => void;
+    commitBoundarySegmentsEdit: (
+        objectId: string,
+        beforeObject: PolyObject,
+        afterBoundarySegments: number[][]
+    ) => void;
     changeObjectType: (id: string, nextType: ObjectType) => void;
     updateObjectStyle: (id: string, style: PolyObjectStyle) => void;
     resetObjectStyle: (id: string) => void;
@@ -1299,6 +1956,9 @@ function translatePolyObjectForDuplicate(obj: PolyObject, dx: number, dy: number
     return {
         ...obj,
         points: translatePoints(obj.points, dx, dy),
+        boundarySegments: obj.boundarySegments?.map((segment) =>
+            translatePoints(segment, dx, dy)
+        ),
         holes: translateHoles(obj.holes, dx, dy),
     };
 }
@@ -1712,8 +2372,8 @@ function shouldUseCellMerge(polys: PolyObject[]) {
     for (const p of polys) {
         if (!isOrthogonalPolygon(p.points)) return false;
 
-        for (const hole of p.holes ?? []) {
-            if (!isOrthogonalPolygon(hole)) return false;
+        if ((p.holes?.length ?? 0) > 0) {
+            return false;
         }
     }
 
@@ -1972,20 +2632,29 @@ function unionSameTypePolygons(polys: PolyObject[]): DiffPiece[] | null {
     const rawPaths: ClipperPaths = polys.flatMap((p) => polyObjectToClipperPaths(p));
     const FILL = ClipperLib.PolyFillType.pftNonZero;
 
-    // 1) sanitize input (self intersections fixen)
-    const simplifiedIn: ClipperPaths =
-        (ClipperLib.Clipper.SimplifyPolygons(rawPaths as any, FILL) as any) || [];
-    const subjects: ClipperPaths = normalizeWinding(simplifiedIn);
-    if (!subjects || subjects.length === 0) return null;
-
     const hasHoles = polys.some((p) => (p.holes?.length ?? 0) > 0);
 
-    // 2) Voor shapes zonder holes houden we de bestaande touch-merge semantiek via inflate.
-    //    Voor shapes mét holes mogen we NIET inflaten, anders lopen de gaten dicht.
+    // Belangrijk:
+    // Bij objecten met holes mogen we de winding NIET globaal normaliseren.
+    // normalizeWinding(...) maakt namelijk ook hole-contours clockwise,
+    // waardoor Clipper die holes als gewone vlakken ziet en het gat dichtloopt.
+    const simplifiedIn: ClipperPaths =
+        hasHoles
+            ? rawPaths
+            : ((ClipperLib.Clipper.SimplifyPolygons(rawPaths as any, FILL) as any) || []);
+
+    const subjects: ClipperPaths =
+        hasHoles
+            ? simplifiedIn
+            : normalizeWinding(simplifiedIn);
+
+    if (!subjects || subjects.length === 0) return null;
+
+    // Voor shapes zonder holes houden we de bestaande touch-merge semantiek via inflate.
+    // Voor shapes mét holes mogen we NIET inflaten, anders lopen gaten dicht.
     const unionInput: ClipperPaths = hasHoles ? subjects : offsetPaths(subjects, MERGE_EPS);
     if (!unionInput || unionInput.length === 0) return null;
 
-    // 3) union uitvoeren op de juiste input
     const clip = new ClipperLib.Clipper();
     clip.AddPaths(unionInput as any, ClipperLib.PolyType.ptSubject, true);
 
@@ -1993,14 +2662,11 @@ function unionSameTypePolygons(polys: PolyObject[]): DiffPiece[] | null {
     const ok = clip.Execute(ClipperLib.ClipType.ctUnion, polyTree as any, FILL, FILL);
     if (!ok) return null;
 
-    // 4) Lees direct outer + holes uit de union-tree
     const pieces = extractDiffPiecesFromPolyTree(polyTree);
     if (!pieces || pieces.length === 0) return null;
 
-    // 5) normaliseer output terug naar editor-ringen
     return normalizeMergePieces(pieces);
 }
-
 // -----------------------------
 // ✅ Fence/Gate compatibility helpers
 // We halen hier bewust alle speciale fence-boundary snapping en corridor-masking uit.
@@ -2174,10 +2840,10 @@ function inferPolylineRenderSide(
 }
 
 function withLinePieces(obj: PolyObject, allObjects: PolyObject[]): PolyObject {
-    const normalized: PolyObject = {
+    const normalized: PolyObject = normalizeBoundaryObjectSegments({
         ...obj,
         geometry: obj.geometry ?? getGeometryForType(obj.type),
-    };
+    });
 
     if (!isPolylineObject(normalized)) return normalized;
 
@@ -2187,10 +2853,14 @@ function withLinePieces(obj: PolyObject, allObjects: PolyObject[]): PolyObject {
         normalized.renderSide ?? 1
     );
 
+    const bandShape = getBoundaryBandShapeForObject(normalized, SNAP_GRID_SIZE);
+
     return {
         ...normalized,
         renderSide,
-        renderPieces: [],
+        renderPieces: bandShape.outer && bandShape.outer.length >= 6
+            ? [bandShape.outer]
+            : [],
     };
 }
 
@@ -2205,10 +2875,10 @@ function recalcLinePiecesForWorld(objects: PolyObject[]): PolyObject[] {
     return normalizedWorld.map((o) => {
         if (isPolylineObject(o)) {
             return withLinePieces(
-                {
+                normalizeBoundaryObjectSegments({
                     ...o,
                     points: preserveClosedBoundaryEndpoint(o.points, o.type),
-                },
+                }),
                 normalizedWorld
             );
         }
@@ -2564,16 +3234,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         return { linked: linkedPlantIds.size, total };
     },
 
-    linkPlantToPlantbed: (plantId, plantbedId) =>
+    linkPlantToPlantbed: (plantId, plantbedId) => {
+        let didLink = false;
+
         set((state) => {
             const isValidPlantbed = state.objects.some(
                 (obj) => obj.id === plantbedId && isNumberedLinkableObjectType(obj.type)
             );
 
             if (!isValidPlantbed) return state;
-
-            const plant = state.plants.find((p) => p.id === plantId);
-            if (!plant) return state;
 
             const existingLinks = state.plantbedLinks?.[plantbedId] ?? [];
             if (existingLinks.includes(plantId)) return state;
@@ -2586,13 +3255,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 plantbedId
             );
 
+            didLink = true;
+
             return {
                 plantbedLinks,
                 plantbedLinkedCount,
                 undoStack: [...state.undoStack, cmd],
                 redoStack: [],
             };
-        }),
+        });
+
+        return didLink;
+    },
 
     unlinkPlantFromPlantbedByPlantId: (plantbedId, plantId) =>
         set((state) => {
@@ -2677,6 +3351,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     ...obj,
                     id: nextId,
                     points: translatePoints(obj.points, dx, dy),
+                    boundarySegments: obj.boundarySegments?.map((segment) =>
+                        translatePoints(segment, dx, dy)
+                    ),
                     holes: translateHoles(obj.holes, dx, dy),
                     geometry: obj.geometry ?? getGeometryForType(obj.type),
                 };
@@ -2923,12 +3600,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             if (isPolylineObject(newObj)) {
                 const id = newObj.id ?? makeId();
 
-                const baseObj: PolyObject = {
+                const baseObj: PolyObject = normalizeBoundaryObjectSegments({
                     ...newObj,
                     id,
                     geometry: "polyline",
                     points: preserveClosedBoundaryEndpoint(newObj.points, newObj.type),
-                };
+                    boundarySegments: [
+                        preserveClosedBoundaryEndpoint(newObj.points, newObj.type),
+                    ],
+                });
 
                 let updatedObjects = [...state.objects] as PolyObject[];
 
@@ -2975,13 +3655,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     }
                 }
 
-                const reconciledExisting = reconcilePolygonsAgainstLineObjects(
+                const {
+                    mergedObject: mergedBoundaryObj,
+                    removeIds: mergedBoundaryRemoveIds,
+                } = mergeConnectedBoundaryPolylines(
+                    baseObj,
                     updatedObjects as PolyObject[],
-                    [baseObj]
+                    SNAP_GRID_SIZE
                 );
 
-                const worldWithNew = [...reconciledExisting, baseObj] as PolyObject[];
-                const objWithPieces = withLinePieces(baseObj, worldWithNew);
+                const mergedBoundaryRemoveIdSet = new Set(mergedBoundaryRemoveIds);
+
+                const worldWithoutMergedBoundaries = updatedObjects.filter(
+                    (object) => !mergedBoundaryRemoveIdSet.has(object.id)
+                );
+
+                const reconciledExisting = reconcilePolygonsAgainstLineObjects(
+                    worldWithoutMergedBoundaries as PolyObject[],
+                    [mergedBoundaryObj]
+                );
+
+                const worldWithNew = [...reconciledExisting, mergedBoundaryObj] as PolyObject[];
+                const objWithPieces = withLinePieces(mergedBoundaryObj, worldWithNew);
 
                 const cmd: Command = {
                     kind: "replaceMany",
@@ -2994,8 +3689,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
                 return {
                     objects: nextObjects,
-                    selectedObjectId: id,
-                    selectedObjectIds: [id],
+                    selectedObjectId: objWithPieces.id,
+                    selectedObjectIds: [objWithPieces.id],
                     nextPlantbedNo: recalcNextPlantbedNo(nextObjects),
                     undoStack: [...state.undoStack, cmd],
                     redoStack: [],
@@ -3343,11 +4038,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             // verwijder alle oude objects van dit type en voeg terug: untouched + (candidates/new merged)
             updatedObjects = updatedObjects.filter((o) => o.type !== type);
 
-            const cmd: Command = {
-                kind: "replaceMany",
-                before: state.objects,
-                after: [...updatedObjects, ...nextTypeObjects],
-            };
+            const afterObjects = [...updatedObjects, ...nextTypeObjects];
+
+            const cmd: Command =
+                type === "hedge"
+                    ? {
+                        kind: "replaceManyWithPlantbedLinks",
+                        before: state.objects,
+                        after: afterObjects,
+                        removedLinks: {},
+                        removedCounts: {},
+                        beforeLinks: clonePlantbedLinks(state.plantbedLinks),
+                        beforeCounts: { ...state.plantbedLinkedCount },
+                        afterLinks: clonePlantbedLinks(nextLinksMap),
+                        afterCounts: { ...nextCountsMap },
+                    }
+                    : {
+                        kind: "replaceMany",
+                        before: state.objects,
+                        after: afterObjects,
+                    };
 
             const nextObjectsRaw = applyCommand(state as ProjectState, cmd);
             const nextObjects = recalcLinePiecesForWorld(nextObjectsRaw);
@@ -3507,12 +4217,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             if (isPolylineObject(moved)) {
                 let worldWithout = state.objects.filter((o) => o.id !== id) as PolyObject[];
 
-                const baseObj: PolyObject = {
+                const dx = (toPoints[0] ?? 0) - (existing.points[0] ?? 0);
+                const dy = (toPoints[1] ?? 0) - (existing.points[1] ?? 0);
+
+                const translatedBoundarySegments =
+                    existing.boundarySegments?.length
+                        ? translateBoundarySegments(existing.boundarySegments, dx, dy)
+                        : [preserveClosedBoundaryEndpoint(toPoints, moved.type)];
+
+                const baseObj: PolyObject = normalizeBoundaryObjectSegments({
                     ...moved,
                     id,
                     geometry: "polyline",
                     points: preserveClosedBoundaryEndpoint(toPoints, moved.type),
-                };
+                    boundarySegments: translatedBoundarySegments,
+                });
 
                 const boundaryCutter = createBoundaryDifferenceCutter(baseObj);
                 if (boundaryCutter) {
@@ -3545,6 +4264,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 points: p.outer,
                                 holes: p.holes,
                                 plantbedNo: lower.plantbedNo,
+                                customStyle: lower.customStyle,
                             });
                         });
                     }
@@ -3556,10 +4276,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     }
                 }
 
-                const reconciledWorldWithout = reconcilePolygonsAgainstLineObjects(worldWithout, [baseObj]);
-                const worldWithNew = [...reconciledWorldWithout, baseObj] as PolyObject[];
+                const {
+                    mergedObject: mergedBoundaryObj,
+                    removeIds: mergedBoundaryRemoveIds,
+                } = mergeConnectedBoundaryPolylines(
+                    baseObj,
+                    worldWithout as PolyObject[],
+                    SNAP_GRID_SIZE
+                );
 
-                const movedWithPieces = withLinePieces(baseObj, worldWithNew);
+                const mergedBoundaryRemoveIdSet = new Set(mergedBoundaryRemoveIds);
+
+                const worldWithoutMergedBoundaries = worldWithout.filter(
+                    (object) => !mergedBoundaryRemoveIdSet.has(object.id)
+                );
+
+                const reconciledWorldWithout = reconcilePolygonsAgainstLineObjects(
+                    worldWithoutMergedBoundaries,
+                    [mergedBoundaryObj]
+                );
+
+                const worldWithNew = [...reconciledWorldWithout, mergedBoundaryObj] as PolyObject[];
+
+                const movedWithPieces = withLinePieces(mergedBoundaryObj, worldWithNew);
 
                 const cmd: Command = {
                     kind: "replaceMany",
@@ -3572,8 +4311,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
                 return {
                     objects: nextObjects,
-                    selectedObjectId: id,
-                    selectedObjectIds: [id],
+                    selectedObjectId: movedWithPieces.id,
+                    selectedObjectIds: [movedWithPieces.id],
                     nextPlantbedNo: recalcNextPlantbedNo(nextObjects),
                     undoStack: [...state.undoStack, cmd],
                     redoStack: [],
@@ -3653,6 +4392,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         points: p.outer,
                         holes: p.holes?.length ? p.holes : undefined,
                         plantbedNo: obj.plantbedNo,
+                        customStyle: obj.customStyle,
                     });
                 });
             }
@@ -4038,6 +4778,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
             let updatedObjectsFinal = updatedObjects;
             let afterObjectsFinal = movedObjectsRaw;
+            let mergedSourceObjectsForLinks: PolyObject[] = [];
 
             if (movedObjectsRaw.length > 0) {
                 const sameType = updatedObjects.filter((o) => o.type === type);
@@ -4055,20 +4796,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
                     const hasNonOrthogonalHigher = relevantHigher.some((h) => !isOrthogonalPolygon(h.points));
 
-                    const useCellMerge = shouldUseCellMerge(mergeInput) && !hasNonOrthogonalHigher;
+                    const useCellMerge =
+                        shouldUseCellMerge(mergeInput) &&
+                        !hasNonOrthogonalHigher;
 
                     const mergedPieces = useCellMerge
                         ? mergeSameTypeViaCells(mergeInput, SNAP_GRID_SIZE)
                         : unionSameTypePolygons(mergeInput);
 
                     if (mergedPieces && mergedPieces.length > 0) {
-                        // verwijder alleen de candidates (zelfde type) die we hebben “meegenomen”
+                        mergedSourceObjectsForLinks = mergeInput;
+
                         const removeIds = new Set(candidates.map((o) => o.id));
                         updatedObjectsFinal = updatedObjectsFinal.filter((o) => !removeIds.has(o.id));
 
-                        // ✅ Na merge opnieuw clippen tegen hogere lagen (bijv. tiles),
-                        // zodat samengevoegd gras NOOIT over tegels heen kan vallen.
-                        // Holes moeten hierbij holes blijven.
                         const clipAgainstHigher = (pieces: DiffPiece[]) => {
                             if (!higher || higher.length === 0) return pieces;
 
@@ -4093,9 +4834,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             }
                             return out;
                         };
+
                         const clippedMerged = clipAgainstHigher(mergedPieces);
 
-                        // eerste piece behoudt bestaand id zodat selectie stabiel blijft
                         let mergedObjects: PolyObject[] = clippedMerged
                             .filter((piece) => piece.outer.length >= 6)
                             .map((piece, idx) => ({
@@ -4103,12 +4844,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 type,
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
+                                plantbedNo: existing.plantbedNo,
+                                customStyle: existing.customStyle,
                             }));
 
-
-                        // 🔧 resize/draw parity:
-                        // als een inner contour per ongeluk als apart object is teruggekomen,
-                        // converteer die naar holes van het eerste object
                         if (mergedObjects.length > 1) {
                             const outer = mergedObjects[0];
                             const holes: number[][] = [];
@@ -4131,7 +4870,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             }
                         }
 
-                        // self-normalisatie zodat resize ook donuts kan maken
                         mergedObjects = mergedObjects.map((o) => normalizeSelfUnionToDonut(o));
 
                         afterObjectsFinal = mergedObjects;
@@ -4143,11 +4881,51 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 afterObjectsFinal = movedObjectsRaw;
             }
 
-            const cmd: Command = {
-                kind: "replaceMany",
-                before: state.objects,
-                after: [...updatedObjectsFinal, ...afterObjectsFinal],
-            };
+            const afterObjects = [...updatedObjectsFinal, ...afterObjectsFinal];
+
+            const nextLinksMap: PlantbedLinksMap = clonePlantbedLinks(state.plantbedLinks);
+            const nextCountsMap: Record<string, number> = { ...state.plantbedLinkedCount };
+
+            if (type === "hedge" && mergedSourceObjectsForLinks.length > 0 && afterObjectsFinal.length > 0) {
+                const mergedTarget =
+                    afterObjectsFinal.find((object) => object.id === existing.id) ??
+                    afterObjectsFinal[0];
+
+                const mergedPlantIds = Array.from(
+                    new Set(
+                        mergedSourceObjectsForLinks.flatMap((object) =>
+                            state.plantbedLinks[object.id] ?? []
+                        )
+                    )
+                );
+
+                for (const object of mergedSourceObjectsForLinks) {
+                    delete nextLinksMap[object.id];
+                    delete nextCountsMap[object.id];
+                }
+
+                nextLinksMap[mergedTarget.id] = mergedPlantIds;
+                nextCountsMap[mergedTarget.id] = mergedPlantIds.length;
+            }
+
+            const cmd: Command =
+                type === "hedge" && mergedSourceObjectsForLinks.length > 0
+                    ? {
+                        kind: "replaceManyWithPlantbedLinks",
+                        before: state.objects,
+                        after: afterObjects,
+                        removedLinks: {},
+                        removedCounts: {},
+                        beforeLinks: clonePlantbedLinks(state.plantbedLinks),
+                        beforeCounts: { ...state.plantbedLinkedCount },
+                        afterLinks: clonePlantbedLinks(nextLinksMap),
+                        afterCounts: { ...nextCountsMap },
+                    }
+                    : {
+                        kind: "replaceMany",
+                        before: state.objects,
+                        after: afterObjects,
+                    };
 
             const nextObjectsRaw = applyCommand(state as ProjectState, cmd);
             const nextObjects = recalcLinePiecesForWorld(nextObjectsRaw);
@@ -4160,6 +4938,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 objects: nextObjects,
                 selectedObjectId: nextSelectedId,
                 selectedObjectIds: nextSelectedId ? [nextSelectedId] : [],
+                plantbedLinks: type === "hedge" ? nextLinksMap : state.plantbedLinks,
+                plantbedLinkedCount: type === "hedge" ? nextCountsMap : state.plantbedLinkedCount,
                 undoStack: [...state.undoStack, cmd],
                 redoStack: [],
             };
@@ -4168,6 +4948,52 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     updateObjectPoints: (id, toPoints) => {
         get().moveObjectAndMerge(id, toPoints);
     },
+
+    commitBoundarySegmentsEdit: (objectId, beforeObject, afterBoundarySegments) =>
+        set((state) => {
+            const currentObject = state.objects.find((object) => object.id === objectId);
+            if (!currentObject || !isPolylineObject(currentObject)) return state;
+
+            const cleanedSegments = splitBoundarySegmentsAtJunctions(
+                afterBoundarySegments
+                    .map((segment) => preserveClosedBoundaryEndpoint(segment, currentObject.type))
+                    .filter((segment) => segment.length >= 4)
+            );
+
+            if (cleanedSegments.length === 0) return state;
+
+            const beforeObjects = state.objects.map((object) =>
+                object.id === objectId ? beforeObject : object
+            );
+
+            const afterObjectsRaw = state.objects.map((object) => {
+                if (object.id !== objectId) return object;
+
+                return {
+                    ...object,
+                    geometry: "polyline" as const,
+                    points: cleanedSegments[0],
+                    boundarySegments: cleanedSegments,
+                };
+            });
+
+            const afterObjects = recalcLinePiecesForWorld(afterObjectsRaw);
+
+            const cmd: Command = {
+                kind: "replaceMany",
+                before: beforeObjects,
+                after: afterObjects,
+            };
+
+            return {
+                objects: afterObjects,
+                selectedObjectId: objectId,
+                selectedObjectIds: [objectId],
+                nextPlantbedNo: recalcNextPlantbedNo(afterObjects),
+                undoStack: [...state.undoStack, cmd],
+                redoStack: [],
+            };
+        }),
 
     updateObjectStyle: (id, style) =>
         set((state) => {
@@ -5283,9 +6109,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 };
             }
 
-            // ✅ 2B) undo type-change-with-links: objects terug + links/counts terug
+            // ✅ 2B) undo type-change/merge-with-links: objects terug + links/counts terug
             if (inverse.kind === "replaceManyWithPlantbedLinks") {
                 const nextObjects = applyCommand(state as ProjectState, inverse);
+
+                if (cmd.kind === "replaceManyWithPlantbedLinks" && cmd.beforeLinks && cmd.beforeCounts) {
+                    return {
+                        objects: nextObjects,
+                        plantbedLinks: clonePlantbedLinks(cmd.beforeLinks),
+                        plantbedLinkedCount: { ...cmd.beforeCounts },
+                        nextPlantbedNo: recalcNextPlantbedNo(nextObjects),
+                        selectedObjectId: null,
+                        selectedObjectIds: [],
+                        undoStack: state.undoStack.slice(0, -1),
+                        redoStack: [...state.redoStack, cmd],
+                    };
+                }
 
                 const nextLinksMap: PlantbedLinksMap = { ...state.plantbedLinks };
                 const nextCountsMap: Record<string, number> = { ...state.plantbedLinkedCount };
@@ -5380,9 +6219,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 };
             }
 
-            // ✅ 2B) redo type-change-with-links: objects vooruit + links/counts weg
+            // ✅ 2B) redo type-change/merge-with-links: objects vooruit + links/counts vooruit
             if (cmd.kind === "replaceManyWithPlantbedLinks") {
                 const nextObjects = applyCommand(state as ProjectState, cmd);
+
+                if (cmd.afterLinks && cmd.afterCounts) {
+                    return {
+                        objects: nextObjects,
+                        plantbedLinks: clonePlantbedLinks(cmd.afterLinks),
+                        plantbedLinkedCount: { ...cmd.afterCounts },
+                        nextPlantbedNo: recalcNextPlantbedNo(nextObjects),
+                        selectedObjectId: null,
+                        selectedObjectIds: [],
+                        redoStack: state.redoStack.slice(0, -1),
+                        undoStack: [...state.undoStack, cmd],
+                    };
+                }
 
                 const nextLinksMap: PlantbedLinksMap = { ...state.plantbedLinks };
                 const nextCountsMap: Record<string, number> = { ...state.plantbedLinkedCount };

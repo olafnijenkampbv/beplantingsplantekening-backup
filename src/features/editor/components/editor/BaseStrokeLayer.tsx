@@ -1,7 +1,7 @@
 import React from "react";
 import { Layer, Line } from "react-konva";
 import { PolyObject, OBJECT_STYLES, ObjectType } from "@/state/projectStore";
-import { isUnifiedBoundaryType, getBoundaryBandShape } from "@/features/editor/lib/boundarySystem";
+import { isUnifiedBoundaryType, getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
 import {
     PolygonWithHoles,
 } from "@/features/editor/lib/editorCanvasPrimitives";
@@ -49,7 +49,7 @@ export default function BaseStrokeLayer({
                 const hasHoles = (obj.holes?.length ?? 0) > 0;
                 const isUnifiedBoundary = isUnifiedBoundaryType(obj.type);
                 const boundaryBandShape = isUnifiedBoundary
-                    ? getBoundaryBandShape(obj.points, obj.type)
+                    ? getBoundaryBandShapeForObject(obj)
                     : null;
 
                 if (obj.type === "hedge") {

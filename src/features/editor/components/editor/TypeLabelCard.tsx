@@ -91,11 +91,24 @@ export function getTypeLabelCardEstimatedSize({
     };
 }
 
-const isBoundaryType = (type: ObjectType) => {
-    return type === "fence" || type === "gate" || type === "poort";
+const getTypeMenuSectionTitle = (
+    groups: Array<{
+        title: string;
+        items: Array<{ id: ObjectType }>;
+    }>,
+    type: ObjectType
+) => {
+    return groups.find((group) =>
+        group.items.some((item) => item.id === type)
+    )?.title ?? null;
 };
 
-const isTypeChangeAllowed = (fromType: ObjectType, toType: ObjectType) => {
+const isTypeChangeAllowed = (
+    fromType: ObjectType,
+    toType: ObjectType,
+    fromSectionTitle: string | null,
+    toSectionTitle: string | null
+) => {
     if (fromType === toType) return false;
 
     const fromIsTreebed = fromType === "treebed";
@@ -106,15 +119,13 @@ const isTypeChangeAllowed = (fromType: ObjectType, toType: ObjectType) => {
         return false;
     }
 
-    const fromIsBoundary = isBoundaryType(fromType);
-    const toIsBoundary = isBoundaryType(toType);
-
-    // afbakening mag alleen naar afbakening, en niet naar andere families
-    if (fromIsBoundary !== toIsBoundary) {
+    // Objecten mogen alleen binnen dezelfde menucategorie gewijzigd worden.
+    // Bijvoorbeeld: Randen -> alleen Randen, Afbakening -> alleen Afbakening.
+    if (!fromSectionTitle || !toSectionTitle) {
         return false;
     }
 
-    return true;
+    return fromSectionTitle === toSectionTitle;
 };
 
 const EMPTY_LINKED_PLANT_IDS: string[] = [];
@@ -125,6 +136,7 @@ type TypeLabelCardProps = {
     currentCustomStyle?: Partial<(typeof OBJECT_STYLES)[ObjectType]>;
     labelText: string;
     badgeCount: number | null;
+    showPlantLinkInfo?: boolean;
     interactive?: boolean;
     pointerSide?: "bottom" | "left" | "right";
     onDuplicate?: () => void;
@@ -140,6 +152,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
         currentCustomStyle,
         labelText,
         badgeCount,
+        showPlantLinkInfo = true,
         interactive = false,
         pointerSide = "bottom",
         onDuplicate,
@@ -165,7 +178,14 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
         return s.plantbedLinks?.[selectedObjectId] ?? EMPTY_LINKED_PLANT_IDS;
     });
 
+    const canShowPlantLinkInfo =
+        showPlantLinkInfo &&
+        (currentType === "plantbed" || currentType === "hedge" || currentType === "treebed");
+
+    const visibleBadgeCount = canShowPlantLinkInfo ? badgeCount : null;
+
     const canShowAdvicePanel =
+        showPlantLinkInfo &&
         interactive &&
         selectedObject !== null &&
         (currentType === "plantbed" || currentType === "hedge") &&
@@ -215,11 +235,18 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
     }, [currentType, selectedLocationType]);
 
     const GROUPS_FILTERED = React.useMemo(() => {
+        const currentSectionTitle = getTypeMenuSectionTitle(GROUPS, currentType);
+
         return GROUPS
             .map((g) => ({
                 ...g,
                 items: g.items.filter((item) =>
-                    isTypeChangeAllowed(currentType, item.id)
+                    isTypeChangeAllowed(
+                        currentType,
+                        item.id,
+                        currentSectionTitle,
+                        g.title
+                    )
                 ),
             }))
             .filter((g) => g.items.length > 0);
@@ -419,23 +446,23 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                             labelText
                         )}
 
-                        {badgeCount !== null && (
+                        {visibleBadgeCount !== null && (
                             <span
                                 style={{
                                     width: LABEL_UI.badgeSize,
                                     height: LABEL_UI.badgeSize,
                                     borderRadius: 999,
-                                    background: badgeCount > 0 ? COLORS.orange : "#FFE5DD",
+                                    background: visibleBadgeCount > 0 ? COLORS.orange : "#FFE5DD",
                                     display: "inline-flex",
                                     alignItems: "center",
                                     justifyContent: "center",
-                                    color: badgeCount > 0 ? "#ffffff" : COLORS.orange,
+                                    color: visibleBadgeCount > 0 ? "#ffffff" : COLORS.orange,
                                     fontWeight: 700,
                                     fontSize: LABEL_UI.badgeFontSize,
                                     lineHeight: 1,
                                 }}
                             >
-                                {badgeCount}
+                                {visibleBadgeCount}
                             </span>
                         )}
                         

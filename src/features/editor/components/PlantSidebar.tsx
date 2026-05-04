@@ -617,6 +617,23 @@ export default function PlantSidebar(props: {
             (objects as any[]).map((obj) => [obj.id as string, obj])
         );
 
+        const getLinkedObjectLabelPart = (
+            count: number,
+            singular: string,
+            plural: string
+        ) => {
+            if (count <= 0) return null;
+            if (count === 1) return `een ${singular}`;
+            return `${count} ${plural}`;
+        };
+
+        const joinLabelParts = (parts: string[]) => {
+            if (parts.length === 1) return parts[0];
+            if (parts.length === 2) return `${parts[0]} en ${parts[1]}`;
+
+            return `${parts.slice(0, -1).join(", ")} en ${parts[parts.length - 1]}`;
+        };
+
         const labels: Record<string, string> = {};
 
         for (const plant of plants) {
@@ -630,20 +647,19 @@ export default function PlantSidebar(props: {
 
             if (linkedObjects.length === 0) continue;
 
-            if (linkedObjects.length === 1) {
-                const linkedObject = linkedObjects[0];
+            const plantbedCount = linkedObjects.filter((object) => object.type === "plantbed").length;
+            const hedgeCount = linkedObjects.filter((object) => object.type === "hedge").length;
+            const treebedCount = linkedObjects.filter((object) => object.type === "treebed").length;
 
-                labels[plant.id] =
-                    linkedObject?.type === "treebed"
-                        ? "aan boomvak gekoppeld"
-                        : linkedObject?.type === "hedge"
-                            ? "aan haag gekoppeld"
-                            : "aan 1 plantvak gekoppeld";
+            const labelParts = [
+                getLinkedObjectLabelPart(treebedCount, "boomvak", "boomvakken"),
+                getLinkedObjectLabelPart(hedgeCount, "haag", "hagen"),
+                getLinkedObjectLabelPart(plantbedCount, "plantvak", "plantvakken"),
+            ].filter(Boolean) as string[];
 
-                continue;
-            }
+            if (labelParts.length === 0) continue;
 
-            labels[plant.id] = `aan ${linkedObjects.length} plantvakken gekoppeld`;
+            labels[plant.id] = `aan ${joinLabelParts(labelParts)} gekoppeld`;
         }
 
         return labels;
@@ -829,7 +845,7 @@ export default function PlantSidebar(props: {
             <div
                 className="fixed"
                 style={{
-                    zIndex: 100,
+                    zIndex: 30,
                     right: 18,
                     bottom: 18,                       // ✅ ALTIJD bottom anchored (geen jump)         // ✅ ALTIJD bottom anchored (geen jump)
                     width: 420,

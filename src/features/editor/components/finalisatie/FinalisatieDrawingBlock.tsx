@@ -25,6 +25,7 @@ import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwa
 import type { PolyObject } from "@/state/projectStore";
 import { getObjectAreaInSquareMeters, formatSquareMeters } from "@/state/areaMetrics";
 import { EDITOR_GRID_SIZE } from "@/features/editor/constants/editorGeometry";
+import { getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 
@@ -144,6 +145,35 @@ function getReadablePlantbedLabelColor(fillColor: string): string {
     const bb = luminance > 0.62 ? darken(b) : lighten(b);
     const toHex = (v: number) => v.toString(16).padStart(2, "0").toUpperCase();
     return `#${toHex(rr)}${toHex(gg)}${toHex(bb)}`;
+}
+
+// Minimum bounding dimension for proportional font sizing (mirrors treebed's r-based approach)
+function getPolyMinDim(pts: number[]): number {
+    if (pts.length < 4) return 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i + 1 < pts.length; i += 2) {
+        if (pts[i] < minX) minX = pts[i];
+        if (pts[i] > maxX) maxX = pts[i];
+        if (pts[i + 1] < minY) minY = pts[i + 1];
+        if (pts[i + 1] > maxY) maxY = pts[i + 1];
+    }
+    return Math.min(maxX - minX, maxY - minY);
+}
+
+// Bumpy/organic circle SVG path — matches the treebed outline rendered in the editor
+function getBumpyCirclePath(cx: number, cy: number, r: number, steps = 48): string {
+    const pts: string[] = [];
+    for (let i = 0; i < steps; i++) {
+        const t = i / steps;
+        const angle = t * Math.PI * 2;
+        const bump = r * (
+            1 +
+            0.055 * Math.sin(t * 6.5 * Math.PI * 2 + 0.7) +
+            0.02 * Math.sin(t * 11 * Math.PI * 2 + 1.3)
+        );
+        pts.push(`${cx + Math.cos(angle) * bump},${cy + Math.sin(angle) * bump}`);
+    }
+    return `M ${pts.join(" L ")} Z`;
 }
 
 // Canvas label: plain number only (no P/H/B prefix), matching the editor display
@@ -362,17 +392,40 @@ function ProductRows({
 
     const grouped = useMemo(() => {
         const map = new Map<CategoryType, FlatRow[]>();
+
         for (const row of rows) {
             const type = row.object.type as CategoryType;
             if (!CATEGORY_ORDER.includes(type)) continue;
-            if (!map.has(type)) map.set(type, []);
+
+            if (!map.has(type)) {
+                map.set(type, []);
+            }
+
             map.get(type)!.push(row);
         }
-        return CATEGORY_ORDER.filter((t) => map.has(t)).map((t) => ({
-            type: t,
-            rows: map.get(t)!,
-            uniqueCount: new Set(map.get(t)!.map((r) => r.objectId)).size,
-        }));
+
+        const getVakNumber = (row: FlatRow) => {
+            const match = row.vakLabel.match(/\d+/);
+            return match ? Number(match[0]) : Number.MAX_SAFE_INTEGER;
+        };
+
+        return CATEGORY_ORDER.filter((t) => map.has(t)).map((t) => {
+            const groupRows = map.get(t)!;
+
+            return {
+                type: t,
+                rows: [...groupRows].sort((a, b) => {
+                    const vakNumberDifference = getVakNumber(a) - getVakNumber(b);
+
+                    if (vakNumberDifference !== 0) {
+                        return vakNumberDifference;
+                    }
+
+                    return a.latinName.localeCompare(b.latinName);
+                }),
+                uniqueCount: new Set(groupRows.map((r) => r.objectId)).size,
+            };
+        });
     }, [rows]);
 
     if (!rows.length) {
@@ -577,6 +630,21 @@ export default function FinalisatieDrawingBlock() {
         [objects]
     );
 
+    // Pre-compute boundary band shapes using ALL segments (not just obj.points)
+    // so fences/walls along multiple sides are fully rendered
+    const boundaryBandShapes = useMemo(() => {
+        const map = new Map<string, { outer: number[]; holes: number[][] }>();
+        for (const obj of objects) {
+            if (
+                isBoundaryObjectType(obj.type as ObjectType) ||
+                OBJECT_LIBRARY[obj.type as ObjectType]?.geometry === "polyline"
+            ) {
+                map.set(obj.id, getBoundaryBandShapeForObject(obj));
+            }
+        }
+        return map;
+    }, [objects]);
+
     const legendSections = useMemo(() => {
         const sections = getObjectMenuSections(locationType);
         return sections
@@ -763,6 +831,35 @@ export default function FinalisatieDrawingBlock() {
                                     opacity={0.5}
                                 />
                             </pattern>
+                            {/* Per-object clip paths — labels are clipped to their own polygon so text
+                                never bleeds into neighbouring objects. clipPathUnits="userSpaceOnUse"
+                                means coordinates are in canvas space, matching obj.points exactly. */}
+                            {sortedObjects.map((obj) => {
+                                const def = OBJECT_LIBRARY[obj.type as ObjectType];
+                                if (!def) return null;
+                                if (obj.type === "treebed") return null;
+                                if (
+                                    isBoundaryObjectType(obj.type as ObjectType) ||
+                                    def.geometry === "polyline"
+                                ) return null;
+                                if (obj.points.length < 6) return null;
+                                return (
+                                    <clipPath
+                                        key={`fg-clip-${obj.id}`}
+                                        id={`fg-clip-${obj.id}`}
+                                        clipPathUnits="userSpaceOnUse"
+                                    >
+                                        {obj.holes?.length ? (
+                                            <path
+                                                d={makePathD(obj.points, obj.holes)}
+                                                fillRule="evenodd"
+                                            />
+                                        ) : (
+                                            <polygon points={pointsToSvgString(obj.points)} />
+                                        )}
+                                    </clipPath>
+                                );
+                            })}
                         </defs>
 
                         <g transform={`translate(${panX},${panY}) scale(${zoom})`}>
@@ -783,7 +880,7 @@ export default function FinalisatieDrawingBlock() {
                                 const isHovByType = hoveredLegendType === (obj.type as ObjectType);
 
                                 const canvasLabel = getCanvasLabel(obj, objects);
-                                const areaText = (isPlantbed || isHedge || isTb)
+                                const areaText = (!isBoundary && !isLine)
                                     ? formatSquareMeters(getObjectAreaInSquareMeters(obj))
                                     : "";
 
@@ -800,10 +897,8 @@ export default function FinalisatieDrawingBlock() {
                                         >
                                             {v.shape === "circle" ? (
                                                 <>
-                                                    <circle
-                                                        cx={v.cx}
-                                                        cy={v.cy}
-                                                        r={v.r}
+                                                    <path
+                                                        d={getBumpyCirclePath(v.cx, v.cy, v.r)}
                                                         fill={COLORS.treebedFill}
                                                         stroke={COLORS.treebedStroke}
                                                         strokeWidth={2}
@@ -923,32 +1018,29 @@ export default function FinalisatieDrawingBlock() {
                                     );
                                 }
 
-                                // ── Boundary polyline ──
+                                // ── Boundary / polyline — filled band polygon, all segments (matches editor) ──
                                 if (isBoundary || isLine) {
+                                    const band = boundaryBandShapes.get(obj.id);
+                                    if (!band || band.outer.length < 6) return null;
                                     return (
                                         <g
                                             key={obj.id}
                                             onMouseEnter={() => setHoveredObjectId(obj.id)}
                                             onMouseLeave={() => setHoveredObjectId(null)}
                                         >
-                                            <polyline
-                                                points={pointsToSvgString(obj.points)}
-                                                fill="none"
-                                                stroke={stroke}
-                                                strokeWidth={15}
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
+                                            <path
+                                                d={makePathD(band.outer, band.holes)}
+                                                fillRule="evenodd"
+                                                fill={fill}
+                                                stroke="none"
                                             />
                                             {(isHovById || isHovByType) && (
-                                                <polyline
-                                                    points={pointsToSvgString(obj.points)}
-                                                    fill="none"
-                                                    stroke={isHovById ? COLORS.orange : COLORS.green}
-                                                    strokeWidth={17}
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    strokeDasharray={isHovByType && !isHovById ? "6,4" : undefined}
-                                                    opacity={0.6}
+                                                <path
+                                                    d={makePathD(band.outer, band.holes)}
+                                                    fillRule="evenodd"
+                                                    fill={isHovById ? COLORS.orange : COLORS.green}
+                                                    opacity={0.35}
+                                                    stroke="none"
                                                     style={{ pointerEvents: "none" }}
                                                 />
                                             )}
@@ -959,8 +1051,21 @@ export default function FinalisatieDrawingBlock() {
                                 // ── Regular polygon (plantbed, hedge, ground, building) ──
                                 const patFill = isBuilding ? `url(#fg-bp-${obj.type})` : fill;
                                 const dashArr = (isPlantbed || isHedge) ? "6 4" : undefined;
-                                const centroid =
-                                    canvasLabel && obj.points.length >= 6 ? getCentroid(obj.points) : null;
+
+                                // Fixed font size for every polygon — keeps all labels "even groot".
+                                // clipPath (defined in <defs>) clips text to the object so it can
+                                // never bleed into neighbouring objects.
+                                const polyMinDim = getPolyMinDim(obj.points);
+                                const numFontSize = 12;
+                                const areaFontSize = 9;
+                                const labelHalfGap = 8;
+                                const labelColor = isPlantbed
+                                    ? getReadablePlantbedLabelColor(fill)
+                                    : stroke;
+                                // Only render a centroid when the object is large enough to hold text
+                                const centroid = polyMinDim >= 22 && obj.points.length >= 6
+                                    ? getCentroid(obj.points)
+                                    : null;
 
                                 const shapeProps = {
                                     fill: patFill,
@@ -1027,48 +1132,41 @@ export default function FinalisatieDrawingBlock() {
                                             </>
                                         )}
 
-                                        {/* Labels: number + area stacked at centroid */}
-                                        {centroid && (
-                                            <>
-                                                <text
-                                                    x={centroid.x}
-                                                    y={centroid.y - (areaText ? 7 : 0)}
-                                                    textAnchor="middle"
-                                                    dominantBaseline="central"
-                                                    fontSize={11}
-                                                    fontWeight="700"
-                                                    fill={
-                                                        isPlantbed
-                                                            ? getReadablePlantbedLabelColor(fill)
-                                                            : isHedge
-                                                            ? stroke
-                                                            : COLORS.text
-                                                    }
-                                                    style={{ pointerEvents: "none", userSelect: "none" }}
-                                                >
-                                                    {canvasLabel}
-                                                </text>
+                                        {/* Labels: number + area, fixed size, clipped to this object's shape */}
+                                        {centroid && (canvasLabel || areaText) && (
+                                            <g
+                                                clipPath={`url(#fg-clip-${obj.id})`}
+                                                style={{ pointerEvents: "none" }}
+                                            >
+                                                {canvasLabel && (
+                                                    <text
+                                                        x={centroid.x}
+                                                        y={centroid.y - (areaText ? labelHalfGap : 0)}
+                                                        textAnchor="middle"
+                                                        dominantBaseline="central"
+                                                        fontSize={numFontSize}
+                                                        fontWeight="700"
+                                                        fill={labelColor}
+                                                        style={{ userSelect: "none" }}
+                                                    >
+                                                        {canvasLabel}
+                                                    </text>
+                                                )}
                                                 {areaText && (
                                                     <text
                                                         x={centroid.x}
-                                                        y={centroid.y + 7}
+                                                        y={centroid.y + (canvasLabel ? labelHalfGap : 0)}
                                                         textAnchor="middle"
                                                         dominantBaseline="central"
-                                                        fontSize={9}
+                                                        fontSize={areaFontSize}
                                                         fontWeight="400"
-                                                        fill={
-                                                            isPlantbed
-                                                                ? getReadablePlantbedLabelColor(fill)
-                                                                : isHedge
-                                                                ? stroke
-                                                                : COLORS.text
-                                                        }
-                                                        style={{ pointerEvents: "none", userSelect: "none" }}
+                                                        fill={labelColor}
+                                                        style={{ userSelect: "none" }}
                                                     >
                                                         {areaText}
                                                     </text>
                                                 )}
-                                            </>
+                                            </g>
                                         )}
                                     </g>
                                 );
@@ -1238,6 +1336,7 @@ export default function FinalisatieDrawingBlock() {
                     onRowHover={setHoveredRowObjectId}
                 />
             </div>
+
         </section>
     );
 }

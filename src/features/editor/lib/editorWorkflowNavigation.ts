@@ -1,4 +1,9 @@
-import { writeActiveDrawingIdToStorage } from "@/features/editor/lib/appDrawingPersistence";
+import {
+    readActiveDrawingIdFromStorage,
+    readRightStepSnapshotsByDrawingIdFromStorage,
+    writeActiveDrawingIdToStorage,
+    writeRightStepSnapshotsByDrawingIdToStorage,
+} from "@/features/editor/lib/appDrawingPersistence";
 
 export function goBackToEditor() {
     if (typeof window === "undefined") {
@@ -14,6 +19,7 @@ export function goBackToEditor() {
             : null
     );
 
+    window.sessionStorage.setItem("hello-editor:return-to-editor", "1");
     window.location.assign("/");
 }
 
@@ -38,6 +44,7 @@ export function goToPlantLinkingEditor() {
     }
 
     writeActiveDrawingIdToStorage(normalizedActiveDrawingId);
+    window.sessionStorage.setItem("hello-editor:return-to-editor", "1");
     window.location.assign("/");
 }
 
@@ -72,7 +79,29 @@ export function goToWorkflowStepFromPlantSelection(stepId: number) {
     }
 
     if (stepId >= 1 && stepId <= 4) {
-        window.sessionStorage.setItem("plantSelectionReturnStep", String(stepId));
+        const targetStep = stepId as 1 | 2 | 3 | 4;
+
+        // Persist the target step directly in the snapshot so the editor loads
+        // at the correct step on hydration, without relying on sessionStorage timing.
+        const activeDrawingId = readActiveDrawingIdFromStorage();
+        if (activeDrawingId) {
+            const snapshotsByDrawingId = readRightStepSnapshotsByDrawingIdFromStorage();
+            const currentSnapshot = snapshotsByDrawingId[activeDrawingId];
+            if (currentSnapshot) {
+                writeRightStepSnapshotsByDrawingIdToStorage({
+                    ...snapshotsByDrawingId,
+                    [activeDrawingId]: { ...currentSnapshot, activeStep: targetStep },
+                });
+            }
+
+            // Ensure the editor opens the step wizard panel, not the plant list panel.
+            window.sessionStorage.setItem(
+                `hello-editor:right-panel-mode:${activeDrawingId}`,
+                "steps"
+            );
+        }
+
+        window.sessionStorage.setItem("hello-editor:return-to-editor", "1");
         window.location.assign("/");
         return;
     }

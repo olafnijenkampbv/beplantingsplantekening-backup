@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { OBJECT_STYLES, type ObjectType } from "@/state/projectStore";
+import type { PolyObject } from "@/state/projectStore";
+import { isBoundaryObjectType, OBJECT_LIBRARY } from "@/features/editor/components/editor/objectMenuConfig";
+import { getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
 
 type DrawingPreviewObject = {
     id: string;
     type: ObjectType;
     points: number[];
+    boundarySegments?: number[][];
     customStyle?: {
         fill?: string;
         stroke?: string;
@@ -82,7 +86,7 @@ function bboxFromPreviewObjects(objects: DrawingPreviewObject[]) {
 }
 
 function isLineOnlyType(type: ObjectType) {
-    return type === "fence" || type === "gate";
+    return isBoundaryObjectType(type) || OBJECT_LIBRARY[type]?.geometry === "polyline";
 }
 
 function getObjectBounds(points: number[]) {
@@ -261,16 +265,29 @@ const DrawingCardPreview: React.FC<{ objects: DrawingPreviewObject[] }> = ({ obj
                     const points = toSvgPoints(obj.points);
 
                     if (isLineOnlyType(obj.type)) {
+                        // Render as filled band polygon using all boundary segments
+                        const band = getBoundaryBandShapeForObject(obj as unknown as PolyObject);
+                        if (!band || band.outer.length < 6) return null;
+                        // Transform raw canvas coords → SVG preview coords
+                        const toPairs = (pts: number[]) => {
+                            const out: string[] = [];
+                            for (let i = 0; i + 1 < pts.length; i += 2) {
+                                out.push(`${toSvgX(pts[i])},${toSvgY(pts[i + 1])}`);
+                            }
+                            return out;
+                        };
+                        let d = `M ${toPairs(band.outer).join(" L ")} Z`;
+                        for (const hole of band.holes) {
+                            if (hole.length < 6) continue;
+                            d += ` M ${toPairs(hole).join(" L ")} Z`;
+                        }
                         return (
-                            <polyline
+                            <path
                                 key={obj.id}
-                                points={points}
-                                fill="none"
-                                stroke={previewStyle.stroke}
-                                strokeOpacity={previewStyle.opacity ?? 1}
-                                strokeWidth={previewStyle.strokeWidth}
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
+                                d={d}
+                                fillRule="evenodd"
+                                fill={previewStyle.stroke ?? "#888"}
+                                stroke="none"
                             />
                         );
                     }

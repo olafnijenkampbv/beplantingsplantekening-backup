@@ -7,7 +7,6 @@ const COLORS = {
     border: "#E3E2E2",
     green: "#58694C",
     text: "#111111",
-    softText: "#6B6B6B",
 };
 
 function ContactColumn(props: {
@@ -31,7 +30,7 @@ function ContactColumn(props: {
 
                 <button
                     type="button"
-                    className="shrink-0 mt-0.5"
+                    className="shrink-0 mt-0.5 cursor-pointer"
                     style={{ background: "transparent", border: "none", padding: 0 }}
                     aria-label="Bewerken"
                 >
@@ -52,7 +51,7 @@ function ContactColumn(props: {
                 </p>
                 <p
                     className="text-[14px]"
-                    style={{ color: COLORS.softText }}
+                    style={{ color: COLORS.text }}
                 >
                     {address}
                 </p>
@@ -67,7 +66,7 @@ function ContactColumn(props: {
                     />
                     <span
                         className="text-[14px]"
-                        style={{ color: COLORS.softText }}
+                        style={{ color: COLORS.text }}
                     >
                         {email}
                     </span>
@@ -81,7 +80,7 @@ function ContactColumn(props: {
                     />
                     <span
                         className="text-[14px]"
-                        style={{ color: COLORS.softText }}
+                        style={{ color: COLORS.text }}
                     >
                         {phone}
                     </span>
@@ -101,7 +100,10 @@ export default function FinalisatieContactCard() {
                 boxShadow: "5px 3px 46px -25px rgba(0, 0, 0, 0.25)",
             }}
         >
-            <div className="flex gap-8">
+            <div
+                className="flex flex-col sm:flex-row gap-6 sm:gap-8 rounded-[8px] border p-5"
+                style={{ borderColor: COLORS.border }}
+            >
                 <ContactColumn
                     title="Beplantingsplan van"
                     companyName="Hoveniersbedrijf"
@@ -111,7 +113,12 @@ export default function FinalisatieContactCard() {
                 />
 
                 <div
-                    className="w-px self-stretch"
+                    className="hidden sm:block w-px self-stretch"
+                    style={{ backgroundColor: COLORS.border }}
+                />
+
+                <div
+                    className="block sm:hidden h-px w-full"
                     style={{ backgroundColor: COLORS.border }}
                 />
 

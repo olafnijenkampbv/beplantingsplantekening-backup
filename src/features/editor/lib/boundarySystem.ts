@@ -522,6 +522,19 @@ function createBoundarySegmentBandWithSmartCaps(
     ];
 }
 
+function createJunctionFillerPolygon(cx: number, cy: number, radius: number): number[] {
+    const pts: number[] = [];
+    const sides = 8;
+    // Iterate in DECREASING angle to produce CW winding (math coords),
+    // matching the winding of the boundary band rectangles so Clipper's
+    // pftNonZero fill rule fills the overlap instead of punching a hole.
+    for (let i = sides - 1; i >= 0; i--) {
+        const angle = (i / sides) * Math.PI * 2;
+        pts.push(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+    }
+    return pts;
+}
+
 function getBoundaryPolyNodeChildren(node: any): any[] {
     if (!node) return [];
 
@@ -1205,6 +1218,15 @@ function getBoundaryBandShapeFromSegmentList(
         }
     };
 
+    const appendJunctionFillers = (target: number[][]) => {
+        for (const [key, connectedEdges] of adjacency.entries()) {
+            if (connectedEdges.length >= 3) {
+                const jp = getBoundaryRenderPointFromKey(key);
+                target.push(createJunctionFillerPolygon(jp.x, jp.y, halfThickness));
+            }
+        }
+    };
+
     const graphLoops = buildClosedBoundaryLoopsFromGraph(edges);
 
     if (graphLoops.length > 0) {
@@ -1232,6 +1254,7 @@ function getBoundaryBandShapeFromSegmentList(
 
         if (hasJunction) {
             appendSegmentBands(remainingEdges, bandPolygons);
+            appendJunctionFillers(bandPolygons);
         } else {
             const remainingChains = buildBoundaryRenderChains(remainingEdges);
 
@@ -1257,6 +1280,7 @@ function getBoundaryBandShapeFromSegmentList(
 
     if (hasJunction) {
         appendSegmentBands(edges, bandPolygons);
+        appendJunctionFillers(bandPolygons);
         return unionBoundaryBandPolygons(bandPolygons);
     }
 

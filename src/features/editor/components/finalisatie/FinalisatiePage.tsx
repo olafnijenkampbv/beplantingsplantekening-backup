@@ -3,11 +3,13 @@
 import React, { useEffect, useState } from "react";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
+import { useProjectStore } from "@/state/projectStore";
 import { goBackToEditor } from "@/features/editor/lib/editorWorkflowNavigation";
 import {
     getPlantSelectionSnapshotForDrawing,
     getRightStepSnapshotForDrawing,
     readActiveDrawingIdFromStorage,
+    readDrawingsFromStorage,
     readPlantSelectionSnapshotsByDrawingIdFromStorage,
     readRightStepSnapshotsByDrawingIdFromStorage,
     writePlantSelectionSnapshotsByDrawingIdToStorage,
@@ -16,6 +18,7 @@ import FinalisatieProgress from "@/features/editor/components/finalisatie/Finali
 import FinalisatieContactCard from "@/features/editor/components/finalisatie/FinalisatieContactCard";
 import FinalisatieSidePanel from "@/features/editor/components/finalisatie/FinalisatieSidePanel";
 import FinalisatiePlantList from "@/features/editor/components/finalisatie/FinalisatiePlantList";
+import FinalisatieDrawingBlock from "@/features/editor/components/finalisatie/FinalisatieDrawingBlock";
 
 const COLORS = {
     pageBg: "#F5F4F2",
@@ -40,6 +43,21 @@ export default function FinalisatiePage() {
         const rightStepSnapshotsByDrawingId = readRightStepSnapshotsByDrawingIdFromStorage();
         const plantSelectionSnapshotsByDrawingId =
             readPlantSelectionSnapshotsByDrawingIdFromStorage();
+
+        // Hydrate projectStore with objects/plantbedLinks/distributionOverrides from
+        // the saved drawing snapshot so that the plant-coupling labels and advice
+        // counts in FinalisatiePlantList are computed from real persisted data.
+        const { drawings } = readDrawingsFromStorage();
+        const restoredDrawing =
+            drawings.find((d) => d.id === restoredDrawingId) ?? drawings[0];
+        if (restoredDrawing?.snapshot) {
+            useProjectStore.setState({
+                objects: restoredDrawing.snapshot.objects ?? [],
+                plantbedLinks: restoredDrawing.snapshot.plantbedLinks ?? {},
+                distributionOverrides: restoredDrawing.snapshot.distributionOverrides ?? {},
+                compassDirection: restoredDrawing.snapshot.compassDirection ?? "noord",
+            });
+        }
 
         const rightStepSnapshot = getRightStepSnapshotForDrawing(
             restoredDrawingId,
@@ -143,35 +161,7 @@ export default function FinalisatiePage() {
                         <FinalisatieContactCard />
                         <FinalisatiePlantList />
 
-                        <section
-                            className="rounded-[10px] border p-6"
-                            style={{
-                                backgroundColor: COLORS.cardBg,
-                                borderColor: COLORS.border,
-                                boxShadow: "5px 3px 46px -25px rgba(0, 0, 0, 0.25)",
-                            }}
-                        >
-                            <h2
-                                className="text-[18px] font-semibold"
-                                style={{ color: COLORS.green }}
-                            >
-                                Beplantingsplan tekening
-                            </h2>
-                            <p
-                                className="mt-2 text-[14px]"
-                                style={{ color: "#6B6B6B" }}
-                            >
-                                Bekijk hieronder de technische tekening van jouw beplantingsplan of genereer een realistische visualisatie met AI.
-                            </p>
-                            <div
-                                className="mt-6 rounded-[6px]"
-                                style={{
-                                    minHeight: 240,
-                                    backgroundColor: "#F5F4F2",
-                                    border: `1px solid ${COLORS.border}`,
-                                }}
-                            />
-                        </section>
+                        <FinalisatieDrawingBlock />
                     </div>
 
                     <div className="xl:sticky xl:top-8 xl:self-start">

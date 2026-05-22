@@ -335,6 +335,9 @@ function rotateEditorObjectQuarterTurnClockwise(
                 cy,
                 gridSize
             ),
+            boundarySegments: obj.boundarySegments?.map((seg) =>
+                rotateBoundaryPointsQuarterTurnClockwise(seg, cx, cy, gridSize)
+            ),
         };
     }
 
@@ -2102,6 +2105,13 @@ export default function HelloEditor() {
     useEffect(() => {
         if (typeof window === "undefined") return;
 
+        // Flag set by in-app navigation (goBackToEditor, goToPlantLinkingEditor,
+        // goToWorkflowStepFromPlantSelection). Absent on a fresh page load or
+        // browser refresh, which signals that the dashboard should open first.
+        const isReturningToEditor =
+            window.sessionStorage.getItem("hello-editor:return-to-editor") === "1";
+        window.sessionStorage.removeItem("hello-editor:return-to-editor");
+
         try {
             const { drawings: nextDrawings, activeDrawingId: restoredActiveDrawingId } =
                 readDrawingsFromStorage();
@@ -2137,6 +2147,35 @@ export default function HelloEditor() {
             setEditorDrawings(nextDrawings);
             setRightStepSnapshotsByDrawingId(nextRightStepSnapshotsByDrawingId);
             setPlantSelectionSnapshotsByDrawingId(nextPlantSelectionSnapshotsByDrawingId);
+
+            if (!isReturningToEditor) {
+                // Only show the dashboard on the very first visit ever.
+                // On subsequent refreshes, go straight to the last active drawing.
+                const HAS_VISITED_KEY = "hello-editor:has-visited";
+                const hasVisited =
+                    window.localStorage.getItem(HAS_VISITED_KEY) === "1";
+
+                // Mark as visited so future refreshes skip the dashboard.
+                window.localStorage.setItem(HAS_VISITED_KEY, "1");
+
+                if (!hasVisited) {
+                    // First time opening the app: show the dashboard.
+                    isRestoringDrawingRef.current = true;
+                    isRestoringRightStepMenuRef.current = true;
+
+                    loadSnapshotIntoStore(createEmptyDrawingSnapshot());
+                    loadRightStepMenuSnapshotIntoStore(createEmptyRightStepMenuSnapshot());
+                    usePlantSelectionStore.getState().resetForNewDrawing();
+
+                    setActiveDrawingId(null);
+                    setSaveState("saved");
+                    setIsDrawingsDashboardOpen(true);
+                    setIsDrawingsHydrated(true);
+                    return;
+                }
+                // Already visited before: fall through and load the last active drawing.
+            }
+
             setActiveDrawingId(restoredDrawing.id);
 
             isRestoringDrawingRef.current = true;

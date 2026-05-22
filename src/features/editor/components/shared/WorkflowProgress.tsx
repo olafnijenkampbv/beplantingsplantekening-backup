@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useLayoutEffect, useMemo } from "react";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import {
     goToWorkflowStepFromPlantSelection,
@@ -13,6 +13,13 @@ import {
     readActiveDrawingIdFromStorage,
     readRightStepSnapshotsByDrawingIdFromStorage,
 } from "@/features/editor/lib/appDrawingPersistence";
+
+// useLayoutEffect fires synchronously after DOM mutations, before the browser
+// paints — so store hydration and the resulting re-render both happen before
+// the first paint, eliminating the grey-step flash after a page refresh.
+// useEffect is used on the server where layout effects cannot run.
+const useIsomorphicLayoutEffect =
+    typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 const COLORS = {
     green: "#58694C",
@@ -47,15 +54,17 @@ type WorkflowProgressProps = {
 export default function WorkflowProgress(props: WorkflowProgressProps) {
     const { activeStep } = props;
 
-    const isStep1Complete = useRightStepMenuStore((s) => s.isStep1Complete);
-    const isStep2Complete = useRightStepMenuStore((s) => s.isStep2Complete);
-    const isStep3Complete = useRightStepMenuStore((s) => s.isStep3Complete);
-    const isStep4Complete = useRightStepMenuStore((s) => s.isStep4Complete);
-    const isStepAccessible = useRightStepMenuStore((s) => s.isStepAccessible);
+    // Selectors return boolean results, not function references.
+    // Zustand compares selector output via Object.is: a stable function reference
+    // never changes, so a selector returning (s) => s.isStep1Complete would never
+    // trigger a re-render. Calling the function — (s) => s.isStep1Complete() —
+    // returns a boolean that Zustand can meaningfully diff (false → true).
+    const isStep1Complete = useRightStepMenuStore((s) => s.isStep1Complete());
+    const isStep2Complete = useRightStepMenuStore((s) => s.isStep2Complete());
+    const isStep3Complete = useRightStepMenuStore((s) => s.isStep3Complete());
+    const isStep4Complete = useRightStepMenuStore((s) => s.isStep4Complete());
 
-    useEffect(() => {
-        if (typeof window === "undefined") return;
-
+    useIsomorphicLayoutEffect(() => {
         const activeDrawingId = readActiveDrawingIdFromStorage();
         const rightStepSnapshotsByDrawingId = readRightStepSnapshotsByDrawingIdFromStorage();
         const snapshot = getRightStepSnapshotForDrawing(
@@ -93,10 +102,10 @@ export default function WorkflowProgress(props: WorkflowProgressProps) {
 
     const completedCount = useMemo(() => {
         let count = 0;
-        if (isStep1Complete()) count += 1;
-        if (isStep2Complete()) count += 1;
-        if (isStep3Complete()) count += 1;
-        if (isStep4Complete()) count += 1;
+        if (isStep1Complete) count += 1;
+        if (isStep2Complete) count += 1;
+        if (isStep3Complete) count += 1;
+        if (isStep4Complete) count += 1;
         return count;
     }, [isStep1Complete, isStep2Complete, isStep3Complete, isStep4Complete]);
 

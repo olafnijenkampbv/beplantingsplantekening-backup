@@ -4240,16 +4240,50 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 const dx = (toPoints[0] ?? 0) - (existing.points[0] ?? 0);
                 const dy = (toPoints[1] ?? 0) - (existing.points[1] ?? 0);
 
-                const translatedBoundarySegments =
-                    existing.boundarySegments?.length
-                        ? translateBoundarySegments(existing.boundarySegments, dx, dy)
-                        : [preserveClosedBoundaryEndpoint(toPoints, moved.type)];
+                // Detect pure translation (every point shifts by the same dx/dy).
+                // A vertex edit only moves one (or a few) points, so dx/dy from
+                // point-0 is wrong for updating the other segments — we must
+                // replace only the matching primary segment instead.
+                const isPureTranslationMove =
+                    fromPoints.length === toPoints.length &&
+                    fromPoints.every((v, i) =>
+                        i % 2 === 0
+                            ? Math.abs((toPoints[i] ?? 0) - v - dx) < 0.001
+                            : Math.abs((toPoints[i] ?? 0) - v - dy) < 0.001
+                    );
+
+                const newPrimaryPoints = preserveClosedBoundaryEndpoint(toPoints, moved.type);
+
+                const translatedBoundarySegments: number[][] = (() => {
+                    if (!existing.boundarySegments?.length) {
+                        return [newPrimaryPoints];
+                    }
+                    if (isPureTranslationMove) {
+                        return translateBoundarySegments(existing.boundarySegments, dx, dy) ?? [newPrimaryPoints];
+                    }
+                    // Vertex edit: only the primary segment changed.
+                    // Find it by value-equality and replace it; leave others intact.
+                    const exPts = existing.points;
+                    let replaced = false;
+                    const updated = existing.boundarySegments.map((seg) => {
+                        if (
+                            !replaced &&
+                            seg.length === exPts.length &&
+                            seg.every((v, i) => Math.abs(v - exPts[i]) < 0.001)
+                        ) {
+                            replaced = true;
+                            return newPrimaryPoints;
+                        }
+                        return seg;
+                    });
+                    return replaced ? updated : [newPrimaryPoints];
+                })();
 
                 const baseObj: PolyObject = normalizeBoundaryObjectSegments({
                     ...moved,
                     id,
                     geometry: "polyline",
-                    points: preserveClosedBoundaryEndpoint(toPoints, moved.type),
+                    points: newPrimaryPoints,
                     boundarySegments: translatedBoundarySegments,
                 });
 
@@ -4617,7 +4651,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     TYPE_Z_INDEX[o.type] > newZ &&
                     !isPolylineObject(o)
             );
-            const movedCut = higher.length ? subtractPolygons(moved, higher) : null;
+
+            // ✅ Also cut moving polygon against existing boundary bands that have
+            // higher z-index (boundaries always win over overlapping polygon objects).
+            const boundaryCuttersForMove = updatedObjects
+                .filter((o) => isPolylineObject(o) && TYPE_Z_INDEX[o.type] > newZ)
+                .map((o) => createBoundaryDifferenceCutter(o))
+                .filter((c): c is PolyObject => c !== null);
+
+            const effectiveCutters = [...higher, ...boundaryCuttersForMove];
+
+            const movedCut = effectiveCutters.length ? subtractPolygons(moved, effectiveCutters) : null;
             const movedShapes = movedCut ?? [moved.points];
 
             if (type === "plantbed") {
@@ -4686,7 +4730,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 });
 
                 const movedPlantbeds: PolyObject[] = movedSeedPlantbeds.flatMap((seed, seedIdx) => {
-                    const cutPieces = higher.length ? subtractPolygonsPieces(seed, higher) : null;
+                    const cutPieces = effectiveCutters.length ? subtractPolygonsPieces(seed, effectiveCutters) : null;
 
                     if (cutPieces === null) {
                         const normalized = normalizeSingleObjectToPieces({
@@ -4769,7 +4813,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             });
 
             const movedObjectsRaw: PolyObject[] = movedSeedObjects.flatMap((seed, seedIdx) => {
-                const cutPieces = higher.length ? subtractPolygonsPieces(seed, higher) : null;
+                const cutPieces = effectiveCutters.length ? subtractPolygonsPieces(seed, effectiveCutters) : null;
 
                 if (cutPieces === null) {
                     return normalizeSingleObjectToPieces({
@@ -4831,7 +4875,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         updatedObjectsFinal = updatedObjectsFinal.filter((o) => !removeIds.has(o.id));
 
                         const clipAgainstHigher = (pieces: DiffPiece[]) => {
-                            if (!higher || higher.length === 0) return pieces;
+                            if (!effectiveCutters || effectiveCutters.length === 0) return pieces;
 
                             const out: DiffPiece[] = [];
                             for (const piece of pieces) {
@@ -4844,7 +4888,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                     holes: piece.holes?.length ? piece.holes : undefined,
                                 };
 
-                                const cut = subtractPolygonsPieces(subject, higher);
+                                const cut = subtractPolygonsPieces(subject, effectiveCutters);
 
                                 if (cut && cut.length) {
                                     for (const c of cut) {

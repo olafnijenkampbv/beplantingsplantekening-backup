@@ -78,7 +78,7 @@ export default function FinalisatieSidePanel() {
             {/* Download PDF */}
             <button
                 type="button"
-                className="flex w-full items-center justify-center gap-2 rounded-[8px] py-3 font-semibold text-white"
+                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-[8px] py-3 font-semibold text-white"
                 style={{
                     backgroundColor: COLORS.orange,
                     border: "none",
@@ -101,11 +101,10 @@ export default function FinalisatieSidePanel() {
             {/* Visualiseer met AI */}
             <button
                 type="button"
-                className="flex w-full items-start gap-3 rounded-[10px] border px-4 py-3 text-left"
+                className="flex w-full cursor-pointer items-start gap-3 rounded-[10px] px-4 py-3 text-left"
                 style={{
-                    backgroundColor: COLORS.cardBg,
-                    borderColor: COLORS.border,
-                    boxShadow: "5px 3px 46px -25px rgba(0, 0, 0, 0.25)",
+                    backgroundColor: "#E0DED4",
+                    border: "none",
                 }}
             >
                 <img
@@ -116,15 +115,15 @@ export default function FinalisatieSidePanel() {
                 <div className="min-w-0">
                     <p
                         className="text-[14px] font-semibold"
-                        style={{ color: COLORS.text }}
+                        style={{ color: COLORS.green }}
                     >
                         Visualiseer tekening met AI
                     </p>
                     <p
                         className="mt-0.5 text-[13px]"
-                        style={{ color: COLORS.softText }}
+                        style={{ color: COLORS.text }}
                     >
-                        Genereer een realistische impressie van het beplantingsplan.
+                        Genereer een realistische impressie van de tekening.
                     </p>
                 </div>
             </button>
@@ -140,7 +139,7 @@ export default function FinalisatieSidePanel() {
             >
                 <h2
                     className="text-[17px] font-bold"
-                    style={{ color: COLORS.text }}
+                    style={{ color: COLORS.green }}
                 >
                     Prijsopgave
                 </h2>
@@ -149,7 +148,7 @@ export default function FinalisatieSidePanel() {
                     <div className="flex items-center justify-between">
                         <span
                             className="text-[14px]"
-                            style={{ color: COLORS.softText }}
+                            style={{ color: COLORS.text }}
                         >
                             Totaal (excl. BTW)
                         </span>
@@ -164,13 +163,13 @@ export default function FinalisatieSidePanel() {
                     <div className="flex items-center justify-between">
                         <span
                             className="text-[14px]"
-                            style={{ color: COLORS.softText }}
+                            style={{ color: COLORS.text }}
                         >
                             BTW (9%)
                         </span>
                         <span
                             className="text-[14px]"
-                            style={{ color: COLORS.softText }}
+                            style={{ color: COLORS.text }}
                         >
                             {formatEuro(btw)}
                         </span>
@@ -199,7 +198,7 @@ export default function FinalisatieSidePanel() {
 
                 <button
                     type="button"
-                    className="mt-5 flex w-full items-center justify-center gap-2 rounded-[8px] py-3 font-semibold text-white"
+                    className="mt-5 flex w-full cursor-pointer items-center justify-center gap-2 rounded-[8px] py-3 font-semibold text-white"
                     style={{
                         backgroundColor: COLORS.orange,
                         border: "none",

@@ -347,6 +347,14 @@ export default function PlantSelectionListCard() {
             nextItems = [...nextItems].sort((a, b) =>
                 b.plant.name.localeCompare(a.plant.name)
             );
+        } else if (sortValue === "prijs-laag-hoog") {
+            nextItems = [...nextItems].sort((a, b) =>
+                (a.plant.pricePerPiece ?? 0) - (b.plant.pricePerPiece ?? 0)
+            );
+        } else if (sortValue === "prijs-hoog-laag") {
+            nextItems = [...nextItems].sort((a, b) =>
+                (b.plant.pricePerPiece ?? 0) - (a.plant.pricePerPiece ?? 0)
+            );
         }
 
         return nextItems;
@@ -947,6 +955,8 @@ export default function PlantSelectionListCard() {
                                             <option value="">Geen sortering</option>
                                             <option value="naam-a-z">Naam (A-Z)</option>
                                             <option value="naam-z-a">Naam (Z-A)</option>
+                                            <option value="prijs-laag-hoog">Prijs p/st (Laag - Hoog)</option>
+                                            <option value="prijs-hoog-laag">Prijs p/st (Hoog - Laag)</option>
                                         </select>
 
                                     <img

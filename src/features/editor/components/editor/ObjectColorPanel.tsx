@@ -292,13 +292,14 @@ export default function ObjectColorPanel(props: ObjectColorPanelProps) {
 
     return (
         <div
-            className="absolute border bg-white"
+            className="border bg-white"
             style={{
+                position: "absolute",
+                left: `calc(100% + ${PANEL_UI.offsetLeft}px)`,
+                top: 0,
                 zIndex: 1500,
                 borderColor: COLORS.border,
                 width: PANEL_UI.width,
-                left: `calc(100% + ${PANEL_UI.offsetLeft}px)`,
-                top: 0,
                 borderRadius: PANEL_UI.radius,
                 boxShadow: PANEL_UI.shadow,
                 padding: PANEL_UI.padding,

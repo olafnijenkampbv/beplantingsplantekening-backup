@@ -95,6 +95,10 @@ function PlantTypeBadge(props: { label: string }) {
     );
 }
 
+function formatPricePerPiece(price: number) {
+    return `€${price.toFixed(2).replace(".", ",")} p/st`;
+}
+
 function SearchFilterChip(props: {
     label: string;
     onRemove: () => void;
@@ -177,7 +181,7 @@ function SearchModeGridCard(props: {
                 </div>
             </div>
 
-            <div className="flex min-h-[146px] flex-col p-3">
+            <div className="flex min-h-[132px] flex-col p-3">
                 <div
                     className="text-[15px] font-semibold leading-[1.35]"
                     style={{ color: COLORS.text }}
@@ -205,7 +209,11 @@ function SearchModeGridCard(props: {
                     ))}
                 </div>
 
-                <div className="mt-3 flex items-end justify-between gap-3">
+                <div className="mt-3 text-[13px]" style={{ color: "#FF0000" }}>
+                    {formatPricePerPiece(plant.pricePerPiece)}
+                </div>
+
+                <div className="mt-1 flex items-end justify-between gap-3">
                     <button
                         type="button"
                         className="inline-flex items-center gap-2 text-[12px] underline"
@@ -321,6 +329,10 @@ function SearchModeListCard(props: {
                         style={{ color: COLORS.text }}
                     >
                         {cardData.sizeLabel}
+                    </div>
+
+                    <div className="mt-2 text-[13px]" style={{ color: "#FF0000" }}>
+                        {formatPricePerPiece(plant.pricePerPiece)}
                     </div>
 
                     <div className="mt-auto flex flex-wrap gap-2 pt-4">
@@ -448,7 +460,14 @@ function DefaultPlantCard(props: {
                         </div>
 
                         <div
-                            className="mt-3 text-[12px]"
+                            className="mt-3 text-[13px]"
+                            style={{ color: "#FF0000" }}
+                        >
+                            {formatPricePerPiece(plant.pricePerPiece)}
+                        </div>
+
+                        <div
+                            className="mt-auto text-[12px]"
                             style={{ color: COLORS.orange }}
                         >
                             {plant.stockLabel}
@@ -516,14 +535,18 @@ function DefaultPlantCard(props: {
 
             <div className="p-3">
                 <div
-                    className="min-h-[30px] text-[15px] font-semibold leading-[1.35]"
+                    className="text-[15px] font-semibold leading-[1.2]"
                     style={{ color: COLORS.text }}
                 >
                     {plant.name}
                 </div>
 
-                <div className="mt-1 text-[13px]" style={{ color: COLORS.muted }}>
+                <div className="mt-[2px] text-[13px]" style={{ color: COLORS.muted }}>
                     {plant.latinName}
+                </div>
+
+                <div className="mt-3 text-[13px]" style={{ color: "#FF0000" }}>
+                    {formatPricePerPiece(plant.pricePerPiece)}
                 </div>
 
                 <div className="mt-2 flex items-center justify-between">

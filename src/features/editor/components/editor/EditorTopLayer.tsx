@@ -2098,29 +2098,29 @@ export function EditorTopLayer(props: any) {
                                             selectObjects(next);
                                         };
 
-                                                if (isUnifiedBoundaryType(obj.type)) {
-                                                    const liveBoundaryObject = getLiveBoundaryObject(obj);
-                                                    const liveBoundaryShape = getBoundaryBandShapeForObject(liveBoundaryObject);
-                                                    const renderStyle = getObjectRenderStyle(obj);
+                                        if (isUnifiedBoundaryType(obj.type)) {
+                                            const liveBoundaryObject = getLiveBoundaryObject(obj);
+                                            const liveBoundaryShape = getBoundaryBandShapeForObject(liveBoundaryObject);
+                                            const renderStyle = getObjectRenderStyle(obj);
 
-                                                    return (
-                                                        <React.Fragment key={`sel-${obj.id}`}>
-                                                            <PolygonWithHoles
-                                                                points={liveBoundaryShape.outer}
-                                                                holes={liveBoundaryShape.holes}
-                                                                fill={renderStyle.fill}
-                                                                stroke={COLORS.orange}
-                                                                strokeWidth={2}
-                                                                lineCap="butt"
-                                                                lineJoin="miter"
-                                                                opacity={1}
-                                                                draggable={false}
-                                                                onClick={(evt) => onSelectClick(evt)}
-                                                                perfectDrawEnabled={false}
-                                                            />
-                                                        </React.Fragment>
-                                                    );
-                                                }
+                                            return (
+                                                <React.Fragment key={`sel-${obj.id}`}>
+                                                    <PolygonWithHoles
+                                                        points={liveBoundaryShape.outer}
+                                                        holes={liveBoundaryShape.holes}
+                                                        fill={renderStyle.fill}
+                                                        stroke={COLORS.orange}
+                                                        strokeWidth={2}
+                                                        lineCap="butt"
+                                                        lineJoin="miter"
+                                                        opacity={1}
+                                                        draggable={false}
+                                                        onClick={(evt) => onSelectClick(evt)}
+                                                        perfectDrawEnabled={false}
+                                                    />
+                                                </React.Fragment>
+                                            );
+                                        }
 
                                         const isVertexEditingThisPolygon =
                                             isVertexDraggingRef.current &&
@@ -3329,10 +3329,11 @@ export function EditorTopLayer(props: any) {
                                                             y: item.finalLabelY,
                                                         }}
                                                         divProps={{
+                                                            "data-konva-label": "true",
                                                             style: {
                                                                 pointerEvents: "none",
                                                             },
-                                                        }}
+                                                        } as React.HTMLAttributes<HTMLDivElement> & { "data-konva-label": string }}
                                                     >
                                                         <div
                                                             style={{
@@ -3376,6 +3377,7 @@ export function EditorTopLayer(props: any) {
                                                                 badgeCount={item.count !== null ? Number(item.count) : null}
                                                                 showPlantLinkInfo={showPlantLinkInfoInLabels}
                                                                 interactive={item.isPrimary}
+                                                                onColorPanelOpenChange={props.onColorPanelOpenChange}
                                                                 pointerSide={
                                                                     item.laneSide === "left"
                                                                         ? "right"

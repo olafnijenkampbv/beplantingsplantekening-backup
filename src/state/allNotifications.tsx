@@ -98,13 +98,13 @@ export const APP_NOTIFICATIONS = {
     allPlantsLinkedReadyToGenerate: (): AppNotificationDefinition => ({
         kind: "success",
         placement: "bottom-center",
-        message: "Alle planten gekoppeld. Je kan nu je beplantingstekening genereren.",
+        message: "Alle planten gekoppeld. Je kan nu je beplantingstekening afronden.",
     }),
 
     generateBlockedByUnlinkedPlants: (linked: number, total: number): AppNotificationDefinition => ({
         kind: "warning",
         placement: "bottom-center",
-        message: `${linked} van ${total} planten gekoppeld. Je kunt pas genereren wanneer alle planten in een plantvak staan.`,
+        message: `${linked} van ${total} planten gekoppeld. Je kunt pas afronden wanneer alle planten en bomen gekoppeld zijn.`,
     }),
 
     chooseObjectTypeFirst: (): AppNotificationDefinition => ({

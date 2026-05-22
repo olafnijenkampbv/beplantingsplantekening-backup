@@ -91,3 +91,9 @@ body {
 .app-thin-scrollbar::-webkit-scrollbar-thumb:hover {
   background-color: #b5b5b5;
 }
+
+/* Konva Html label containers moeten boven de PlantSidebar (z-index: 30) uitkomen */
+[data-konva-label="true"] {
+  z-index: 40 !important;
+  position: relative !important;
+}

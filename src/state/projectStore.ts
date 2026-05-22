@@ -540,6 +540,7 @@ export type PlantItem = {
 };
 
 export type PlantbedLinksMap = Record<string, string[]>; // key = plantbedId, value = plantIds[]
+export type DistributionOverridesMap = Record<string, Record<string, number>>; // key = objectId, value = Record<plantId, percentage>
 
 function clonePlantbedLinks(links: PlantbedLinksMap = {}) {
     return Object.fromEntries(
@@ -1457,6 +1458,7 @@ type ProjectState = {
 
     // Aantal gekoppelde planten per plantvak-id
     plantbedLinkedCount: Record<string, number>;
+    distributionOverrides: DistributionOverridesMap;
 
     // ✅ Plants + linking
     plants: PlantItem[];
@@ -1471,6 +1473,8 @@ type ProjectState = {
     getPlantbedLinkedCount: (plantbedId: string) => number;
 
     setPlants: (plants: PlantItem[]) => void;
+    setDistributionOverridesForObject: (objectId: string, overrides: Record<string, number>) => void;
+    clearDistributionOverridesForObject: (objectId: string) => void;
     ensureDummyPlants: (useExtended: boolean) => void;
 
     getPlantById: (plantId: string) => PlantItem | null;
@@ -3171,12 +3175,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     objects: [],
     nextPlantbedNo: 1,
     plantbedLinkedCount: {},
+    distributionOverrides: {},
 
     // ✅ Plants + linking state
     plants: [],
     plantbedLinks: {} as PlantbedLinksMap,
 
     setPlants: (plants) => set({ plants }),
+
+    setDistributionOverridesForObject: (objectId, overrides) =>
+        set((state) => ({
+            distributionOverrides: {
+                ...state.distributionOverrides,
+                [objectId]: { ...overrides },
+            },
+        })),
+
+    clearDistributionOverridesForObject: (objectId) =>
+        set((state) => {
+            const next = { ...state.distributionOverrides };
+            delete next[objectId];
+            return { distributionOverrides: next };
+        }),
 
     ensureDummyPlants: (useExtended) => {
         const existing = get().plants;

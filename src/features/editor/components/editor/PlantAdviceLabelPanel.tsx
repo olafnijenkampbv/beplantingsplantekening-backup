@@ -3,17 +3,19 @@
 import React from "react";
 import type { ObjectType, PolyObject } from "@/state/projectStore";
 import { useProjectStore } from "@/state/projectStore";
+import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
 import {
     formatMeters,
     formatSquareMeters,
-    getMetersFromEditorUnits,
     getObjectAreaInSquareMeters,
 } from "@/state/areaMetrics";
 import {
-    DUMMY_PLANTS,
-    getDummyPlantSpecificationsForPlant,
-} from "@/features/editor/lib/plantSelectionDummyData";
-
+    buildAdviceData,
+    type AdviceData,
+    type AdviceMeasurementMode,
+    type AdviceRow,
+    type ProjectPlantLike,
+} from "@/features/editor/lib/plantAdvice";
 const PANEL_UI = {
     minWidth: 820,
     padding: 18,
@@ -89,40 +91,7 @@ const ICON_FILTERS = {
 };
 
 const TABLE_GRID_TEMPLATE =
-    "260px minmax(105px, 0.7fr) minmax(140px, 0.9fr) minmax(170px, 1fr) minmax(115px, 0.7fr)";
-
-type ProjectPlantLike = {
-    id: string;
-    latin?: string;
-    dutch?: string;
-    name?: string;
-    latinName?: string;
-    botanicalName?: string;
-    dutchName?: string;
-    planthoeveelheidPerM2?: number | string | null;
-    plantQuantityPerM2?: number | string | null;
-    quantityPerSquareMeter?: number | string | null;
-};
-
-type AdviceMeasurementMode = "area" | "length";
-
-type AdviceRow = {
-    plantId: string;
-    latinName: string;
-    dutchName: string;
-    distributionPercentage: number;
-    assignedMeasureValue: number;
-    quantityPerSquareMeter: number | null;
-    adviceCount: number | null;
-};
-
-type AdviceData = {
-    measurementMode: AdviceMeasurementMode;
-    totalMeasureValue: number;
-    totalSquareMeters: number;
-    totalAdviceCount: number;
-    rows: AdviceRow[];
-};
+    "260px minmax(105px, 0.7fr) minmax(140px, 0.9fr) minmax(170px, 1fr) minmax(115px, 0.7fr) minmax(130px, 0.8fr)";
 
 type PlantAdviceLabelPanelProps = {
     selectedObject: PolyObject | null;
@@ -147,257 +116,6 @@ function formatAdviceMeasureValue(value: number, measurementMode: AdviceMeasurem
     }
 
     return formatSquareMeters(value);
-}
-
-type HedgeOutlineSegment = {
-    length: number;
-};
-
-function getHedgeOutlineSegments(points: number[]) {
-    if (!points || points.length < 6) return [];
-
-    const segments: HedgeOutlineSegment[] = [];
-    const pointCount = points.length / 2;
-
-    for (let index = 0; index < pointCount; index += 1) {
-        const currentIndex = index * 2;
-        const nextIndex = ((index + 1) % pointCount) * 2;
-
-        const ax = points[currentIndex];
-        const ay = points[currentIndex + 1];
-        const bx = points[nextIndex];
-        const by = points[nextIndex + 1];
-
-        const editorLength = Math.hypot(bx - ax, by - ay);
-        const length = getMetersFromEditorUnits(editorLength);
-
-        if (Number.isFinite(length) && length > 0.05) {
-            segments.push({ length });
-        }
-    }
-
-    return segments;
-}
-
-function getRingThicknessFromBoundingBoxes(
-    outerPoints: number[],
-    holes: number[][]
-) {
-    if (!holes || holes.length === 0) return null;
-
-    const getBox = (points: number[]) => {
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
-
-        for (let index = 0; index < points.length; index += 2) {
-            minX = Math.min(minX, points[index]);
-            minY = Math.min(minY, points[index + 1]);
-            maxX = Math.max(maxX, points[index]);
-            maxY = Math.max(maxY, points[index + 1]);
-        }
-
-        return {
-            width: getMetersFromEditorUnits(maxX - minX),
-            height: getMetersFromEditorUnits(maxY - minY),
-        };
-    };
-
-    const outerBox = getBox(outerPoints);
-
-    const thicknessCandidates = holes
-        .flatMap((hole) => {
-            const holeBox = getBox(hole);
-
-            return [
-                (outerBox.width - holeBox.width) / 2,
-                (outerBox.height - holeBox.height) / 2,
-            ];
-        })
-        .filter((value) => Number.isFinite(value) && value > 0.05);
-
-    if (thicknessCandidates.length === 0) return null;
-
-    return Math.min(...thicknessCandidates);
-}
-
-function getEstimatedHedgeWidthInMeters(object: PolyObject, segments: HedgeOutlineSegment[]) {
-    const ringThickness = getRingThicknessFromBoundingBoxes(
-        object.points,
-        object.holes ?? []
-    );
-
-    if (ringThickness !== null) {
-        return ringThickness;
-    }
-
-    const sortedLengths = segments
-        .map((segment) => segment.length)
-        .filter((length) => Number.isFinite(length) && length > 0.05)
-        .sort((a, b) => a - b);
-
-    return sortedLengths[0] ?? null;
-}
-
-function getEstimatedHedgeLengthInMeters(object: PolyObject, totalSquareMeters: number) {
-    const segments = getHedgeOutlineSegments(object.points);
-    const estimatedWidth = getEstimatedHedgeWidthInMeters(object, segments);
-
-    if (!estimatedWidth || estimatedWidth <= 0) {
-        return {
-            hedgeLengthMeters: totalSquareMeters,
-            hedgeWidthMeters: null,
-        };
-    }
-
-    if ((object.holes?.length ?? 0) > 0) {
-        const hedgeLengthMeters = totalSquareMeters / estimatedWidth;
-
-        return {
-            hedgeLengthMeters: hedgeLengthMeters > 0 ? hedgeLengthMeters : totalSquareMeters,
-            hedgeWidthMeters: estimatedWidth,
-        };
-    }
-
-    if (segments.length === 0) {
-        return {
-            hedgeLengthMeters: totalSquareMeters,
-            hedgeWidthMeters: estimatedWidth,
-        };
-    }
-
-    const widthSegmentThreshold = estimatedWidth * 1.8;
-
-    const hedgeDirectionSegments = segments.filter(
-        (segment) => segment.length > widthSegmentThreshold
-    );
-
-    const hedgeOutlineLength = hedgeDirectionSegments.reduce(
-        (total, segment) => total + segment.length,
-        0
-    );
-
-    const hedgeLengthMeters = hedgeOutlineLength / 2;
-
-    return {
-        hedgeLengthMeters: hedgeLengthMeters > 0 ? hedgeLengthMeters : totalSquareMeters,
-        hedgeWidthMeters: estimatedWidth,
-    };
-}
-
-function parsePositiveNumber(value: unknown) {
-    if (typeof value === "number") {
-        return Number.isFinite(value) && value > 0 ? value : null;
-    }
-
-    if (typeof value !== "string") {
-        return null;
-    }
-
-    const normalized = value.trim().replace(",", ".");
-    const parsed = Number(normalized);
-
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function getPlantQuantityPerSquareMeterFromSpecifications(plantId: string) {
-    const dummyPlant = DUMMY_PLANTS.find((plant) => plant.id === plantId);
-    if (!dummyPlant) return null;
-
-    const specifications = getDummyPlantSpecificationsForPlant(dummyPlant);
-    const rows = [...specifications.leftColumn, ...specifications.rightColumn];
-
-    const quantityRow = rows.find(
-        (row) => row.label.trim().toLowerCase() === "planthoeveelheid per m²"
-    );
-
-    return parsePositiveNumber(quantityRow?.value);
-}
-
-function getPlantQuantityPerSquareMeter(projectPlant: ProjectPlantLike | undefined, plantId: string) {
-    return (
-        parsePositiveNumber(projectPlant?.planthoeveelheidPerM2) ??
-        parsePositiveNumber(projectPlant?.plantQuantityPerM2) ??
-        parsePositiveNumber(projectPlant?.quantityPerSquareMeter) ??
-        getPlantQuantityPerSquareMeterFromSpecifications(plantId)
-    );
-}
-
-function getPlantDisplayNames(projectPlant: ProjectPlantLike | undefined, plantId: string) {
-    const dummyPlant = DUMMY_PLANTS.find((plant) => plant.id === plantId);
-
-    return {
-        latinName:
-            projectPlant?.latin ??
-            projectPlant?.name ??
-            projectPlant?.botanicalName ??
-            dummyPlant?.name ??
-            "Onbekende plant",
-        dutchName:
-            projectPlant?.dutch ??
-            projectPlant?.latinName ??
-            projectPlant?.dutchName ??
-            dummyPlant?.latinName ??
-            "",
-    };
-}
-
-function buildAdviceData(params: {
-    selectedObject: PolyObject;
-    currentType: ObjectType;
-    linkedPlantIds: string[];
-    plants: ProjectPlantLike[];
-}) {
-    const { selectedObject, currentType, linkedPlantIds, plants } = params;
-
-    const totalSquareMeters = getObjectAreaInSquareMeters(selectedObject);
-    const measurementMode: AdviceMeasurementMode = currentType === "hedge" ? "length" : "area";
-
-    const hedgeMeasurement =
-        measurementMode === "length"
-            ? getEstimatedHedgeLengthInMeters(selectedObject, totalSquareMeters)
-            : null;
-
-    const totalMeasureValue =
-        measurementMode === "length"
-            ? hedgeMeasurement?.hedgeLengthMeters ?? totalSquareMeters
-            : totalSquareMeters;
-
-    const distributionPercentage = 100 / linkedPlantIds.length;
-    const assignedMeasureValue = totalMeasureValue / linkedPlantIds.length;
-
-    const rows: AdviceRow[] = linkedPlantIds.map((plantId) => {
-        const projectPlant = plants.find((plant) => plant.id === plantId);
-        const quantityPerSquareMeter = getPlantQuantityPerSquareMeter(projectPlant, plantId);
-
-        const assignedCalculationSquareMeters =
-            measurementMode === "length" && hedgeMeasurement?.hedgeWidthMeters
-                ? assignedMeasureValue * hedgeMeasurement.hedgeWidthMeters
-                : totalSquareMeters / linkedPlantIds.length;
-
-        const adviceCount =
-            quantityPerSquareMeter !== null
-                ? Math.ceil(assignedCalculationSquareMeters * quantityPerSquareMeter)
-                : null;
-
-        return {
-            plantId,
-            ...getPlantDisplayNames(projectPlant, plantId),
-            distributionPercentage,
-            assignedMeasureValue,
-            quantityPerSquareMeter,
-            adviceCount,
-        };
-    });
-
-    return {
-        measurementMode,
-        totalMeasureValue,
-        totalSquareMeters,
-        rows,
-        totalAdviceCount: rows.reduce((total, row) => total + (row.adviceCount ?? 0), 0),
-    };
 }
 
 function AdviceSummaryButton(props: {
@@ -565,11 +283,65 @@ function AdviceContentHeader(props: {
     );
 }
 
+function redistributeAfterChange(
+    plantIds: string[],
+    changedPlantId: string,
+    newPercentage: number
+): Record<string, number> {
+    const clamped = Math.min(100, Math.max(0, newPercentage));
+    const remaining = 100 - clamped;
+    const otherIds = plantIds.filter((id) => id !== changedPlantId);
+
+    if (otherIds.length === 0) {
+        return { [changedPlantId]: 100 };
+    }
+
+    const perOther = remaining / otherIds.length;
+    const result: Record<string, number> = { [changedPlantId]: clamped };
+    for (const id of otherIds) {
+        result[id] = perOther;
+    }
+    return result;
+}
+
 function AdviceTable(props: {
     rows: AdviceRow[];
     measurementMode: AdviceMeasurementMode;
+    onDistributionChange: (plantId: string, newPercentage: number) => void;
+    priceMap: Map<string, number>;
 }) {
-    const { rows, measurementMode } = props;
+    const { rows, measurementMode, onDistributionChange, priceMap } = props;
+
+    const [editingPlantId, setEditingPlantId] = React.useState<string | null>(null);
+    const [editValue, setEditValue] = React.useState<string>("");
+    const inputRef = React.useRef<HTMLInputElement | null>(null);
+
+    const startEdit = (plantId: string, currentPercentage: number) => {
+        setEditingPlantId(plantId);
+        setEditValue(String(Math.round(currentPercentage)));
+        setTimeout(() => {
+            inputRef.current?.select();
+        }, 0);
+    };
+
+    const commitEdit = (plantId: string) => {
+        const parsed = parseFloat(editValue.replace(",", "."));
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100) {
+            onDistributionChange(plantId, parsed);
+        }
+        setEditingPlantId(null);
+        setEditValue("");
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent, plantId: string) => {
+        if (e.key === "Enter") {
+            commitEdit(plantId);
+        }
+        if (e.key === "Escape") {
+            setEditingPlantId(null);
+            setEditValue("");
+        }
+    };
 
     return (
         <div>
@@ -613,101 +385,261 @@ function AdviceTable(props: {
                         (stuks)
                     </div>
                 </div>
-            </div>
-
-            {rows.map((row) => (
-                <div
-                    key={row.plantId}
-                    style={{
-                        display: "grid",
-                        gridTemplateColumns: TABLE_GRID_TEMPLATE,
-                        columnGap: PANEL_UI.tableColumnGap,
-                        alignItems: "center",
-                        minHeight: PANEL_UI.tableRowMinHeight,
-                        borderBottom: `1px solid ${COLORS.border}`,
-                    }}
-                >
+                <div style={{ textAlign: "right" }}>
+                    <div>Prijs</div>
                     <div
                         style={{
-                            width: 260,
-                            minWidth: 0,
-                            whiteSpace: "normal",
-                            overflowWrap: "break-word",
-                            wordBreak: "break-word",
+                            fontSize: PANEL_UI.tableHeaderSubFontSize,
+                            fontWeight: 400,
+                            marginTop: 4,
                         }}
                     >
-                        <div
-                            style={{
-                                fontSize: PANEL_UI.plantNameFontSize,
-                                fontWeight: PANEL_UI.plantNameFontWeight,
-                                color: COLORS.text,
-                                lineHeight: 1.15,
-                            }}
-                        >
-                            {row.latinName}
-                        </div>
-                        <div
-                            style={{
-                                fontSize: PANEL_UI.plantSubNameFontSize,
-                                fontWeight: 400,
-                                color: COLORS.mutedText,
-                                lineHeight: 1.2,
-                                marginTop: 5,
-                            }}
-                        >
-                            {row.dutchName}
-                        </div>
-                    </div>
-
-                    <div
-                        style={{
-                            fontSize: PANEL_UI.highlightValueFontSize,
-                            fontWeight: PANEL_UI.highlightValueFontWeight,
-                            color: COLORS.orange,
-                            lineHeight: 1,
-                        }}
-                    >
-                        {Math.round(row.distributionPercentage)}%
-                    </div>
-
-                    <div
-                        style={{
-                            fontSize: PANEL_UI.valueFontSize,
-                            fontWeight: PANEL_UI.valueFontWeight,
-                            color: COLORS.text,
-                            lineHeight: 1,
-                        }}
-                    >
-                        {formatAdviceMeasureValue(row.assignedMeasureValue, measurementMode)}
-                    </div>
-
-                    <div
-                        style={{
-                            fontSize: PANEL_UI.valueFontSize,
-                            fontWeight: PANEL_UI.valueFontWeight,
-                            color: COLORS.text,
-                            textAlign: "center",
-                            lineHeight: 1,
-                        }}
-                    >
-                        {row.quantityPerSquareMeter !== null
-                            ? `${row.quantityPerSquareMeter}/m²`
-                            : "-"}
-                    </div>
-
-                    <div
-                        style={{
-                            fontSize: PANEL_UI.highlightValueFontSize,
-                            fontWeight: PANEL_UI.highlightValueFontWeight,
-                            color: COLORS.orange,
-                            textAlign: "right",
-                            lineHeight: 1,
-                        }}
-                    >
-                        {row.adviceCount !== null ? `${row.adviceCount} st.` : "-"}
+                        (p/st + totaal)
                     </div>
                 </div>
-            ))}
+            </div>
+
+            {rows.map((row) => {
+                const isEditing = editingPlantId === row.plantId;
+                const isOnlyRow = rows.length === 1;
+
+                return (
+                    <div
+                        key={row.plantId}
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: TABLE_GRID_TEMPLATE,
+                            columnGap: PANEL_UI.tableColumnGap,
+                            alignItems: "center",
+                            minHeight: PANEL_UI.tableRowMinHeight,
+                            borderBottom: `1px solid ${COLORS.border}`,
+                        }}
+                    >
+                        {/* Plant naam */}
+                        <div
+                            style={{
+                                width: 260,
+                                minWidth: 0,
+                                whiteSpace: "normal",
+                                overflowWrap: "break-word",
+                                wordBreak: "break-word",
+                            }}
+                        >
+                            <div
+                                style={{
+                                    fontSize: PANEL_UI.plantNameFontSize,
+                                    fontWeight: PANEL_UI.plantNameFontWeight,
+                                    color: COLORS.text,
+                                    lineHeight: 1.15,
+                                }}
+                            >
+                                {row.latinName}
+                            </div>
+                            <div
+                                style={{
+                                    fontSize: PANEL_UI.plantSubNameFontSize,
+                                    fontWeight: 400,
+                                    color: COLORS.mutedText,
+                                    lineHeight: 1.2,
+                                    marginTop: 5,
+                                }}
+                            >
+                                {row.dutchName}
+                            </div>
+                        </div>
+
+                        {/* Verdeling cel */}
+                        <div
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                lineHeight: 1,
+                            }}
+                        >
+                            {isEditing ? (
+                                <input
+                                    ref={inputRef}
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={editValue}
+                                    onChange={(e) => setEditValue(e.target.value)}
+                                    onBlur={() => commitEdit(row.plantId)}
+                                    onKeyDown={(e) => handleKeyDown(e, row.plantId)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    style={{
+                                        width: 60,
+                                        fontSize: PANEL_UI.highlightValueFontSize,
+                                        fontWeight: PANEL_UI.highlightValueFontWeight,
+                                        color: COLORS.orange,
+                                        border: `1px solid ${COLORS.border}`,
+                                        borderRadius: 4,
+                                        padding: "2px 6px",
+                                        outline: "none",
+                                        background: "#fff",
+                                    }}
+                                    autoFocus
+                                />
+                            ) : (
+                                <span
+                                    style={{
+                                        fontSize: PANEL_UI.highlightValueFontSize,
+                                        fontWeight: PANEL_UI.highlightValueFontWeight,
+                                        color: COLORS.orange,
+                                    }}
+                                >
+                                    {Math.round(row.distributionPercentage)}%
+                                </span>
+                            )}
+
+                            {!isEditing && !isOnlyRow && (
+                                <button
+                                    type="button"
+                                    title="Verdeling aanpassen"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        startEdit(row.plantId, row.distributionPercentage);
+                                    }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    style={{
+                                        background: "transparent",
+                                        border: "none",
+                                        padding: 2,
+                                        cursor: "pointer",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        borderRadius: 3,
+                                        opacity: 0.55,
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        (e.currentTarget as HTMLButtonElement).style.opacity = "1";
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        (e.currentTarget as HTMLButtonElement).style.opacity = "0.55";
+                                    }}
+                                >
+                                    <img
+                                        src="/icons/edit.svg"
+                                        alt="Bewerk verdeling"
+                                        style={{
+                                            width: 28,
+                                            height: 28,
+                                            display: "block",
+                                        }}
+                                    />
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Toegewezen m² / m */}
+                        <div
+                            style={{
+                                fontSize: PANEL_UI.valueFontSize,
+                                fontWeight: PANEL_UI.valueFontWeight,
+                                color: COLORS.text,
+                                lineHeight: 1,
+                            }}
+                        >
+                            {formatAdviceMeasureValue(row.assignedMeasureValue, measurementMode)}
+                        </div>
+
+                        {/* Planthoeveelheid */}
+                        <div
+                            style={{
+                                fontSize: PANEL_UI.valueFontSize,
+                                fontWeight: PANEL_UI.valueFontWeight,
+                                color: COLORS.text,
+                                textAlign: "center",
+                                lineHeight: 1,
+                            }}
+                        >
+                            {row.quantityPerSquareMeter !== null
+                                ? `${row.quantityPerSquareMeter}/m²`
+                                : "-"}
+                        </div>
+
+                        {/* Advies */}
+                        <div
+                            style={{
+                                fontSize: PANEL_UI.highlightValueFontSize,
+                                fontWeight: PANEL_UI.highlightValueFontWeight,
+                                color: COLORS.orange,
+                                textAlign: "right",
+                                lineHeight: 1,
+                            }}
+                        >
+                            {row.adviceCount !== null ? `${row.adviceCount} st.` : "-"}
+                        </div>
+
+                        {/* Prijs */}
+                        <div
+                            style={{
+                                textAlign: "right",
+                                lineHeight: 1.4,
+                            }}
+                        >
+                            {(() => {
+                                const price = priceMap.get(row.plantId);
+                                if (typeof price !== "number") {
+                                    return (
+                                        <span
+                                            style={{
+                                                fontSize: PANEL_UI.valueFontSize,
+                                                color: COLORS.mutedText,
+                                            }}
+                                        >
+                                            -
+                                        </span>
+                                    );
+                                }
+
+                                const priceFormatted = `€\u00a0${price.toLocaleString("nl-NL", {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                })} p/st`;
+
+                                const totalPrice =
+                                    row.adviceCount !== null ? price * row.adviceCount : null;
+
+                                const totalFormatted =
+                                    totalPrice !== null
+                                        ? `€\u00a0${totalPrice.toLocaleString("nl-NL", {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                        })}`
+                                        : null;
+
+                                return (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                        <span
+                                            style={{
+                                                fontSize: PANEL_UI.valueFontSize,
+                                                fontWeight: PANEL_UI.valueFontWeight,
+                                                color: COLORS.text,
+                                            }}
+                                        >
+                                            {priceFormatted}
+                                        </span>
+                                        {totalFormatted !== null && (
+                                            <span
+                                                style={{
+                                                    fontSize: PANEL_UI.highlightValueFontSize,
+                                                    fontWeight: PANEL_UI.highlightValueFontWeight,
+                                                    color: COLORS.orange,
+                                                }}
+                                            >
+                                                {totalFormatted}
+                                            </span>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    </div>
+                );
+            })}
         </div>
     );
 }
@@ -761,8 +693,30 @@ export default function PlantAdviceLabelPanel(props: PlantAdviceLabelPanelProps)
     const [open, setOpen] = React.useState(false);
     const [contentHeight, setContentHeight] = React.useState(0);
     const contentRef = React.useRef<HTMLDivElement | null>(null);
+    const allDistributionOverrides = useProjectStore(
+        (s) => (s as any).distributionOverrides as Record<string, Record<string, number>>
+    );
+
+    const distributionOverrides = React.useMemo(
+        () => allDistributionOverrides[selectedObject?.id ?? ""] ?? {},
+        [allDistributionOverrides, selectedObject?.id]
+    );
+    const setDistributionOverridesForObject = useProjectStore((s: any) => s.setDistributionOverridesForObject);
 
     const plants = useProjectStore((s) => s.plants as ProjectPlantLike[]);
+
+const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
+
+    const priceMap = React.useMemo(() => {
+        const map = new Map<string, number>();
+        for (const item of plantListItems) {
+            const price = item.plant.pricePerPiece;
+            if (typeof price === "number" && Number.isFinite(price)) {
+                map.set(item.plant.id, price);
+            }
+        }
+        return map;
+    }, [plantListItems]);
 
     const isSupportedType = currentType === "plantbed" || currentType === "hedge";
     const adviceData = React.useMemo<AdviceData | null>(() => {
@@ -775,8 +729,20 @@ export default function PlantAdviceLabelPanel(props: PlantAdviceLabelPanelProps)
             currentType,
             linkedPlantIds,
             plants,
+            distributionOverrides: Object.keys(distributionOverrides).length > 0
+                ? distributionOverrides
+                : undefined,
         });
-    }, [isSupportedType, linkedPlantIds, plants, selectedObject]);
+    }, [isSupportedType, linkedPlantIds, plants, selectedObject, distributionOverrides, plantListItems]);
+
+    const handleDistributionChange = React.useCallback(
+        (plantId: string, newPercentage: number) => {
+            if (!selectedObject) return;
+            const newOverrides = redistributeAfterChange(linkedPlantIds, plantId, newPercentage);
+            setDistributionOverridesForObject(selectedObject.id, newOverrides);
+        },
+        [linkedPlantIds, selectedObject, setDistributionOverridesForObject]
+    );
 
     React.useEffect(() => {
         setOpen(false);
@@ -871,6 +837,8 @@ export default function PlantAdviceLabelPanel(props: PlantAdviceLabelPanelProps)
                         <AdviceTable
                             rows={adviceData.rows}
                             measurementMode={adviceData.measurementMode}
+                            onDistributionChange={handleDistributionChange}
+                            priceMap={priceMap}
                         />
                         <AdviceInfoBox />
                     </div>

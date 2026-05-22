@@ -14,6 +14,7 @@ export type DummyPlant = {
     latinName: string;
     badge?: string;
     stockLabel: string;
+    pricePerPiece: number;
     imageSrc: string;
 };
 
@@ -401,6 +402,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Maagdenpalm",
         badge: "Zeer geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.89,
         imageSrc: "/images/plantenfotos/vinca_minor_alba.jpg",
     },
     {
@@ -410,6 +412,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Schaduwkruid",
         badge: "Geschikt",
         stockLabel: "Binnen een week leverbaar",
+        pricePerPiece: 2.25,
         imageSrc: "/images/plantenfotos/pachysandra_terminalis_green_carpet.jpg",
     },
     {
@@ -419,6 +422,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Ooievaarsbek",
         badge: "Goede aanvulling",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.19,
         imageSrc: "/images/plantenfotos/geranium_macrorrhizum.jpg",
     },
     {
@@ -428,6 +432,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Kruipend zenegroen",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.45,
         imageSrc: "/images/plantenfotos/ajuga_reptans.jpg",
     },
     {
@@ -437,6 +442,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Goudaardbei",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.65,
         imageSrc: "/images/plantenfotos/waldsteinia_ternata.jpg",
     },
     {
@@ -446,6 +452,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Dwergmispel",
         badge: "Goede aanvulling",
         stockLabel: "Binnen een week leverbaar",
+        pricePerPiece: 2.95,
         imageSrc: "/images/plantenfotos/cotoneaster_dammeri.jpg",
     },
     {
@@ -455,6 +462,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Elfenbloem",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 2.35,
         imageSrc: "/images/plantenfotos/epimedium_perralchicum.jpg",
     },
     {
@@ -464,6 +472,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Penningkruid",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.25,
         imageSrc: "/images/plantenfotos/lysimachia_nummularia.jpg",
     },
     {
@@ -473,6 +482,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Kruiptijm",
         badge: "Zeer geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.39,
         imageSrc: "/images/plantenfotos/thymus_serpyllum.jpg",
     },
     {
@@ -482,8 +492,10 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Vetkruid",
         badge: "Geschikt",
         stockLabel: "Binnen een week leverbaar",
+        pricePerPiece: 1.29,
         imageSrc: "/images/plantenfotos/sedum_spurium.jpg",
     },
+
     {
         id: "plant-11",
         group: "bodembedekkers",
@@ -491,6 +503,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Gevlekte dovenetel",
         badge: "Goede aanvulling",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.55,
         imageSrc: "/images/plantenfotos/lamium_maculatum.jpg",
     },
     {
@@ -500,6 +513,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Vrouwenmantel",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.49,
         imageSrc: "/images/plantenfotos/alchemilla_mollis.jpg",
     },
     {
@@ -509,6 +523,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Bossalie",
         badge: "Zeer geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.79,
         imageSrc: "/images/plantenfotos/salvia_nemorosa.jpg",
     },
     {
@@ -518,6 +533,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Zonnehoed",
         badge: "Geschikt",
         stockLabel: "Binnen een week leverbaar",
+        pricePerPiece: 2.15,
         imageSrc: "/images/plantenfotos/echinacea_purpurea.jpg",
     },
     {
@@ -527,6 +543,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Lavendel",
         badge: "Zeer geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.95,
         imageSrc: "/images/plantenfotos/lavandula_angustifolia.jpg",
     },
     {
@@ -536,6 +553,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Zonnehoed (gele)",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.85,
         imageSrc: "/images/plantenfotos/rudbeckia_fulgida.jpg",
     },
     {
@@ -545,6 +563,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Bloedooievaarsbek",
         badge: "Goede aanvulling",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.69,
         imageSrc: "/images/plantenfotos/geranium_sanguineum.jpg",
     },
     {
@@ -554,6 +573,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Kattenkruid",
         badge: "Geschikt",
         stockLabel: "Binnen een week leverbaar",
+        pricePerPiece: 1.75,
         imageSrc: "/images/plantenfotos/nepeta_faassenii.jpg",
     },
     {
@@ -563,6 +583,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Kerstroos",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 3.95,
         imageSrc: "/images/plantenfotos/helleborus_orientalis.jpg",
     },
     {
@@ -572,6 +593,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Purperklokje",
         badge: "Goede aanvulling",
         stockLabel: "Op voorraad",
+        pricePerPiece: 2.45,
         imageSrc: "/images/plantenfotos/heuchera_micrantha.jpg",
     },
     {
@@ -581,6 +603,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Vlambloem",
         badge: "Geschikt",
         stockLabel: "Binnen een week leverbaar",
+        pricePerPiece: 2.25,
         imageSrc: "/images/plantenfotos/phlox_paniculata.jpg",
     },
     {
@@ -590,6 +613,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Pluimspirea",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.95,
         imageSrc: "/images/plantenfotos/astilbe_chinensis.jpg",
     },
     {
@@ -599,6 +623,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Klokjesbloem",
         badge: "Goede aanvulling",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.59,
         imageSrc: "/images/plantenfotos/campanula_poscharskyana.jpg",
     },
     {
@@ -608,6 +633,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Duizendblad",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 1.49,
         imageSrc: "/images/plantenfotos/achillea_millefolium.jpg",
     },
     {
@@ -617,6 +643,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Hortensia",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 4.25,
         imageSrc: "/images/plantenfotos/hydrangea_macrophylla.jpg",
     },
     {
@@ -626,6 +653,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Rode kornoelje",
         badge: "Goede aanvulling",
         stockLabel: "Op voorraad",
+        pricePerPiece: 5.95,
         imageSrc: "/images/plantenfotos/cornus_alba.jpg",
     },
     {
@@ -635,6 +663,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Veldesdoorn",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 42.50,
         imageSrc: "/images/plantenfotos/acer_campestre.jpg",
     },
     {
@@ -644,6 +673,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Krentenboompje",
         badge: "Zeer geschikt",
         stockLabel: "Binnen een week leverbaar",
+        pricePerPiece: 54.95,
         imageSrc: "/images/plantenfotos/amelanchier_lamarckii.jpg",
     },
     {
@@ -653,6 +683,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Haagbeuk",
         badge: "Geschikt",
         stockLabel: "Op voorraad",
+        pricePerPiece: 39.95,
         imageSrc: "/images/plantenfotos/carpinus_betulus.jpg",
     },
     {
@@ -662,6 +693,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Ruwe berk",
         badge: "Goede aanvulling",
         stockLabel: "Op voorraad",
+        pricePerPiece: 46.50,
         imageSrc: "/images/plantenfotos/betula_pendula.jpg",
     },
     {
@@ -671,6 +703,7 @@ export const DUMMY_PLANTS: DummyPlant[] = [
         latinName: "Zoete kers",
         badge: "Geschikt",
         stockLabel: "Binnen een week leverbaar",
+        pricePerPiece: 52.50,
         imageSrc: "/images/plantenfotos/prunus_avium.jpg",
     },
 ];

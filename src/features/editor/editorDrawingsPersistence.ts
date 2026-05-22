@@ -5,6 +5,7 @@ export type CompassDirection = "noord" | "oost" | "zuid" | "west";
 export type PersistedDrawingSnapshot = {
     objects: PolyObject[];
     plantbedLinks: Record<string, string[]>;
+    distributionOverrides?: Record<string, Record<string, number>>;
     viewVisibility: {
         showPlantNumbers: boolean;
         showAreaLabels: boolean;
@@ -59,6 +60,7 @@ export function createEmptyDrawingSnapshot(): PersistedDrawingSnapshot {
     return {
         objects: [],
         plantbedLinks: {},
+        distributionOverrides: {},
         viewVisibility: { ...DEFAULT_DRAWING_VIEW_VISIBILITY },
         nextPlantbedNo: 1,
         compassDirection: "noord",
@@ -71,6 +73,14 @@ export function cloneDrawingSnapshot(
     return {
         objects: snapshot.objects.map(clonePolyObject),
         plantbedLinks: clonePlantbedLinks(snapshot.plantbedLinks),
+        distributionOverrides: snapshot.distributionOverrides
+            ? Object.fromEntries(
+                Object.entries(snapshot.distributionOverrides).map(([objectId, overrides]) => [
+                    objectId,
+                    { ...overrides },
+                ])
+            )
+            : {},
         viewVisibility: {
             ...DEFAULT_DRAWING_VIEW_VISIBILITY,
             ...(snapshot.viewVisibility ?? {}),
@@ -103,9 +113,29 @@ export function sanitizeDrawingSnapshot(value: any): PersistedDrawingSnapshot {
             ? value.compassDirection
             : "noord";
 
+    const rawDistributionOverrides =
+        value?.distributionOverrides && typeof value.distributionOverrides === "object"
+            ? value.distributionOverrides
+            : {};
+
+    const sanitizedDistributionOverrides: Record<string, Record<string, number>> = {};
+    for (const [objectId, overrides] of Object.entries(rawDistributionOverrides)) {
+        if (!overrides || typeof overrides !== "object") continue;
+        const sanitizedOverrides: Record<string, number> = {};
+        for (const [plantId, percentage] of Object.entries(overrides as Record<string, unknown>)) {
+            if (typeof percentage === "number" && Number.isFinite(percentage)) {
+                sanitizedOverrides[plantId] = percentage;
+            }
+        }
+        if (Object.keys(sanitizedOverrides).length > 0) {
+            sanitizedDistributionOverrides[objectId] = sanitizedOverrides;
+        }
+    }
+
     return {
         objects: rawObjects.map((obj: PolyObject) => clonePolyObject(obj)),
         plantbedLinks: clonePlantbedLinks(rawPlantbedLinks),
+        distributionOverrides: sanitizedDistributionOverrides,
         viewVisibility: {
             ...DEFAULT_DRAWING_VIEW_VISIBILITY,
             ...rawViewVisibility,

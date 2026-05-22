@@ -91,11 +91,24 @@ export function getTypeLabelCardEstimatedSize({
     };
 }
 
-const isBoundaryType = (type: ObjectType) => {
-    return type === "fence" || type === "gate" || type === "poort";
+const getTypeMenuSectionTitle = (
+    groups: Array<{
+        title: string;
+        items: Array<{ id: ObjectType }>;
+    }>,
+    type: ObjectType
+) => {
+    return groups.find((group) =>
+        group.items.some((item) => item.id === type)
+    )?.title ?? null;
 };
 
-const isTypeChangeAllowed = (fromType: ObjectType, toType: ObjectType) => {
+const isTypeChangeAllowed = (
+    fromType: ObjectType,
+    toType: ObjectType,
+    fromSectionTitle: string | null,
+    toSectionTitle: string | null
+) => {
     if (fromType === toType) return false;
 
     const fromIsTreebed = fromType === "treebed";
@@ -106,15 +119,13 @@ const isTypeChangeAllowed = (fromType: ObjectType, toType: ObjectType) => {
         return false;
     }
 
-    const fromIsBoundary = isBoundaryType(fromType);
-    const toIsBoundary = isBoundaryType(toType);
-
-    // afbakening mag alleen naar afbakening, en niet naar andere families
-    if (fromIsBoundary !== toIsBoundary) {
+    // Objecten mogen alleen binnen dezelfde menucategorie gewijzigd worden.
+    // Bijvoorbeeld: Randen -> alleen Randen, Afbakening -> alleen Afbakening.
+    if (!fromSectionTitle || !toSectionTitle) {
         return false;
     }
 
-    return true;
+    return fromSectionTitle === toSectionTitle;
 };
 
 const EMPTY_LINKED_PLANT_IDS: string[] = [];
@@ -125,12 +136,14 @@ type TypeLabelCardProps = {
     currentCustomStyle?: Partial<(typeof OBJECT_STYLES)[ObjectType]>;
     labelText: string;
     badgeCount: number | null;
+    showPlantLinkInfo?: boolean;
     interactive?: boolean;
     pointerSide?: "bottom" | "left" | "right";
     onDuplicate?: () => void;
     onChangeType?: (t: ObjectType) => void;
     onChangeTreebedVariant?: (variant: TreebedVariant) => void;
     onTreebedVariantChanged?: (fromVariant: TreebedVariant, toVariant: TreebedVariant) => void;
+    onColorPanelOpenChange?: (open: boolean) => void;
 };
 
 export default function TypeLabelCard(props: TypeLabelCardProps) {
@@ -140,15 +153,28 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
         currentCustomStyle,
         labelText,
         badgeCount,
+        showPlantLinkInfo = true,
         interactive = false,
         pointerSide = "bottom",
         onDuplicate,
         onChangeType,
         onChangeTreebedVariant,
         onTreebedVariantChanged,
+        onColorPanelOpenChange,
     } = props;
 
     const [openPanel, setOpenPanel] = React.useState<"object" | "color" | null>(null);
+
+    const setOpenPanelWithCallback = React.useCallback(
+        (value: "object" | "color" | null | ((prev: "object" | "color" | null) => "object" | "color" | null)) => {
+            setOpenPanel((prev) => {
+                const next = typeof value === "function" ? value(prev) : value;
+                onColorPanelOpenChange?.(next === "color");
+                return next;
+            });
+        },
+        [onColorPanelOpenChange]
+    );
     const [hoverType, setHoverType] = React.useState<ObjectType | TreebedVariant | null>(null);
 
     const selectedLocationType = useRightStepMenuStore((s) => s.step1.locationType);
@@ -165,7 +191,14 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
         return s.plantbedLinks?.[selectedObjectId] ?? EMPTY_LINKED_PLANT_IDS;
     });
 
+    const canShowPlantLinkInfo =
+        showPlantLinkInfo &&
+        (currentType === "plantbed" || currentType === "hedge" || currentType === "treebed");
+
+    const visibleBadgeCount = canShowPlantLinkInfo ? badgeCount : null;
+
     const canShowAdvicePanel =
+        showPlantLinkInfo &&
         interactive &&
         selectedObject !== null &&
         (currentType === "plantbed" || currentType === "hedge") &&
@@ -181,7 +214,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
     React.useEffect(() => {
         if (!openPanel) return;
 
-        const onDown = () => setOpenPanel(null);
+        const onDown = () => setOpenPanelWithCallback(null);
         window.addEventListener("mousedown", onDown);
 
         return () => window.removeEventListener("mousedown", onDown);
@@ -215,11 +248,18 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
     }, [currentType, selectedLocationType]);
 
     const GROUPS_FILTERED = React.useMemo(() => {
+        const currentSectionTitle = getTypeMenuSectionTitle(GROUPS, currentType);
+
         return GROUPS
             .map((g) => ({
                 ...g,
                 items: g.items.filter((item) =>
-                    isTypeChangeAllowed(currentType, item.id)
+                    isTypeChangeAllowed(
+                        currentType,
+                        item.id,
+                        currentSectionTitle,
+                        g.title
+                    )
                 ),
             }))
             .filter((g) => g.items.length > 0);
@@ -419,26 +459,26 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                             labelText
                         )}
 
-                        {badgeCount !== null && (
+                        {visibleBadgeCount !== null && (
                             <span
                                 style={{
                                     width: LABEL_UI.badgeSize,
                                     height: LABEL_UI.badgeSize,
                                     borderRadius: 999,
-                                    background: badgeCount > 0 ? COLORS.orange : "#FFE5DD",
+                                    background: visibleBadgeCount > 0 ? COLORS.orange : "#FFE5DD",
                                     display: "inline-flex",
                                     alignItems: "center",
                                     justifyContent: "center",
-                                    color: badgeCount > 0 ? "#ffffff" : COLORS.orange,
+                                    color: visibleBadgeCount > 0 ? "#ffffff" : COLORS.orange,
                                     fontWeight: 700,
                                     fontSize: LABEL_UI.badgeFontSize,
                                     lineHeight: 1,
                                 }}
                             >
-                                {badgeCount}
+                                {visibleBadgeCount}
                             </span>
                         )}
-                        
+
                     </div>
                 </div>
 
@@ -475,7 +515,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                             }}
                             onClick={(e) => {
                                 e.stopPropagation();
-                                setOpenPanel((value) => value === "object" ? null : "object");
+                                setOpenPanelWithCallback((value) => value === "object" ? null : "object");
                             }}
                         >
                             {currentType === "treebed" ? "Wijzig boomvorm" : "Wijzig object"}
@@ -503,7 +543,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                                     }}
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        setOpenPanel((value) => value === "color" ? null : "color");
+                                        setOpenPanelWithCallback((value) => value === "color" ? null : "color");
                                     }}
                                 >
                                     Wijzig kleur
@@ -644,7 +684,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                                         onMouseLeave={() => setHoverType(null)}
                                         onClick={(e) => {
                                             e.stopPropagation();
-                                            setOpenPanel(null);
+                                            setOpenPanelWithCallback(null);
 
                                             const fromVariant = currentTreebedVariant ?? "standard";
                                             const toVariant = item.key;
@@ -665,59 +705,59 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                             })}
                         </div>
                     ) : (
-                            GROUPS_FILTERED.map((g) => (
-                                <div key={g.title}>
-                                    <div
-                                        style={{
-                                            background: COLORS.greenLight,
-                                            color: COLORS.green,
-                                            fontSize: 22,
-                                            fontWeight: 600,
-                                            padding: "10px 12px",
-                                        }}
-                                    >
-                                        {g.title}
-                                    </div>
-
-                                    {g.items.map((item) => {
-                                        const hovered = hoverType === item.id;
-
-                                        return (
-                                            <button
-                                                key={item.id}
-                                                type="button"
-                                                style={{
-                                                    width: "100%",
-                                                    textAlign: "left",
-                                                    padding: "12px 12px",
-                                                    display: "flex",
-                                                    alignItems: "center",
-                                                    gap: 10,
-                                                    background: hovered ? "#f2f2f2" : "#ffffff",
-                                                    border: "none",
-                                                    cursor: "pointer",
-                                                    color: "#000000",
-                                                    fontSize: 20,
-                                                    fontWeight: 400,
-                                                    lineHeight: 1,
-                                                }}
-                                                onMouseEnter={() => setHoverType(item.id)}
-                                                onMouseLeave={() => setHoverType(null)}
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setOpenPanel(null);
-                                                    onChangeType?.(item.id);
-                                                }}
-                                            >
-                                                <Swatch type={item.id} />
-                                                <span style={{ display: "flex", alignItems: "center", lineHeight: 1 }}>
-                                                    {item.label}
-                                                </span>
-                                            </button>
-                                        );
-                                    })}
+                        GROUPS_FILTERED.map((g) => (
+                            <div key={g.title}>
+                                <div
+                                    style={{
+                                        background: COLORS.greenLight,
+                                        color: COLORS.green,
+                                        fontSize: 22,
+                                        fontWeight: 600,
+                                        padding: "10px 12px",
+                                    }}
+                                >
+                                    {g.title}
                                 </div>
-                            ))
+
+                                {g.items.map((item) => {
+                                    const hovered = hoverType === item.id;
+
+                                    return (
+                                        <button
+                                            key={item.id}
+                                            type="button"
+                                            style={{
+                                                width: "100%",
+                                                textAlign: "left",
+                                                padding: "12px 12px",
+                                                display: "flex",
+                                                alignItems: "center",
+                                                gap: 10,
+                                                background: hovered ? "#f2f2f2" : "#ffffff",
+                                                border: "none",
+                                                cursor: "pointer",
+                                                color: "#000000",
+                                                fontSize: 20,
+                                                fontWeight: 400,
+                                                lineHeight: 1,
+                                            }}
+                                            onMouseEnter={() => setHoverType(item.id)}
+                                            onMouseLeave={() => setHoverType(null)}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setOpenPanelWithCallback(null);
+                                                onChangeType?.(item.id);
+                                            }}
+                                        >
+                                            <Swatch type={item.id} />
+                                            <span style={{ display: "flex", alignItems: "center", lineHeight: 1 }}>
+                                                {item.label}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        ))
                     )}
                 </div>
             )}
@@ -731,7 +771,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
                         updateObjectStyle(selectedObject.id, style);
                     }}
                     onClose={() => {
-                        setOpenPanel(null);
+                        setOpenPanelWithCallback(null);
                     }}
                 />
             )}

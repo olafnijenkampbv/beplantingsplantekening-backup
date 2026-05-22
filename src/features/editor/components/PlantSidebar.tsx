@@ -7,6 +7,7 @@ import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwa
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
 import { DUMMY_PLANTS } from "@/features/editor/lib/plantSelectionDummyData";
+import { goToFinalisatie } from "@/features/editor/lib/editorWorkflowNavigation";
 
 const COLORS = {
     orange: "#E94E1B",
@@ -31,7 +32,9 @@ type PlantItem = {
     dutch: string;
     size: string;
     imageSrc: string;
+    pricePerPiece?: number;
 };
+
 type TabKey = "list" | "linked";
 
 function IconSearch(props: { className?: string }) {
@@ -200,6 +203,15 @@ function PlantRow(props: { plant: PlantItem; isLinked: boolean; linkedCount: num
                 >
                     {plant.size}
                 </div>
+
+                {plant.pricePerPiece !== undefined && (
+                    <div
+                        className="leading-tight truncate"
+                        style={{ color: "#FF0000", marginTop: 4, fontSize: 14 }}
+                    >
+                        {`€${plant.pricePerPiece.toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} p/st`}
+                    </div>
+                )}
 
                 {linkedCount > 0 && (
                     <div
@@ -432,6 +444,15 @@ function LinkedPlantRow(props: { plant: PlantItem; onClick: () => void; onUnlink
                     >
                         {plant.size}
                     </div>
+
+                    {plant.pricePerPiece !== undefined && (
+                        <div
+                            className="leading-tight truncate"
+                            style={{ color: "#FF0000", fontSize: 14, marginTop: 4 }}
+                        >
+                            {`€${plant.pricePerPiece.toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} p/st`}
+                        </div>
+                    )}
                 </div>
             </button>
 
@@ -487,8 +508,9 @@ function ChevronUpIcon() {
 }
 export default function PlantSidebar(props: {
     onLinkedPlantSelect?: (plant: { id: string; latin: string; dutch: string; imageSrc: string } | null) => void;
+    hidden?: boolean;
 }) {
-    const { onLinkedPlantSelect } = props;
+    const { onLinkedPlantSelect, hidden = false } = props;
 
     const [collapsed, setCollapsed] = React.useState(false);
     const [activeTab, setActiveTab] = React.useState<TabKey>("list");
@@ -557,6 +579,7 @@ export default function PlantSidebar(props: {
                     dutch: item.plant.latinName,
                     size: item.size || "Geen maat geselecteerd",
                     imageSrc: dummyPlantById[plantId]?.imageSrc ?? "/images/placeholder-plant.jpg",
+                    pricePerPiece: item.plant.pricePerPiece,
                 },
             ];
         });
@@ -847,12 +870,13 @@ export default function PlantSidebar(props: {
                 style={{
                     zIndex: 30,
                     right: 18,
-                    bottom: 18,                       // ✅ ALTIJD bottom anchored (geen jump)         // ✅ ALTIJD bottom anchored (geen jump)
+                    bottom: 18,
                     width: 420,
                     maxWidth: "calc(100vw - 24px)",
-
-                    // ✅ zorg dat expanded nooit over de groene balk / toolbar heen gaat
                     maxHeight: `calc(100vh - ${TOP_OFFSET + 18}px)`,
+                    opacity: hidden ? 0 : 1,
+                    pointerEvents: hidden ? "none" : "auto",
+                    willChange: "opacity",
                 }}
             >
             <div
@@ -1207,13 +1231,13 @@ export default function PlantSidebar(props: {
                                             {linkedSummary.total > 0 && linkedSummary.linked === linkedSummary.total ? (
                                                 <>
                                                     <span className="font-semibold">Alle planten gekoppeld.</span>{" "}
-                                                    Je kan nu je beplantingstekening genereren.
+                                                    Je kan nu je beplantingstekening afronden.
                                                 </>
                                             ) : (
                                                 <>
                                                     <span className="font-semibold">{linkedSummary.linked}</span> van{" "}
-                                                    <span className="font-semibold">{linkedSummary.total}</span> planten gekoppeld. Je kunt pas genereren
-                                                    wanneer alle planten in een plantvak staan.
+                                                    <span className="font-semibold">{linkedSummary.total}</span> planten gekoppeld. Je kunt pas afronden
+                                                    wanneer alle planten en bomen gekoppeld zijn.
                                                 </>
                                             )}
                                         </div>
@@ -1237,13 +1261,13 @@ export default function PlantSidebar(props: {
                                     {linkedSummary.total > 0 && linkedSummary.linked === linkedSummary.total ? (
                                         <>
                                             <span className="font-semibold">Alle planten gekoppeld.</span>{" "}
-                                            Je kan nu je beplantingstekening genereren.
+                                            Je kan nu je beplantingstekening afronden.
                                         </>
                                     ) : (
                                         <>
                                             <span className="font-semibold">{linkedSummary.linked}</span> van{" "}
-                                            <span className="font-semibold">{linkedSummary.total}</span> planten gekoppeld. Je kunt pas genereren
-                                            wanneer alle planten in een plantvak staan.
+                                            <span className="font-semibold">{linkedSummary.total}</span> planten gekoppeld. Je kunt pas afronden
+                                            wanneer alle planten en bomen gekoppeld zijn.
                                         </>
                                     )}
                                 </div>
@@ -1259,7 +1283,7 @@ export default function PlantSidebar(props: {
                             const canGenerate = total > 0 && linked === total;
                             const progress = total > 0 ? Math.max(0, Math.min(1, linked / total)) : 0;
 
-                            const statusText = `${linked} van ${total} planten gekoppeld. Je kunt pas genereren wanneer alle planten in een plantvak staan.`;
+                            const statusText = `${linked} van ${total} planten gekoppeld. Je kunt pas afronden wanneer alle planten en bomen gekoppeld zijn.`;
 
                             const showStatusText = collapsed;
                             // ✅ Alleen tonen wanneer sidebar ingeklapt is
@@ -1284,7 +1308,7 @@ export default function PlantSidebar(props: {
                                                 return;
                                             }
 
-                                            // ✅ generatieflow volgt later
+                                            goToFinalisatie();
                                         }}
                                     >
                                         {(() => {
@@ -1337,7 +1361,7 @@ export default function PlantSidebar(props: {
                                                                 flex: "0 0 auto",
                                                             }}
                                                         />
-                                                        <span>Genereer beplantingsplantekening</span>
+                                                        <span>Afronden</span>
                                                     </div>
 
                                                     {/* ✅ OVERLAYLAAG (wit) — NIET meer in smalle container, maar full width + clipPath */}
@@ -1373,7 +1397,7 @@ export default function PlantSidebar(props: {
                                                                         flex: "0 0 auto",
                                                                     }}
                                                                 />
-                                                                <span>Genereer beplantingsplantekening</span>
+                                                                <span>Afronden</span>
                                                             </div>
                                                         </div>
                                                     )}

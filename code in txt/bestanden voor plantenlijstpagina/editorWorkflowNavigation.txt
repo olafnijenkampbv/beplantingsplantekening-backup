@@ -58,14 +58,6 @@ export function goToPlantSelectionPage() {
     window.location.assign("/plantenlijst");
 }
 
-export function goToFinalisatie() {
-    if (typeof window === "undefined") {
-        return;
-    }
-
-    window.location.assign("/beplantingsplan-afronden");
-}
-
 export function goToWorkflowStepFromPlantSelection(stepId: number) {
     if (typeof window === "undefined") {
         return;

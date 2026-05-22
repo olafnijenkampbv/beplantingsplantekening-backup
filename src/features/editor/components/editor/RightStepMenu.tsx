@@ -47,7 +47,7 @@ const HEADER_HEIGHT = 56;
 const TOOLBAR_OFFSET = 12;
 const TOP_OFFSET = HEADER_HEIGHT + TOOLBAR_OFFSET;
 
-export default function RightStepMenu() {
+export default function RightStepMenu({ hidden = false }: { hidden?: boolean }) {
     const activeStep = useRightStepMenuStore((s) => s.activeStep);
     const step1 = useRightStepMenuStore((s) => s.step1);
     const step2 = useRightStepMenuStore((s) => s.step2);
@@ -432,6 +432,9 @@ export default function RightStepMenu() {
                 maxWidth: "calc(100vw - 24px)",
                 height: `calc(100vh - ${TOP_OFFSET + 18}px)`,
                 maxHeight: `calc(100vh - ${TOP_OFFSET + 18}px)`,
+                opacity: hidden ? 0 : 1,
+                pointerEvents: hidden ? "none" : "auto",
+                willChange: "opacity",
             }}
         >
             <div

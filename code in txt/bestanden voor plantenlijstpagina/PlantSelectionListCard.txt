@@ -38,6 +38,14 @@ const DRAG_SCROLL_EDGE_SIZE = 96;
 const DRAG_SCROLL_MAX_SPEED = 18;
 const DRAG_SCROLL_LIST_MARGIN = 24;
 
+function formatPricePerPiece(price: number | undefined) {
+    if (typeof price !== "number" || Number.isNaN(price)) {
+        return "Prijs onbekend";
+    }
+
+    return `€${price.toFixed(2).replace(".", ",")} p/st`;
+}
+
 function PlantSpecificationInfoRow(props: DummyPlantSpecificationRow) {
     const { label, value, iconSrc } = props;
 
@@ -779,7 +787,7 @@ export default function PlantSelectionListCard() {
                 className="mt-3 text-[14px]"
                 style={{ color: COLORS.text }}
             >
-                In de plantenlijst bepaal je de aantallen en maten voor je definitieve plan.
+                Aantallen en totaalprijs worden berekend zodra de planten aan plantvakken zijn gekoppeld. De planten koppel je aan de plantvakken in de volgende stap.
             </p>
 
             {items.length === 0 ? (
@@ -957,11 +965,11 @@ export default function PlantSelectionListCard() {
                     </div>
 
                         <div ref={plantListDragBoundsRef} className="mt-6 overflow-x-auto">
-                            <div className="min-w-[1120px]">
+                            <div className="min-w-[1240px]">
                                 <div
                                     className="grid items-center gap-4 pb-4 text-[15px] font-semibold"
                                     style={{
-                                        gridTemplateColumns: "32px 108px minmax(220px,1fr) minmax(260px,1fr) minmax(180px,0.9fr) 44px",
+                                        gridTemplateColumns: "32px 108px minmax(220px,1fr) minmax(230px,0.9fr) minmax(180px,0.75fr) minmax(110px,0.35fr) 44px",
                                         color: COLORS.text,
                                     }}
                                 >
@@ -970,6 +978,7 @@ export default function PlantSelectionListCard() {
                                     <div>Plantnaam</div>
                                     <div>Maatvoering</div>
                                     <div>Notitie</div>
+                                    <div>Prijs</div>
                                     <div />
                                 </div>
 
@@ -1073,7 +1082,7 @@ export default function PlantSelectionListCard() {
                                                                 className="grid items-start gap-4 px-3 py-4"
                                                                 style={{
                                                                     gridTemplateColumns:
-                                                                        "32px 108px minmax(220px,1fr) minmax(260px,1fr) minmax(180px,0.9fr) 44px",
+                                                                        "32px 108px minmax(220px,1fr) minmax(230px,0.9fr) minmax(180px,0.75fr) minmax(110px,0.35fr) 44px",
                                                                     opacity: isDragging ? 0.3 : 1,
                                                                     transition: "opacity 160ms ease",
                                                                 }}
@@ -1199,6 +1208,13 @@ export default function PlantSelectionListCard() {
                                                                             handleChangeNote(item.id, value)
                                                                         }
                                                                     />
+                                                                </div>
+
+                                                                <div
+                                                                    className="pt-2 text-[13px] leading-[1.35]"
+                                                                    style={{ color: "#FF0000" }}
+                                                                >
+                                                                    {formatPricePerPiece(item.plant.pricePerPiece)}
                                                                 </div>
 
                                                                 <div className="flex h-full items-center justify-center pt-2">

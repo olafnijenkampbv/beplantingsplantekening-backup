@@ -7,6 +7,7 @@ import { nanoid } from "nanoid";
 import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX, ViewVisibilityKey, CompassDirection } from "@/state/projectStore";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import EditorToolbar from "@/features/editor/components/EditorToolbar";
+import EstimatedPlantingPriceBadge from "@/features/editor/components/editor/EstimatedPlantingPriceBadge";
 import LeftObjectsMenu from "@/features/editor/components/LeftObjectsMenu";
 import RightStepMenu from "@/features/editor/components/editor/RightStepMenu";
 import PlantSidebar from "@/features/editor/components/PlantSidebar";
@@ -1680,6 +1681,7 @@ export default function HelloEditor() {
         return {
             objects: safeObjects,
             plantbedLinks: safeLinks,
+            distributionOverrides: { ...(state.distributionOverrides ?? {}) },
             viewVisibility: {
                 ...DEFAULT_DRAWING_VIEW_VISIBILITY,
                 showTrafficUse: true,
@@ -1780,6 +1782,7 @@ export default function HelloEditor() {
                 objects: nextObjects,
                 plantbedLinks: nextLinks,
                 plantbedLinkedCount: nextCounts,
+                distributionOverrides: safeSnapshot.distributionOverrides ?? {},
                 nextPlantbedNo: safeSnapshot.nextPlantbedNo ?? 1,
                 viewVisibility: {
                     ...DEFAULT_DRAWING_VIEW_VISIBILITY,
@@ -1810,6 +1813,7 @@ export default function HelloEditor() {
     const [isDrawingsHydrated, setIsDrawingsHydrated] = useState(false);
     const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved">("saved");
     const [rightPanelMode, setRightPanelMode] = useState<EditorRightPanelMode>("steps");
+    const [isColorPanelOpen, setIsColorPanelOpen] = useState(false);
     const [rightStepSnapshotsByDrawingId, setRightStepSnapshotsByDrawingId] = useState<
         Record<string, PersistedRightStepMenuSnapshot>
     >({});
@@ -2457,6 +2461,7 @@ export default function HelloEditor() {
 
     const objects = useProjectStore((s) => s.objects);
     const plantbedLinks = useProjectStore((s: any) => s.plantbedLinks);
+    const distributionOverrides = useProjectStore((s: any) => s.distributionOverrides);
     const plants = useProjectStore((s: any) => s.plants);
     const getPolylineRenderPieces = useProjectStore((s: any) => s.getPolylineRenderPieces);;
 
@@ -2771,6 +2776,7 @@ export default function HelloEditor() {
         objects,
         plantbedLinks,
         viewVisibility,
+        distributionOverrides,
     ]);
 
     const saveStatusLabel = useMemo(() => {
@@ -6418,11 +6424,15 @@ export default function HelloEditor() {
                         />
                     </div>
 
+                    {shouldShowPlantSidebar && (
+                        <EstimatedPlantingPriceBadge />
+                    )}
+
                     <div className="relative z-20">
                         {shouldShowPlantSidebar ? (
-                            <PlantSidebar onLinkedPlantSelect={handleLinkedPlantPreviewSelect} />
+                            <PlantSidebar onLinkedPlantSelect={handleLinkedPlantPreviewSelect} hidden={isColorPanelOpen} />
                         ) : (
-                            <RightStepMenu />
+                            <RightStepMenu hidden={isColorPanelOpen} />
                         )}
                     </div>
 
@@ -6547,312 +6557,315 @@ export default function HelloEditor() {
 
                     <div
                         ref={canvasWrapRef}
-                        className="h-full w-full relative overflow-hidden"
+                        className="h-full w-full relative"
                         style={{ background: COLORS.greenLight }}
                     >
-                        <Stage
-                            ref={stageRef}
-                            width={canvasSize.w}
-                            height={canvasSize.h}
-                            scaleX={stageScale}
-                            scaleY={stageScale}
-                            x={stagePos.x}
-                            y={stagePos.y}
-                            onWheel={handleWheel}
-                            onMouseDown={handleMouseDown}
-                            onMouseMove={handleMouseMove}
-                            onMouseUp={handleMouseUp}
-                            onMouseEnter={(e) => {
-                                const evt = e.evt as MouseEvent;
-                                lastPointerClientPosRef.current = {
-                                    x: evt.clientX,
-                                    y: evt.clientY,
-                                };
+                        <div className="absolute inset-0 overflow-hidden">
+                            <Stage
+                                ref={stageRef}
+                                width={canvasSize.w}
+                                height={canvasSize.h}
+                                scaleX={stageScale}
+                                scaleY={stageScale}
+                                x={stagePos.x}
+                                y={stagePos.y}
+                                onWheel={handleWheel}
+                                onMouseDown={handleMouseDown}
+                                onMouseMove={handleMouseMove}
+                                onMouseUp={handleMouseUp}
+                                onMouseEnter={(e) => {
+                                    const evt = e.evt as MouseEvent;
+                                    lastPointerClientPosRef.current = {
+                                        x: evt.clientX,
+                                        y: evt.clientY,
+                                    };
 
-                                if (!shouldShowCursorCrosshair) return;
+                                    if (!shouldShowCursorCrosshair) return;
 
-                                const stage = stageRef.current;
-                                if (!stage) return;
+                                    const stage = stageRef.current;
+                                    if (!stage) return;
 
-                                updateCursorCrosshairFromStage(
-                                    stage,
-                                    activeTool === "draw" ? activeDrawTypeRef.current : null
-                                );
-                            }}
-                            onMouseLeave={() => {
-                                clearCursorCrosshair();
-                            }}
-                            onDblClick={(e) => {
-                                // ✅ Unified boundaries sluiten met echte dubbelklik
-                                if (activeTool !== "draw") return;
-                                if (!activeDrawType) return;
-                                if (!isUnifiedBoundaryType(activeDrawType)) return;
-
-                                // ✅ Native dblclick van browser/Konva is te ruim.
-                                // Daarom alleen afronden als onze eigen click-delta kort genoeg was.
-                                if (lastDrawClickDeltaRef.current > FENCE_GATE_DBLCLICK_MS) {
-                                    return;
-                                }
-
-                                const currentDrawType = activeDrawTypeRef.current;
-                                const currentViewVisibility = viewVisibilityRef.current;
-
-                                if (!currentDrawType) {
-                                    notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
-                                    return;
-                                }
-
-                                const visibilityKey = getViewVisibilityKeyForType(currentDrawType);
-                                if (!currentViewVisibility[visibilityKey]) {
-                                    const label = getViewVisibilityLabelForType(currentDrawType);
-                                    notify(APP_NOTIFICATIONS.drawingBlockedByViewToggle(label));
-                                    return;
-                                }
-
-                                lastDblClickAtRef.current = performance.now();
-
-                                e.cancelBubble = true;
-
-                                const pts = draftPointsRef.current;
-
-                                // minimaal 2 punten (1 segment) om überhaupt iets te kunnen sluiten
-                                if (pts.length < 4) return;
-
-                                // ==============================
-                                // ✅ Fence/Gate endpoint-merge behouden,
-                                // maar finale toevoeging altijd via addObject
-                                // zodat de store-pipeline ook tijdens tekenen
-                                // lagere objecten correct kan wegsnijden.
-                                // ==============================
-                                if (currentDrawType === "fence" || currentDrawType === "gate") {
-                                    const state = useProjectStore.getState();
-                                    const all = (state.objects ?? []) as PolyObject[];
-                                    const sameType = all.filter((o) => o.type === currentDrawType);
-
-                                    const { mergedPoints } = mergeFenceOrGateEndpoints(
-                                        currentDrawType,
-                                        pts,
-                                        sameType
+                                    updateCursorCrosshairFromStage(
+                                        stage,
+                                        activeTool === "draw" ? activeDrawTypeRef.current : null
                                     );
+                                }}
+                                onMouseLeave={() => {
+                                    clearCursorCrosshair();
+                                }}
+                                onDblClick={(e) => {
+                                    // ✅ Unified boundaries sluiten met echte dubbelklik
+                                    if (activeTool !== "draw") return;
+                                    if (!activeDrawType) return;
+                                    if (!isUnifiedBoundaryType(activeDrawType)) return;
 
-                                    addObject({
-                                        id: nanoid(),
-                                        type: currentDrawType,
-                                        points: mergedPoints,
-                                    });
-                                } else {
-                                    addObject({
-                                        id: nanoid(),
-                                        type: currentDrawType,
-                                        points: pts,
-                                    });
-                                }
+                                    // ✅ Native dblclick van browser/Konva is te ruim.
+                                    // Daarom alleen afronden als onze eigen click-delta kort genoeg was.
+                                    if (lastDrawClickDeltaRef.current > FENCE_GATE_DBLCLICK_MS) {
+                                        return;
+                                    }
 
-                                // reset draft
-                                setDraftPoints([]);
-                                setDraftRedoPoints([]);
+                                    const currentDrawType = activeDrawTypeRef.current;
+                                    const currentViewVisibility = viewVisibilityRef.current;
 
-                                lastPreviewKeyRef.current = "";
-                                pendingPreviewRef.current = null;
+                                    if (!currentDrawType) {
+                                        notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
+                                        return;
+                                    }
 
-                                if (draftLineRef.current) draftLineRef.current.points([]);
-                                if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+                                    const visibilityKey = getViewVisibilityKeyForType(currentDrawType);
+                                    if (!currentViewVisibility[visibilityKey]) {
+                                        const label = getViewVisibilityLabelForType(currentDrawType);
+                                        notify(APP_NOTIFICATIONS.drawingBlockedByViewToggle(label));
+                                        return;
+                                    }
 
-                                const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
-                                if (layer) layer.batchDraw();
+                                    lastDblClickAtRef.current = performance.now();
 
-                                setActiveTool("select");
-                                setActiveDrawType(null);
-                            }}
-                            style={{
-                                cursor: isPanning
-                                    ? "grabbing"
-                                    : activeTool === "hand"
-                                        ? "grab"
-                                        : activeTool === "select"
-                                            ? "default"
-                                            : activeTool === "draw" || activeTool === "cut" || activeTool === "measure"
-                                                ? "crosshair"
-                                                : mode === "draw"
+                                    e.cancelBubble = true;
+
+                                    const pts = draftPointsRef.current;
+
+                                    // minimaal 2 punten (1 segment) om überhaupt iets te kunnen sluiten
+                                    if (pts.length < 4) return;
+
+                                    // ==============================
+                                    // ✅ Fence/Gate endpoint-merge behouden,
+                                    // maar finale toevoeging altijd via addObject
+                                    // zodat de store-pipeline ook tijdens tekenen
+                                    // lagere objecten correct kan wegsnijden.
+                                    // ==============================
+                                    if (currentDrawType === "fence" || currentDrawType === "gate") {
+                                        const state = useProjectStore.getState();
+                                        const all = (state.objects ?? []) as PolyObject[];
+                                        const sameType = all.filter((o) => o.type === currentDrawType);
+
+                                        const { mergedPoints } = mergeFenceOrGateEndpoints(
+                                            currentDrawType,
+                                            pts,
+                                            sameType
+                                        );
+
+                                        addObject({
+                                            id: nanoid(),
+                                            type: currentDrawType,
+                                            points: mergedPoints,
+                                        });
+                                    } else {
+                                        addObject({
+                                            id: nanoid(),
+                                            type: currentDrawType,
+                                            points: pts,
+                                        });
+                                    }
+
+                                    // reset draft
+                                    setDraftPoints([]);
+                                    setDraftRedoPoints([]);
+
+                                    lastPreviewKeyRef.current = "";
+                                    pendingPreviewRef.current = null;
+
+                                    if (draftLineRef.current) draftLineRef.current.points([]);
+                                    if (draftPreviewLineRef.current) draftPreviewLineRef.current.points([]);
+
+                                    const layer = draftLineRef.current?.getLayer?.() ?? draftPreviewLineRef.current?.getLayer?.();
+                                    if (layer) layer.batchDraw();
+
+                                    setActiveTool("select");
+                                    setActiveDrawType(null);
+                                }}
+                                style={{
+                                    cursor: isPanning
+                                        ? "grabbing"
+                                        : activeTool === "hand"
+                                            ? "grab"
+                                            : activeTool === "select"
+                                                ? "default"
+                                                : activeTool === "draw" || activeTool === "cut" || activeTool === "measure"
                                                     ? "crosshair"
-                                                    : "default",
-                                overflow: "hidden",
-                            }}
-                        >
+                                                    : mode === "draw"
+                                                        ? "crosshair"
+                                                        : "default",
+                                    overflow: "hidden",
+                                }}
+                            >
 
-                            {(() => {
-                                const {
-                                    visibleObjects,
-                                    selected,
-                                    unselected,
-                                    unselectedPlantbeds,
-                                    unselectedNonPlantbeds,
-                                } = sceneObjectBuckets;
+                                {(() => {
+                                    const {
+                                        visibleObjects,
+                                        selected,
+                                        unselected,
+                                        unselectedPlantbeds,
+                                        unselectedNonPlantbeds,
+                                    } = sceneObjectBuckets;
 
-                                return (
-                                    <>
-                                        <Layer listening={false}>
-                                            <GridShape
-                                                canvasW={canvasSize.w}
-                                                canvasH={canvasSize.h}
-                                                stageScale={stageScale}
-                                                stagePos={stagePos}
-                                                gridSize={GRID_SIZE}
-                                            />
-                                        </Layer>
-
-                                        {/* =============== BASE FILL LAYER =============== */}
-                                        <BaseFillLayer
-                                            unselectedNonPlantbeds={unselectedNonPlantbeds}
-                                            unselectedPlantbeds={unselectedPlantbeds}
-                                            objects={objects as PolyObject[]}
-                                            stageRef={stageRef}
-                                            activeTool={activeTool}
-                                            isPanning={isPanning}
-                                            stageScale={stageScale}
-                                            viewVisibility={viewVisibility}
-                                            plantbedNumberLayouts={plantbedNumberLayouts}
-                                            pendingPlantbedClickRef={pendingPlantbedClickRef}
-                                            plantbedClickMovedRef={plantbedClickMovedRef}
-                                            handleObjectSelection={handleObjectSelection}
-                                            getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
-                                            inferPolylineRenderSide={inferPolylineRenderSide}
-                                        />
-
-                                        {/* =============== BASE STROKE LAYER =============== */}
-                                        <BaseStrokeLayer
-                                            unselectedNonPlantbeds={unselectedNonPlantbeds}
-                                            unselectedPlantbeds={unselectedPlantbeds}
-                                            objects={objects as PolyObject[]}
-                                            dragOverPlantbedId={dragOverPlantbedId}
-                                            getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
-                                            inferPolylineRenderSide={inferPolylineRenderSide}
-                                            getPlantbedOutlineSegments={getPlantbedOutlineSegments}
-                                        />
-
-                                        <Layer listening={false}>
-                                            <MeasurementOverlay
-                                                unselectedObjects={unselected}
-                                                selectedObjects={[]}
-                                                selectedObjectId={selectedObjectId}
-                                                stageScale={stageScale}
-                                                activeTool={"select"}
-                                                activeDrawType={activeDrawType}
-                                                draftPoints={[]}
-                                                draftMeasurementPoints={[]}
-                                                primaryMeasurementObject={livePrimaryMeasurementObject}
-                                                plantbedNumberLayouts={plantbedNumberLayouts}
-                                                showSelectedDimensions={false}
-                                            />
-
-                                            {selectionBox && (
-                                                <Rect
-                                                    x={selectionBox.x}
-                                                    y={selectionBox.y}
-                                                    width={selectionBox.w}
-                                                    height={selectionBox.h}
-                                                    stroke={COLORS.orange}
-                                                    strokeWidth={1}
-                                                    dash={[6, 4]}
-                                                    fill={COLORS.orangeLight}
-                                                    opacity={0.35}
-                                                    listening={false}
+                                    return (
+                                        <>
+                                            <Layer listening={false}>
+                                                <GridShape
+                                                    canvasW={canvasSize.w}
+                                                    canvasH={canvasSize.h}
+                                                    stageScale={stageScale}
+                                                    stagePos={stagePos}
+                                                    gridSize={GRID_SIZE}
                                                 />
-                                            )}
-                                        </Layer>
+                                            </Layer>
 
-                                        {/* =============== TOP LAYER (treebeds + selection + draft) =============== */}
-                                        <EditorTopLayer
-                                            unselectedNonPlantbeds={unselectedNonPlantbeds}
-                                            dragOverPlantbedId={dragOverPlantbedId}
-                                            objects={objects}
-                                            selected={selected}
-                                            selectedObjectId={selectedObjectId}
-                                            activeTool={activeTool}
-                                            activeDrawType={activeDrawType}
-                                            draftPoints={draftPoints}
-                                            draftMeasurementPreviewPoint={draftMeasurementPreviewPoint}
-                                            measurePoints={measurePoints}
-                                            measurePreviewPoint={measurePreviewPoint}
-                                            measureLines={measureLines}
-                                            shouldHideHeavySceneDecorations={shouldHideHeavySceneDecorations}
-                                            stageScale={stageScale}
-                                            plantbedNumberLayouts={plantbedNumberLayouts}
-                                            livePlantbedNumberLayouts={livePlantbedNumberLayouts}
-                                            livePrimaryMeasurementObject={livePrimaryMeasurementObject}
-                                            shouldShowCursorCrosshair={shouldShowCursorCrosshair}
-                                            cursorCrosshairPoint={cursorCrosshairPoint}
-                                            stagePos={stagePos}
-                                            canvasSize={canvasSize}
-                                            COLORS={COLORS}
+                                            {/* =============== BASE FILL LAYER =============== */}
+                                            <BaseFillLayer
+                                                unselectedNonPlantbeds={unselectedNonPlantbeds}
+                                                unselectedPlantbeds={unselectedPlantbeds}
+                                                objects={objects as PolyObject[]}
+                                                stageRef={stageRef}
+                                                activeTool={activeTool}
+                                                isPanning={isPanning}
+                                                stageScale={stageScale}
+                                                viewVisibility={viewVisibility}
+                                                plantbedNumberLayouts={plantbedNumberLayouts}
+                                                pendingPlantbedClickRef={pendingPlantbedClickRef}
+                                                plantbedClickMovedRef={plantbedClickMovedRef}
+                                                handleObjectSelection={handleObjectSelection}
+                                                getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
+                                                inferPolylineRenderSide={inferPolylineRenderSide}
+                                            />
 
-                                            stageRef={stageRef}
-                                            isPanning={isPanning}
-                                            handleObjectSelection={handleObjectSelection}
-                                            selectedObjectIds={selectedObjectIds}
-                                            selectObjects={selectObjects}
-                                            moveObjectAndMerge={moveObjectAndMerge}
-                                            moveObjectsBatch={moveObjectsBatch}
-                                            alignmentGuides={alignmentGuides}
-                                            setAlignmentGuides={setAlignmentGuides}
-                                            getAlignmentSnapForSelection={getAlignmentSnapForSelection}
-                                            setLiveSelectionDragDelta={setLiveSelectionDragDelta}
-                                            isVertexDragging={isVertexDragging}
-                                            isEdgeResizing={isEdgeResizing}
-                                            setIsEdgeResizing={setIsEdgeResizing}
-                                            setIsVertexDragging={setIsVertexDragging}
-                                            isBoxSelecting={isBoxSelecting}
-                                            shouldHideSelectionLabelsForPerformance={shouldHideSelectionLabelsForPerformance}
-                                            viewVisibility={viewVisibility}
-                                            showPlantLinkInfoInLabels={shouldShowPlantSidebar}
+                                            {/* =============== BASE STROKE LAYER =============== */}
+                                            <BaseStrokeLayer
+                                                unselectedNonPlantbeds={unselectedNonPlantbeds}
+                                                unselectedPlantbeds={unselectedPlantbeds}
+                                                objects={objects as PolyObject[]}
+                                                dragOverPlantbedId={dragOverPlantbedId}
+                                                getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
+                                                inferPolylineRenderSide={inferPolylineRenderSide}
+                                                getPlantbedOutlineSegments={getPlantbedOutlineSegments}
+                                            />
 
-                                            treebedRotatePreview={treebedRotatePreview}
-                                            treebedResizePreview={treebedResizePreview}
-                                            startMiddleMousePan={startMiddleMousePan}
-                                            suppressPlantbedFocusRef={suppressPlantbedFocusRef}
-                                            GRID_SIZE={GRID_SIZE}
-                                            isEdgeResizingRef={isEdgeResizingRef}
-                                            isResizeEdgeHoveredRef={isResizeEdgeHoveredRef}
-                                            isTreebedResizeHandleHoveredRef={isTreebedResizeHandleHoveredRef}
-                                            isTreebedRotateHotspotHoveredRef={isTreebedRotateHotspotHoveredRef}
-                                            treebedRotateRef={treebedRotateRef}
-                                            treebedResizeRef={treebedResizeRef}
-                                            treebedRotateCursorRef={treebedRotateCursorRef}
-                                            isVertexDraggingRef={isVertexDraggingRef}
-                                            activeVertexIndexRef={activeVertexIndexRef}
-                                            selectedLineRefs={selectedLineRefs}
-                                            vertexHandleRefs={vertexHandleRefs}
-                                            vertexEditRef={vertexEditRef}
-                                            edgeResizeRef={edgeResizeRef}
-                                            pendingPlantbedClickRef={pendingPlantbedClickRef}
-                                            plantbedClickMovedRef={plantbedClickMovedRef}
-                                            startTreebedRotate={startTreebedRotate}
-                                            startTreebedResize={startTreebedResize}
-                                            notify={notify}
-                                            BASE_SCALE={BASE_SCALE}
-                                            getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
-                                            inferPolylineRenderSide={inferPolylineRenderSide}
-                                            getPolylineRenderPieces={getPolylineRenderPieces}
-                                            renderTilesPattern={renderTilesPattern}
-                                            treebedLabelBlockers={treebedLabelBlockers}
-                                            getPlantbedNumberLayout={getPlantbedNumberLayout}
-                                            getPlantbedLinkedCount={getPlantbedLinkedCount}
-                                            handleDuplicateSelection={handleDuplicateSelection}
-                                            requestChangeObjectType={requestChangeObjectType}
-                                            changeTreebedVariant={changeTreebedVariant}
-                                            useProjectStore={useProjectStore}
-                                            activeTreebedDrawVariant={activeTreebedDrawVariant}
-                                            treebedDraftPreviewPoint={treebedDraftPreviewPoint}
-                                            createTreebedPointsFromCenterDrag={createTreebedPointsFromCenterDrag}
-                                            draftGuideLineRef={draftGuideLineRef}
-                                            draftSecondaryGuideLineRef={draftSecondaryGuideLineRef}
-                                            draftPreviewLineRef={draftPreviewLineRef}
-                                            applyViewportWheel={applyViewportWheel}
-                                        />
-                                    </>
-                                );
-                            })()}
-                        </Stage>
+                                            <Layer listening={false}>
+                                                <MeasurementOverlay
+                                                    unselectedObjects={unselected}
+                                                    selectedObjects={[]}
+                                                    selectedObjectId={selectedObjectId}
+                                                    stageScale={stageScale}
+                                                    activeTool={"select"}
+                                                    activeDrawType={activeDrawType}
+                                                    draftPoints={[]}
+                                                    draftMeasurementPoints={[]}
+                                                    primaryMeasurementObject={livePrimaryMeasurementObject}
+                                                    plantbedNumberLayouts={plantbedNumberLayouts}
+                                                    showSelectedDimensions={false}
+                                                />
+
+                                                {selectionBox && (
+                                                    <Rect
+                                                        x={selectionBox.x}
+                                                        y={selectionBox.y}
+                                                        width={selectionBox.w}
+                                                        height={selectionBox.h}
+                                                        stroke={COLORS.orange}
+                                                        strokeWidth={1}
+                                                        dash={[6, 4]}
+                                                        fill={COLORS.orangeLight}
+                                                        opacity={0.35}
+                                                        listening={false}
+                                                    />
+                                                )}
+                                            </Layer>
+
+                                            {/* =============== TOP LAYER (treebeds + selection + draft) =============== */}
+                                            <EditorTopLayer
+                                                onColorPanelOpenChange={setIsColorPanelOpen}
+                                                unselectedNonPlantbeds={unselectedNonPlantbeds}
+                                                dragOverPlantbedId={dragOverPlantbedId}
+                                                objects={objects}
+                                                selected={selected}
+                                                selectedObjectId={selectedObjectId}
+                                                activeTool={activeTool}
+                                                activeDrawType={activeDrawType}
+                                                draftPoints={draftPoints}
+                                                draftMeasurementPreviewPoint={draftMeasurementPreviewPoint}
+                                                measurePoints={measurePoints}
+                                                measurePreviewPoint={measurePreviewPoint}
+                                                measureLines={measureLines}
+                                                shouldHideHeavySceneDecorations={shouldHideHeavySceneDecorations}
+                                                stageScale={stageScale}
+                                                plantbedNumberLayouts={plantbedNumberLayouts}
+                                                livePlantbedNumberLayouts={livePlantbedNumberLayouts}
+                                                livePrimaryMeasurementObject={livePrimaryMeasurementObject}
+                                                shouldShowCursorCrosshair={shouldShowCursorCrosshair}
+                                                cursorCrosshairPoint={cursorCrosshairPoint}
+                                                stagePos={stagePos}
+                                                canvasSize={canvasSize}
+                                                COLORS={COLORS}
+
+                                                stageRef={stageRef}
+                                                isPanning={isPanning}
+                                                handleObjectSelection={handleObjectSelection}
+                                                selectedObjectIds={selectedObjectIds}
+                                                selectObjects={selectObjects}
+                                                moveObjectAndMerge={moveObjectAndMerge}
+                                                moveObjectsBatch={moveObjectsBatch}
+                                                alignmentGuides={alignmentGuides}
+                                                setAlignmentGuides={setAlignmentGuides}
+                                                getAlignmentSnapForSelection={getAlignmentSnapForSelection}
+                                                setLiveSelectionDragDelta={setLiveSelectionDragDelta}
+                                                isVertexDragging={isVertexDragging}
+                                                isEdgeResizing={isEdgeResizing}
+                                                setIsEdgeResizing={setIsEdgeResizing}
+                                                setIsVertexDragging={setIsVertexDragging}
+                                                isBoxSelecting={isBoxSelecting}
+                                                shouldHideSelectionLabelsForPerformance={shouldHideSelectionLabelsForPerformance}
+                                                viewVisibility={viewVisibility}
+                                                showPlantLinkInfoInLabels={shouldShowPlantSidebar}
+
+                                                treebedRotatePreview={treebedRotatePreview}
+                                                treebedResizePreview={treebedResizePreview}
+                                                startMiddleMousePan={startMiddleMousePan}
+                                                suppressPlantbedFocusRef={suppressPlantbedFocusRef}
+                                                GRID_SIZE={GRID_SIZE}
+                                                isEdgeResizingRef={isEdgeResizingRef}
+                                                isResizeEdgeHoveredRef={isResizeEdgeHoveredRef}
+                                                isTreebedResizeHandleHoveredRef={isTreebedResizeHandleHoveredRef}
+                                                isTreebedRotateHotspotHoveredRef={isTreebedRotateHotspotHoveredRef}
+                                                treebedRotateRef={treebedRotateRef}
+                                                treebedResizeRef={treebedResizeRef}
+                                                treebedRotateCursorRef={treebedRotateCursorRef}
+                                                isVertexDraggingRef={isVertexDraggingRef}
+                                                activeVertexIndexRef={activeVertexIndexRef}
+                                                selectedLineRefs={selectedLineRefs}
+                                                vertexHandleRefs={vertexHandleRefs}
+                                                vertexEditRef={vertexEditRef}
+                                                edgeResizeRef={edgeResizeRef}
+                                                pendingPlantbedClickRef={pendingPlantbedClickRef}
+                                                plantbedClickMovedRef={plantbedClickMovedRef}
+                                                startTreebedRotate={startTreebedRotate}
+                                                startTreebedResize={startTreebedResize}
+                                                notify={notify}
+                                                BASE_SCALE={BASE_SCALE}
+                                                getOneSidedPolylineRenderPoints={getOneSidedPolylineRenderPoints}
+                                                inferPolylineRenderSide={inferPolylineRenderSide}
+                                                getPolylineRenderPieces={getPolylineRenderPieces}
+                                                renderTilesPattern={renderTilesPattern}
+                                                treebedLabelBlockers={treebedLabelBlockers}
+                                                getPlantbedNumberLayout={getPlantbedNumberLayout}
+                                                getPlantbedLinkedCount={getPlantbedLinkedCount}
+                                                handleDuplicateSelection={handleDuplicateSelection}
+                                                requestChangeObjectType={requestChangeObjectType}
+                                                changeTreebedVariant={changeTreebedVariant}
+                                                useProjectStore={useProjectStore}
+                                                activeTreebedDrawVariant={activeTreebedDrawVariant}
+                                                treebedDraftPreviewPoint={treebedDraftPreviewPoint}
+                                                createTreebedPointsFromCenterDrag={createTreebedPointsFromCenterDrag}
+                                                draftGuideLineRef={draftGuideLineRef}
+                                                draftSecondaryGuideLineRef={draftSecondaryGuideLineRef}
+                                                draftPreviewLineRef={draftPreviewLineRef}
+                                                applyViewportWheel={applyViewportWheel}
+                                            />
+                                        </>
+                                    );
+                                })()}
+                            </Stage>
+                        </div>
                     </div>
                 </div>
             </div>

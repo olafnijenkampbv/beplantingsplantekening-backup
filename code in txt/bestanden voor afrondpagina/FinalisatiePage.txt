@@ -1,0 +1,184 @@
+"use client";
+
+import React, { useEffect, useState } from "react";
+import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
+import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
+import { goBackToEditor } from "@/features/editor/lib/editorWorkflowNavigation";
+import {
+    getPlantSelectionSnapshotForDrawing,
+    getRightStepSnapshotForDrawing,
+    readActiveDrawingIdFromStorage,
+    readPlantSelectionSnapshotsByDrawingIdFromStorage,
+    readRightStepSnapshotsByDrawingIdFromStorage,
+    writePlantSelectionSnapshotsByDrawingIdToStorage,
+} from "@/features/editor/lib/appDrawingPersistence";
+import FinalisatieProgress from "@/features/editor/components/finalisatie/FinalisatieProgress";
+import FinalisatieContactCard from "@/features/editor/components/finalisatie/FinalisatieContactCard";
+import FinalisatieSidePanel from "@/features/editor/components/finalisatie/FinalisatieSidePanel";
+import FinalisatiePlantList from "@/features/editor/components/finalisatie/FinalisatiePlantList";
+
+const COLORS = {
+    pageBg: "#F5F4F2",
+    text: "#111111",
+    green: "#58694C",
+    border: "#E3E2E2",
+    cardBg: "#FFFFFF",
+};
+
+export default function FinalisatiePage() {
+    const [activeDrawingId, setActiveDrawingId] = useState<string | null>(null);
+    const [hasHydratedDrawingContext, setHasHydratedDrawingContext] = useState(false);
+
+    const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
+    const exportPlantSelectionSnapshot = usePlantSelectionStore((s) => s.exportSnapshot);
+    const loadPlantSelectionSnapshot = usePlantSelectionStore((s) => s.loadSnapshot);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        const restoredDrawingId = readActiveDrawingIdFromStorage();
+        const rightStepSnapshotsByDrawingId = readRightStepSnapshotsByDrawingIdFromStorage();
+        const plantSelectionSnapshotsByDrawingId =
+            readPlantSelectionSnapshotsByDrawingIdFromStorage();
+
+        const rightStepSnapshot = getRightStepSnapshotForDrawing(
+            restoredDrawingId,
+            rightStepSnapshotsByDrawingId
+        );
+
+        useRightStepMenuStore.setState({
+            activeStep: rightStepSnapshot.activeStep,
+            step1: {
+                locationType: rightStepSnapshot.step1.locationType,
+                gardenZones: [...rightStepSnapshot.step1.gardenZones],
+            },
+            step2: {
+                standplaatsen: [...rightStepSnapshot.step2.standplaatsen],
+                groundTypes: [...rightStepSnapshot.step2.groundTypes],
+                maintenanceLevel: rightStepSnapshot.step2.maintenanceLevel,
+                certificationPreference: rightStepSnapshot.step2.certificationPreference,
+            },
+            step3: {
+                structureStyle: rightStepSnapshot.step3.structureStyle,
+                customPercentages: {
+                    bodembedekkers:
+                        rightStepSnapshot.step3.customPercentages.bodembedekkers,
+                    vastePlanten:
+                        rightStepSnapshot.step3.customPercentages.vastePlanten,
+                    heestersEnStruiken:
+                        rightStepSnapshot.step3.customPercentages.heestersEnStruiken,
+                    bomen: rightStepSnapshot.step3.customPercentages.bomen,
+                },
+            },
+            step4: {
+                seasonExperience: rightStepSnapshot.step4.seasonExperience,
+                heightStyle: rightStepSnapshot.step4.heightStyle,
+            },
+        });
+
+        loadPlantSelectionSnapshot(
+            getPlantSelectionSnapshotForDrawing(
+                restoredDrawingId,
+                plantSelectionSnapshotsByDrawingId
+            )
+        );
+
+        setActiveDrawingId(restoredDrawingId);
+        setHasHydratedDrawingContext(true);
+    }, [loadPlantSelectionSnapshot]);
+
+    useEffect(() => {
+        if (!hasHydratedDrawingContext || !activeDrawingId) return;
+        if (typeof window === "undefined") return;
+
+        const snapshotsByDrawingId =
+            readPlantSelectionSnapshotsByDrawingIdFromStorage();
+
+        snapshotsByDrawingId[activeDrawingId] = exportPlantSelectionSnapshot();
+
+        writePlantSelectionSnapshotsByDrawingIdToStorage(snapshotsByDrawingId);
+    }, [
+        activeDrawingId,
+        hasHydratedDrawingContext,
+        plantListItems,
+        exportPlantSelectionSnapshot,
+    ]);
+
+    return (
+        <main
+            className="min-h-screen w-full"
+            style={{ backgroundColor: COLORS.pageBg }}
+        >
+            <div className="mx-auto w-full max-w-[1460px] px-4 pb-12 pt-8 sm:px-6 lg:px-8 lg:pt-10">
+                <h1
+                    className="text-[28px] font-bold leading-[1.2] sm:text-[34px]"
+                    style={{ color: COLORS.text }}
+                >
+                    Beplantingsplan afronden
+                </h1>
+
+                <button
+                    type="button"
+                    onClick={goBackToEditor}
+                    className="group mt-4 inline-flex cursor-pointer items-center gap-3 text-left"
+                    style={{ color: COLORS.text }}
+                >
+                    <img
+                        src="/icons/arrow-left.svg"
+                        alt=""
+                        className="shrink-0"
+                        style={{ width: 16, height: 16, display: "block" }}
+                    />
+                    <span className="text-[14px] font-medium underline-offset-4 group-hover:underline group-focus-visible:underline">
+                        Terug
+                    </span>
+                </button>
+
+                <div className="mt-8">
+                    <FinalisatieProgress />
+                </div>
+
+                <div className="mt-8 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_260px]">
+                    <div className="space-y-6">
+                        <FinalisatieContactCard />
+                        <FinalisatiePlantList />
+
+                        <section
+                            className="rounded-[10px] border p-6"
+                            style={{
+                                backgroundColor: COLORS.cardBg,
+                                borderColor: COLORS.border,
+                                boxShadow: "5px 3px 46px -25px rgba(0, 0, 0, 0.25)",
+                            }}
+                        >
+                            <h2
+                                className="text-[18px] font-semibold"
+                                style={{ color: COLORS.green }}
+                            >
+                                Beplantingsplan tekening
+                            </h2>
+                            <p
+                                className="mt-2 text-[14px]"
+                                style={{ color: "#6B6B6B" }}
+                            >
+                                Bekijk hieronder de technische tekening van jouw beplantingsplan of genereer een realistische visualisatie met AI.
+                            </p>
+                            <div
+                                className="mt-6 rounded-[6px]"
+                                style={{
+                                    minHeight: 240,
+                                    backgroundColor: "#F5F4F2",
+                                    border: `1px solid ${COLORS.border}`,
+                                }}
+                            />
+                        </section>
+                    </div>
+
+                    <div className="xl:sticky xl:top-8 xl:self-start">
+                        <FinalisatieSidePanel />
+                    </div>
+                </div>
+            </div>
+        </main>
+    );
+}

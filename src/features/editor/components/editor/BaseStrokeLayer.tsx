@@ -33,7 +33,8 @@ function getObjectRenderStyle(object: PolyObject) {
     };
 }
 
-export default function BaseStrokeLayer({
+// React.memo: only re-renders when objects actually change (not during pan/drag).
+export default React.memo(function BaseStrokeLayer({
     unselectedNonPlantbeds,
     unselectedPlantbeds,
     objects,
@@ -171,4 +172,4 @@ export default function BaseStrokeLayer({
             {null}
         </Layer>
     );
-}
+});

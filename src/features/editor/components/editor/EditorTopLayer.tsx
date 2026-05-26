@@ -1,5 +1,6 @@
 import React from "react";
 import { Layer, Line, Rect, Group, Circle, Text } from "react-konva";
+import { useDrawPreviewStore } from "@/features/editor/state/drawPreviewStore";
 import { Html } from "react-konva-utils";
 import { PolyObject, ObjectType, OBJECT_STYLES } from "@/state/projectStore";
 import MeasurementOverlay from "@/features/editor/components/MeasurementOverlay";
@@ -82,7 +83,206 @@ function getObjectRenderStyle(object: PolyObject) {
     };
 }
 
-export function EditorTopLayer(props: any) {
+// Isolated component: subscribes to drawPreviewStore so only THIS component re-renders
+// when the preview point changes during drawing — not HelloEditor or EditorTopLayerInner.
+function DrawModePreviewSection({
+    shouldHideHeavySceneDecorations,
+    draftPoints,
+    activeTool,
+    activeDrawType,
+    stageScale,
+    plantbedNumberLayouts,
+    COLORS,
+    activeTreebedDrawVariant,
+    createTreebedPointsFromCenterDragFn,
+}: {
+    shouldHideHeavySceneDecorations: boolean;
+    draftPoints: number[];
+    activeTool: string;
+    activeDrawType: any;
+    stageScale: number;
+    plantbedNumberLayouts: Map<string, any>;
+    COLORS: any;
+    activeTreebedDrawVariant: any;
+    createTreebedPointsFromCenterDragFn: (cx: number, cy: number, px: number, py: number, variant: any) => number[];
+}) {
+    const previewPoint = useDrawPreviewStore((s) => s.previewPoint);
+    const treebedPreviewPoint = useDrawPreviewStore((s) => s.treebedPreviewPoint);
+
+    return (
+        <>
+            {/* Draw mode measurement overlay — shows running segment lengths while drawing */}
+            {!shouldHideHeavySceneDecorations && activeTool === "draw" && (
+                <MeasurementOverlay
+                    unselectedObjects={[]}
+                    selectedObjects={[]}
+                    selectedObjectId={null}
+                    stageScale={stageScale}
+                    activeTool={activeTool}
+                    activeDrawType={activeDrawType}
+                    draftPoints={draftPoints}
+                    draftMeasurementPoints={
+                        previewPoint
+                            ? [...draftPoints, previewPoint.x, previewPoint.y]
+                            : draftPoints
+                    }
+                    primaryMeasurementObject={null}
+                    plantbedNumberLayouts={plantbedNumberLayouts}
+                />
+            )}
+
+            {/* Boundary preview band — non-boundary types are handled imperatively by draftPreviewLineRef */}
+            {activeTool === "draw" &&
+                activeDrawType !== null &&
+                activeDrawType !== "treebed" &&
+                isUnifiedBoundaryType(activeDrawType) &&
+                draftPoints.length >= 2 &&
+                (() => {
+                    const previewBoundaryPoints = previewPoint
+                        ? [...draftPoints, previewPoint.x, previewPoint.y]
+                        : draftPoints;
+
+                    const { topPath, bottomPath } = getBoundaryPreviewOutlinePaths(
+                        previewBoundaryPoints,
+                        activeDrawType
+                    );
+
+                    if ((!topPath || topPath.length < 4) && (!bottomPath || bottomPath.length < 4)) {
+                        return null;
+                    }
+
+                    return (
+                        <>
+                            {topPath && topPath.length >= 4 && (
+                                <Line
+                                    points={topPath}
+                                    closed={false}
+                                    fillEnabled={false}
+                                    stroke={COLORS.orange}
+                                    strokeWidth={2}
+                                    dash={[8, 8]}
+                                    dashEnabled
+                                    lineCap="butt"
+                                    lineJoin="miter"
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                            )}
+                            {bottomPath && bottomPath.length >= 4 && (
+                                <Line
+                                    points={bottomPath}
+                                    closed={false}
+                                    fillEnabled={false}
+                                    stroke={COLORS.orange}
+                                    strokeWidth={2}
+                                    dash={[8, 8]}
+                                    dashEnabled
+                                    lineCap="butt"
+                                    lineJoin="miter"
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                            )}
+                        </>
+                    );
+                })()}
+
+            {/* Treebed drag preview — shows shape before the user releases the mouse */}
+            {activeDrawType === "treebed" && draftPoints.length === 2 && (() => {
+                const cx = draftPoints[0];
+                const cy = draftPoints[1];
+                const previewX = treebedPreviewPoint?.x ?? cx;
+                const previewY = treebedPreviewPoint?.y ?? cy;
+
+                const previewPoints = createTreebedPointsFromCenterDragFn(
+                    cx,
+                    cy,
+                    previewX,
+                    previewY,
+                    activeTreebedDrawVariant
+                );
+                const treebedVisual = getTreebedVisual(previewPoints, activeTreebedDrawVariant);
+
+                return (
+                    <>
+                        {treebedVisual.shape === "rect" ? (
+                            <>
+                                <Line
+                                    points={previewPoints}
+                                    closed
+                                    fill={treebedVisual.fill}
+                                    opacity={0.18}
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                                <Line
+                                    points={previewPoints}
+                                    closed
+                                    fillEnabled={false}
+                                    stroke={COLORS.orange}
+                                    strokeWidth={2}
+                                    dash={[8, 8]}
+                                    dashEnabled
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                            </>
+                        ) : (
+                            <>
+                                <Circle
+                                    x={treebedVisual.cx}
+                                    y={treebedVisual.cy}
+                                    radius={treebedVisual.radius}
+                                    fill={treebedVisual.fill}
+                                    opacity={0.18}
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                                <Circle
+                                    x={treebedVisual.cx}
+                                    y={treebedVisual.cy}
+                                    radius={treebedVisual.radius}
+                                    fillEnabled={false}
+                                    stroke={COLORS.orange}
+                                    strokeWidth={2}
+                                    dash={[8, 8]}
+                                    dashEnabled
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                />
+                            </>
+                        )}
+
+                        {renderTreebedTrunks(
+                            activeTreebedDrawVariant,
+                            treebedVisual.cx,
+                            treebedVisual.cy,
+                            treebedVisual.trunkRadius,
+                            "treebed-draft-preview",
+                            false
+                        )}
+
+                        <Circle
+                            x={treebedVisual.cx}
+                            y={treebedVisual.cy}
+                            radius={5}
+                            fill={COLORS.orange}
+                            stroke="#ffffff"
+                            strokeWidth={2}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                            shadowColor="rgba(0,0,0,0.18)"
+                            shadowBlur={2}
+                            shadowOffset={{ x: 0, y: 1 }}
+                        />
+                    </>
+                );
+            })()}
+        </>
+    );
+}
+
+function EditorTopLayerInner(props: any) {
     const {
         unselectedNonPlantbeds,
         dragOverPlantbedId,
@@ -92,7 +292,6 @@ export function EditorTopLayer(props: any) {
         activeTool,
         activeDrawType,
         draftPoints,
-        draftMeasurementPreviewPoint,
         measurePoints,
         measurePreviewPoint,
         measureLines,
@@ -101,10 +300,6 @@ export function EditorTopLayer(props: any) {
         plantbedNumberLayouts,
         livePlantbedNumberLayouts,
         livePrimaryMeasurementObject,
-        shouldShowCursorCrosshair,
-        cursorCrosshairPoint,
-        stagePos,
-        canvasSize,
         COLORS,
 
         stageRef,
@@ -164,7 +359,6 @@ export function EditorTopLayer(props: any) {
         changeTreebedVariant,
         useProjectStore,
         activeTreebedDrawVariant,
-        treebedDraftPreviewPoint,
         createTreebedPointsFromCenterDrag: createTreebedPointsFromCenterDragProp,
         draftGuideLineRef,
         draftSecondaryGuideLineRef,
@@ -440,6 +634,11 @@ export function EditorTopLayer(props: any) {
 
     const isVertexHandleHoveredRef = React.useRef(false);
     const [isSelectionDragging, setIsSelectionDragging] = React.useState(false);
+
+    // RAF throttle for alignment guides during object drag — prevents a React re-render on every
+    // mousemove. Guides only need to update at display frame rate (60fps), not per event.
+    const alignmentGuidesRafRef = React.useRef<number | null>(null);
+    const pendingAlignmentGuidesRef = React.useRef<any[]>([]);
 
     const renderNumberAreaLabel = (
         object: PolyObject,
@@ -1320,20 +1519,20 @@ export function EditorTopLayer(props: any) {
                                     ? getAlignmentSnapForSelection(selectedTyped, baseDx, baseDy)
                                     : { dx: baseDx, dy: baseDy, guides: [] };
 
-                            const effectiveDx = alignmentSnap.dx;
-                            const effectiveDy = alignmentSnap.dy;
-
-                            setAlignmentGuides?.(alignmentSnap.guides ?? []);
-
-                            if (effectiveDx === 0 && effectiveDy === 0) {
-                                setLiveSelectionDragDelta(null);
-                                return;
+                            // Throttle alignment guide state updates to one per animation frame.
+                            // setAlignmentGuides triggers a HelloEditor re-render; without throttling
+                            // this fires on every mousemove event (potentially 3-5× per frame).
+                            pendingAlignmentGuidesRef.current = alignmentSnap.guides ?? [];
+                            if (!alignmentGuidesRafRef.current) {
+                                alignmentGuidesRafRef.current = requestAnimationFrame(() => {
+                                    alignmentGuidesRafRef.current = null;
+                                    setAlignmentGuides?.(pendingAlignmentGuidesRef.current);
+                                });
                             }
 
-                            setLiveSelectionDragDelta({
-                                x: effectiveDx,
-                                y: effectiveDy,
-                            });
+                            // Do NOT call setLiveSelectionDragDelta here on every mousemove —
+                            // HelloEditor only uses it as a boolean (!== null) to hide decorations.
+                            // It was already set to non-null in onDragStart, so no re-render needed.
                         }}
                         onDragEnd={(evt) => {
                             if (evt.target !== evt.currentTarget) {
@@ -3478,248 +3677,24 @@ export function EditorTopLayer(props: any) {
                             committedPoints={measurePoints}
                             previewPoint={measurePreviewPoint}
                         />
-
-                        {activeTool === "draw" && (
-                            <MeasurementOverlay
-                                unselectedObjects={[]}
-                                selectedObjects={[]}
-                                selectedObjectId={null}
-                                stageScale={stageScale}
-                                activeTool={activeTool}
-                                activeDrawType={activeDrawType}
-                                draftPoints={draftPoints}
-                                draftMeasurementPoints={
-                                    draftMeasurementPreviewPoint
-                                        ? [
-                                            ...draftPoints,
-                                            draftMeasurementPreviewPoint.x,
-                                            draftMeasurementPreviewPoint.y,
-                                        ]
-                                        : draftPoints
-                                }
-                                primaryMeasurementObject={null}
-                                plantbedNumberLayouts={plantbedNumberLayouts}
-                            />
-                        )}
                     </>
                 )}
 
-                {shouldShowCursorCrosshair && cursorCrosshairPoint && (() => {
-                    const visibleLeft = (-stagePos.x) / stageScale;
-                    const visibleTop = (-stagePos.y) / stageScale;
-                    const visibleRight = visibleLeft + canvasSize.w / stageScale;
-                    const visibleBottom = visibleTop + canvasSize.h / stageScale;
-                    const dash = [6, 6];
+                {/* crosshair is rendered in a dedicated CrosshairLayer in HelloEditor for performance */}
 
-                    return (
-                        <>
-                            <Line
-                                points={[
-                                    cursorCrosshairPoint.x,
-                                    visibleTop,
-                                    cursorCrosshairPoint.x,
-                                    visibleBottom,
-                                ]}
-                                stroke={COLORS.green}
-                                strokeWidth={1}
-                                strokeScaleEnabled={false}
-                                dash={dash}
-                                dashEnabled
-                                opacity={0.85}
-                                listening={false}
-                                perfectDrawEnabled={false}
-                            />
-                            <Line
-                                points={[
-                                    visibleLeft,
-                                    cursorCrosshairPoint.y,
-                                    visibleRight,
-                                    cursorCrosshairPoint.y,
-                                ]}
-                                stroke={COLORS.green}
-                                strokeWidth={1}
-                                strokeScaleEnabled={false}
-                                dash={dash}
-                                dashEnabled
-                                opacity={0.85}
-                                listening={false}
-                                perfectDrawEnabled={false}
-                            />
-                        </>
-                    );
-                })()}
-
-                {activeTool === "draw" &&
-                    activeDrawType !== null &&
-                    activeDrawType !== "treebed" &&
-                    draftMeasurementPreviewPoint &&
-                    draftPoints.length >= 2 &&
-                    !isUnifiedBoundaryType(activeDrawType) && (
-                        <Line
-                            points={[
-                                draftPoints[draftPoints.length - 2],
-                                draftPoints[draftPoints.length - 1],
-                                draftMeasurementPreviewPoint.x,
-                                draftMeasurementPreviewPoint.y,
-                            ]}
-                            stroke={COLORS.orange}
-                            strokeWidth={2}
-                            dash={[8, 8]}
-                            dashEnabled
-                            listening={false}
-                            perfectDrawEnabled={false}
-                        />
-                    )}
-
-                {activeTool === "draw" &&
-                    activeDrawType !== null &&
-                    activeDrawType !== "treebed" &&
-                    isUnifiedBoundaryType(activeDrawType) &&
-                    draftPoints.length >= 2 &&
-                    (() => {
-                        const previewBoundaryPoints = draftMeasurementPreviewPoint
-                            ? [
-                                ...draftPoints,
-                                draftMeasurementPreviewPoint.x,
-                                draftMeasurementPreviewPoint.y,
-                            ]
-                            : draftPoints;
-
-                        const { topPath, bottomPath } =
-                            getBoundaryPreviewOutlinePaths(previewBoundaryPoints, activeDrawType);
-
-                        if ((!topPath || topPath.length < 4) && (!bottomPath || bottomPath.length < 4)) {
-                            return null;
-                        }
-
-                        return (
-                            <>
-                                {topPath && topPath.length >= 4 && (
-                                    <Line
-                                        points={topPath}
-                                        closed={false}
-                                        fillEnabled={false}
-                                        stroke={COLORS.orange}
-                                        strokeWidth={2}
-                                        dash={[8, 8]}
-                                        dashEnabled
-                                        lineCap="butt"
-                                        lineJoin="miter"
-                                        listening={false}
-                                        perfectDrawEnabled={false}
-                                    />
-                                )}
-
-                                {bottomPath && bottomPath.length >= 4 && (
-                                    <Line
-                                        points={bottomPath}
-                                        closed={false}
-                                        fillEnabled={false}
-                                        stroke={COLORS.orange}
-                                        strokeWidth={2}
-                                        dash={[8, 8]}
-                                        dashEnabled
-                                        lineCap="butt"
-                                        lineJoin="miter"
-                                        listening={false}
-                                        perfectDrawEnabled={false}
-                                    />
-                                )}
-                            </>
-                        );
-                    })()}
-
-                {/* Draft lines bovenop */}
-                {activeDrawType === "treebed" && draftPoints.length === 2 && (() => {
-                    const cx = draftPoints[0];
-                    const cy = draftPoints[1];
-                    const previewX = treebedDraftPreviewPoint?.x ?? cx;
-                    const previewY = treebedDraftPreviewPoint?.y ?? cy;
-
-                    const previewPoints = createTreebedPointsFromCenterDragSafe(
-                        cx,
-                        cy,
-                        previewX,
-                        previewY,
-                        activeTreebedDrawVariant
-                    );
-                    const treebedVisual = getTreebedVisual(previewPoints, activeTreebedDrawVariant);
-
-                    return (
-                        <>
-                            {treebedVisual.shape === "rect" ? (
-                                <>
-                                    <Line
-                                        points={previewPoints}
-                                        closed
-                                        fill={treebedVisual.fill}
-                                        opacity={0.18}
-                                        listening={false}
-                                        perfectDrawEnabled={false}
-                                    />
-                                    <Line
-                                        points={previewPoints}
-                                        closed
-                                        fillEnabled={false}
-                                        stroke={COLORS.orange}
-                                        strokeWidth={2}
-                                        dash={[8, 8]}
-                                        dashEnabled
-                                        listening={false}
-                                        perfectDrawEnabled={false}
-                                    />
-                                </>
-                            ) : (
-                                <>
-                                    <Circle
-                                        x={treebedVisual.cx}
-                                        y={treebedVisual.cy}
-                                        radius={treebedVisual.radius}
-                                        fill={treebedVisual.fill}
-                                        opacity={0.18}
-                                        listening={false}
-                                        perfectDrawEnabled={false}
-                                    />
-                                    <Circle
-                                        x={treebedVisual.cx}
-                                        y={treebedVisual.cy}
-                                        radius={treebedVisual.radius}
-                                        fillEnabled={false}
-                                        stroke={COLORS.orange}
-                                        strokeWidth={2}
-                                        dash={[8, 8]}
-                                        dashEnabled
-                                        listening={false}
-                                        perfectDrawEnabled={false}
-                                    />
-                                </>
-                            )}
-
-                            {renderTreebedTrunks(
-                                activeTreebedDrawVariant,
-                                treebedVisual.cx,
-                                treebedVisual.cy,
-                                treebedVisual.trunkRadius,
-                                "treebed-draft-preview",
-                                false
-                            )}
-
-                            <Circle
-                                x={treebedVisual.cx}
-                                y={treebedVisual.cy}
-                                radius={5}
-                                fill={COLORS.orange}
-                                stroke="#ffffff"
-                                strokeWidth={2}
-                                listening={false}
-                                perfectDrawEnabled={false}
-                                shadowColor="rgba(0,0,0,0.18)"
-                                shadowBlur={2}
-                                shadowOffset={{ x: 0, y: 1 }}
-                            />
-                        </>
-                    );
-                })()}
+                {/* DrawModePreviewSection: isolated component — only re-renders when preview point changes.
+                    HelloEditor and EditorTopLayerInner do NOT re-render during mouse move in draw mode. */}
+                <DrawModePreviewSection
+                    shouldHideHeavySceneDecorations={shouldHideHeavySceneDecorations}
+                    draftPoints={draftPoints}
+                    activeTool={activeTool}
+                    activeDrawType={activeDrawType}
+                    stageScale={stageScale}
+                    plantbedNumberLayouts={plantbedNumberLayouts}
+                    COLORS={COLORS}
+                    activeTreebedDrawVariant={activeTreebedDrawVariant}
+                    createTreebedPointsFromCenterDragFn={createTreebedPointsFromCenterDragSafe}
+                />
 
                 {activeDrawType !== "treebed" && draftPoints.length >= 2 && (() => {
                     const isBoundaryDraft = !!activeDrawType && isUnifiedBoundaryType(activeDrawType);
@@ -3842,3 +3817,8 @@ export function EditorTopLayer(props: any) {
         </>
     );
 }
+
+// Wrap in React.memo so this component only re-renders when its own props actually change.
+// Without this, every HelloEditor state update (stagePos, alignmentGuides, etc.) would
+// cause a full re-render of this 3800-line component — even during panning where nothing here changes.
+export const EditorTopLayer = React.memo(EditorTopLayerInner);

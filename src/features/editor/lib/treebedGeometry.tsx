@@ -152,7 +152,14 @@ export function DynamicStrokeShape({
     dashEnabled?: boolean;
     opacity?: number;
 }) {
-    const sampled = getDynamicStrokeSamplePoints(points, seedKey, closed);
+    // Cache the sampled points: only recompute when this object's points actually change.
+    // getDynamicStrokeSamplePoints is expensive (3 nested loops + noise math per edge segment).
+    // Zustand maintains referential stability per object, so `points` only gets a new reference
+    // when the object is actually modified — making this cache hit rate very high during interaction.
+    const sampled = React.useMemo(
+        () => getDynamicStrokeSamplePoints(points, seedKey, closed),
+        [points, seedKey, closed]
+    );
 
     return (
         <Shape

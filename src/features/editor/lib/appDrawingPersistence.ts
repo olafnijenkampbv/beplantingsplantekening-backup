@@ -18,6 +18,36 @@ import {
 
 export const ACTIVE_DRAWING_STORAGE_KEY = `${DRAWINGS_STORAGE_KEY}::active-drawing`;
 export const PLANT_SELECTION_STORAGE_KEY = `${DRAWINGS_STORAGE_KEY}::plant-selection`;
+export const PANEL_MODE_STORAGE_KEY = `${DRAWINGS_STORAGE_KEY}::panel-mode`;
+
+export type EditorRightPanelMode = "steps" | "plants";
+
+export function readPanelModeForDrawing(
+    drawingId: string | null
+): EditorRightPanelMode {
+    if (!drawingId || typeof window === "undefined") return "steps";
+    try {
+        const raw = window.localStorage.getItem(PANEL_MODE_STORAGE_KEY);
+        if (!raw) return "steps";
+        const parsed = JSON.parse(raw);
+        return parsed[drawingId] === "plants" ? "plants" : "steps";
+    } catch {
+        return "steps";
+    }
+}
+
+export function writePanelModeForDrawing(
+    drawingId: string | null,
+    mode: EditorRightPanelMode
+): void {
+    if (!drawingId || typeof window === "undefined") return;
+    try {
+        const raw = window.localStorage.getItem(PANEL_MODE_STORAGE_KEY);
+        const current: Record<string, string> = raw ? JSON.parse(raw) : {};
+        current[drawingId] = mode;
+        window.localStorage.setItem(PANEL_MODE_STORAGE_KEY, JSON.stringify(current));
+    } catch { }
+}
 
 export type PersistedPlantSelectionSnapshotsByDrawingId = Record<
     string,

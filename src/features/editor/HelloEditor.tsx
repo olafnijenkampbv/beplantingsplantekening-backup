@@ -64,7 +64,6 @@ import {
     sanitizeDrawingDocument,
     sanitizePlantbedLinksForObjects,
     buildPlantbedLinkedCountFromLinks,
-    createDrawingDocument,
     getCurrentDateTimeLabel,
     getRelativeUpdatedAtLabel,
 } from "@/features/editor/editorDrawingsPersistence";
@@ -74,14 +73,6 @@ import {
     sanitizeRightStepMenuSnapshot,
 } from "@/features/editor/lib/rightStepMenuPersistence";
 import {
-    readDrawingsFromStorage,
-    writeActiveDrawingIdToStorage,
-    writeDrawingsToStorage,
-    readRightStepSnapshotsByDrawingIdFromStorage,
-    writeRightStepSnapshotsByDrawingIdToStorage,
-    readPlantSelectionSnapshotsByDrawingIdFromStorage,
-    writePlantSelectionSnapshotsByDrawingIdToStorage,
-    getPlantSelectionSnapshotForDrawing,
     type PersistedPlantSelectionSnapshotsByDrawingId,
 } from "@/features/editor/lib/appDrawingPersistence";
 import {
@@ -90,6 +81,7 @@ import {
     createEmptyPlantSelectionSnapshot,
 } from "@/features/editor/state/plantSelectionStore";
 import { goToPlantSelectionPage } from "@/features/editor/lib/editorWorkflowNavigation";
+import { useDrawingLifecycle } from "@/features/editor/hooks/useDrawingLifecycle";
 import BaseFillLayer from "@/features/editor/components/editor/BaseFillLayer";
 import BaseStrokeLayer from "@/features/editor/components/editor/BaseStrokeLayer";
 import TypeLabelCard from "@/features/editor/components/editor/TypeLabelCard";
@@ -100,9 +92,13 @@ import {
     calculateAlignmentSnapForEdgeResize,
     type AlignmentGuide,
 } from "@/features/editor/lib/alignmentGuides";
+import {
+    setDrawPreviewPoint,
+    setTreebedDrawPreviewPoint,
+    useDrawPreviewStore,
+} from "@/features/editor/state/drawPreviewStore";
 
 type DrawMode = "draw";
-type EditorRightPanelMode = "steps" | "plants";
 
 const COLORS = {
     orange: "#E94E1B",
@@ -584,8 +580,11 @@ function bestInsidePoint(
     labelHeight = 0
 ) {
     const bb = bboxFromPoints(points);
+    // Adaptive step: scale up for large objects so the grid never exceeds ~80×80 = 6400 candidates.
+    // This prevents quadratic blowup for large objects while keeping precision for small ones.
+    const adaptiveStep = Math.max(step, Math.sqrt(bb.w * bb.h) / 80);
     const candidates: { x: number; y: number; score: number }[] = [];
-    const blockerPadding = Math.max(6, step * 0.6);
+    const blockerPadding = Math.max(6, adaptiveStep * 0.6);
 
     const isInsideUsableArea = (x: number, y: number) => {
         if (!pointInPolygon(x, y, points)) return false;
@@ -603,8 +602,8 @@ function bestInsidePoint(
         return corners.every((corner) => isInsideUsableArea(corner.x, corner.y));
     };
 
-    for (let y = bb.y + step; y < bb.y + bb.h; y += step) {
-        for (let x = bb.x + step; x < bb.x + bb.w; x += step) {
+    for (let y = bb.y + adaptiveStep; y < bb.y + bb.h; y += adaptiveStep) {
+        for (let x = bb.x + adaptiveStep; x < bb.x + bb.w; x += adaptiveStep) {
             if (!isInsideUsableArea(x, y)) continue;
 
             const labelRect = {
@@ -1600,6 +1599,10 @@ function getNextSelectionIdsForToggle(
     return [...baseIds, clickedId];
 }
 
+// Crosshair lines are updated imperatively via Konva refs — no React state, no re-renders.
+const CROSSHAIR_HALF = 100_000; // world-space px — always covers the canvas
+
+
 export default function HelloEditor() {
     const notify = useAppNotify();
     const dismissNotification = useDismissAppNotification();
@@ -1657,9 +1660,42 @@ export default function HelloEditor() {
 
     const fileMenuRef = useRef<HTMLDivElement | null>(null);
     const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
-    const [isDrawingsDashboardOpen, setIsDrawingsDashboardOpen] = useState(false);
-    const [isCreateDrawingOpen, setIsCreateDrawingOpen] = useState(false);
-    const [createDrawingOpenSource, setCreateDrawingOpenSource] = useState<"editor" | "dashboard">("editor");
+
+    const {
+        editorDrawings,
+        activeDrawingId,
+        activeDrawing,
+        isDrawingsHydrated,
+        saveState,
+        setSaveState,
+        rightPanelMode,
+        setRightPanelMode,
+        rightStepSnapshotsByDrawingId,
+        plantSelectionSnapshotsByDrawingId,
+        isDrawingsDashboardOpen,
+        isCreateDrawingOpen,
+        createDrawingOpenSource,
+        handleOpenDrawingsDashboard: openDrawingsDashboardFromLifecycle,
+        handleCloseDrawingsDashboard,
+        handleOpenCreateDrawingModal,
+        handleCloseCreateDrawingModal,
+        handleOpenDrawingFromDashboard,
+        handleCreateDrawingFromDashboard,
+        handleDuplicateDrawingFromDashboard,
+        handleDeleteDrawingFromDashboard,
+        handleRenameDrawingFromDashboard,
+        saveDrawingSnapshot,
+        setRightStepSnapshot,
+        setPlantSelectionSnapshot,
+        isRestoringDrawingRef,
+        isRestoringRightStepMenuRef,
+    } = useDrawingLifecycle();
+
+    // Close the file menu when opening the drawings dashboard
+    const handleOpenDrawingsDashboard = useCallback(() => {
+        setIsFileMenuOpen(false);
+        openDrawingsDashboardFromLifecycle();
+    }, [openDrawingsDashboardFromLifecycle]);
 
     const rightStepActiveStep = useRightStepMenuStore((s) => s.activeStep);
     const rightStep1 = useRightStepMenuStore((s) => s.step1);
@@ -1693,9 +1729,9 @@ export default function HelloEditor() {
             nextPlantbedNo: typeof state.nextPlantbedNo === "number"
                 ? state.nextPlantbedNo
                 : 1,
-            compassDirection,
+            compassDirection: state.compassDirection ?? "noord",
         };
-    }, [compassDirection]);
+    }, []);
 
     const exportRightStepMenuSnapshotFromStore = useCallback((): PersistedRightStepMenuSnapshot => {
         const state = useRightStepMenuStore.getState();
@@ -1732,542 +1768,21 @@ export default function HelloEditor() {
         return usePlantSelectionStore.getState().exportSnapshot();
     }, []);
 
-    const loadRightStepMenuSnapshotIntoStore = useCallback(
-        (snapshot: PersistedRightStepMenuSnapshot | null | undefined) => {
-            const safeSnapshot = snapshot
-                ? sanitizeRightStepMenuSnapshot(snapshot)
-                : createEmptyRightStepMenuSnapshot();
-
-            useRightStepMenuStore.setState({
-                activeStep: safeSnapshot.activeStep,
-                step1: {
-                    locationType: safeSnapshot.step1.locationType,
-                    gardenZones: [...safeSnapshot.step1.gardenZones],
-                },
-                step2: {
-                    standplaatsen: [...safeSnapshot.step2.standplaatsen],
-                    groundTypes: [...safeSnapshot.step2.groundTypes],
-                    maintenanceLevel: safeSnapshot.step2.maintenanceLevel,
-                    certificationPreference: safeSnapshot.step2.certificationPreference,
-                },
-                step3: {
-                    structureStyle: safeSnapshot.step3.structureStyle,
-                    customPercentages: {
-                        bodembedekkers: safeSnapshot.step3.customPercentages.bodembedekkers,
-                        vastePlanten: safeSnapshot.step3.customPercentages.vastePlanten,
-                        heestersEnStruiken: safeSnapshot.step3.customPercentages.heestersEnStruiken,
-                        bomen: safeSnapshot.step3.customPercentages.bomen,
-                    },
-                },
-                step4: {
-                    seasonExperience: safeSnapshot.step4.seasonExperience,
-                    heightStyle: safeSnapshot.step4.heightStyle,
-                },
-            });
-        },
-        []
-    );
-
-    const loadSnapshotIntoStore = useCallback(
-        (snapshot: PersistedDrawingSnapshot | null | undefined) => {
-            const safeSnapshot = snapshot
-                ? cloneDrawingSnapshot(snapshot)
-                : createEmptyDrawingSnapshot();
-
-            const nextObjects = safeSnapshot.objects.map(clonePolyObject);
-            const nextLinks = sanitizePlantbedLinksForObjects(
-                clonePlantbedLinks(safeSnapshot.plantbedLinks),
-                nextObjects
-            );
-            const nextCounts = buildPlantbedLinkedCountFromLinks(nextLinks);
-
-            useProjectStore.setState({
-                objects: nextObjects,
-                plantbedLinks: nextLinks,
-                plantbedLinkedCount: nextCounts,
-                distributionOverrides: safeSnapshot.distributionOverrides ?? {},
-                nextPlantbedNo: safeSnapshot.nextPlantbedNo ?? 1,
-                viewVisibility: {
-                    ...DEFAULT_DRAWING_VIEW_VISIBILITY,
-                    showTrafficUse: true,
-                    ...safeSnapshot.viewVisibility,
-                },
-                selectedObjectId: null,
-                selectedObjectIds: [],
-                undoStack: [],
-                redoStack: [],
-                confirmModal: null,
-                compassDirection: safeSnapshot.compassDirection ?? "noord",
-            });
-        },
-        [
-            buildPlantbedLinkedCountFromLinks,
-            cloneDrawingSnapshot,
-            clonePlantbedLinks,
-            clonePolyObject,
-            createEmptyDrawingSnapshot,
-            sanitizePlantbedLinksForObjects,
-            setCompassDirection,
-        ]
-    );
-
-    const [editorDrawings, setEditorDrawings] = useState<PersistedDrawingDocument[]>([]);
-    const [activeDrawingId, setActiveDrawingId] = useState<string | null>(null);
-    const [isDrawingsHydrated, setIsDrawingsHydrated] = useState(false);
-    const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved">("saved");
-    const [rightPanelMode, setRightPanelMode] = useState<EditorRightPanelMode>("steps");
     const [isColorPanelOpen, setIsColorPanelOpen] = useState(false);
-    const [rightStepSnapshotsByDrawingId, setRightStepSnapshotsByDrawingId] = useState<
-        Record<string, PersistedRightStepMenuSnapshot>
-    >({});
-
-    const [plantSelectionSnapshotsByDrawingId, setPlantSelectionSnapshotsByDrawingId] = useState<PersistedPlantSelectionSnapshotsByDrawingId>({});
 
     const autosaveTimerRef = useRef<number | null>(null);
-    const persistToStorageTimerRef = useRef<number | null>(null);
-    const persistRightStepTimerRef = useRef<number | null>(null);
-    const isRestoringDrawingRef = useRef(false);
-    const isRestoringRightStepMenuRef = useRef(false);
     const lastAutoCenteredDrawingIdRef = useRef<string | null>(null);
-
-    const activeDrawing = useMemo(() => {
-        return editorDrawings.find((drawing) => drawing.id === activeDrawingId) ?? null;
-    }, [editorDrawings, activeDrawingId]);
-
-    useEffect(() => {
-        if (typeof window === "undefined") return;
-
-        if (!activeDrawingId) {
-            setRightPanelMode("steps");
-            return;
-        }
-
-        const storedMode = window.sessionStorage.getItem(
-            `hello-editor:right-panel-mode:${activeDrawingId}`
-        );
-
-        setRightPanelMode(storedMode === "plants" ? "plants" : "steps");
-    }, [activeDrawingId]);
 
     const shouldShowPlantSidebar = rightPanelMode === "plants";
 
-    const handleOpenDrawingsDashboard = useCallback(() => {
-        setIsFileMenuOpen(false);
-        setIsCreateDrawingOpen(false);
-        setIsDrawingsDashboardOpen(true);
-    }, []);
-
-    const handleOpenCreateDrawingModal = useCallback((source: "editor" | "dashboard") => {
-        setCreateDrawingOpenSource(source);
-        setIsFileMenuOpen(false);
-        setIsDrawingsDashboardOpen(false);
-        setIsCreateDrawingOpen(true);
-    }, []);
-
-    const handleCloseDrawingsDashboard = useCallback(() => {
-        setIsDrawingsDashboardOpen(false);
-    }, []);
-
-    const handleOpenDrawingFromDashboard = useCallback((drawingId: string) => {
-        const drawing = editorDrawings.find((item) => item.id === drawingId);
-        if (!drawing) return;
-
-        isRestoringDrawingRef.current = true;
-        isRestoringRightStepMenuRef.current = true;
-
-        loadSnapshotIntoStore(drawing.snapshot);
-        loadRightStepMenuSnapshotIntoStore(
-            rightStepSnapshotsByDrawingId[drawingId] ?? createEmptyRightStepMenuSnapshot()
-        );
-        usePlantSelectionStore.getState().loadSnapshot(
-            getPlantSelectionSnapshotForDrawing(
-                drawingId,
-                plantSelectionSnapshotsByDrawingId
-            )
-        );
-
-        setActiveDrawingId(drawingId);
-        writeActiveDrawingIdToStorage(drawingId);
-        setSaveState("saved");
-        setIsCreateDrawingOpen(false);
-        setIsDrawingsDashboardOpen(false);
-        setIsFileMenuOpen(false);
-    }, [
-        editorDrawings,
-        loadSnapshotIntoStore,
-        loadRightStepMenuSnapshotIntoStore,
-        rightStepSnapshotsByDrawingId,
-        plantSelectionSnapshotsByDrawingId,
-    ]);
-
-    const handleCreateDrawingFromDashboard = useCallback((name: string) => {
-        const trimmed = name.trim();
-        if (!trimmed) return;
-
-        const nextDrawing = createDrawingDocument(trimmed);
-        const emptyWizardSnapshot = createEmptyRightStepMenuSnapshot();
-
-        setEditorDrawings((prev) => [...prev, nextDrawing]);
-        setRightStepSnapshotsByDrawingId((prev) => ({
-            ...prev,
-            [nextDrawing.id]: emptyWizardSnapshot,
-        }));
-
-        setPlantSelectionSnapshotsByDrawingId((prev) => ({
-            ...prev,
-            [nextDrawing.id]: createEmptyPlantSelectionSnapshot(),
-        }));
-
-        isRestoringDrawingRef.current = true;
-        isRestoringRightStepMenuRef.current = true;
-
-        loadSnapshotIntoStore(nextDrawing.snapshot);
-        loadRightStepMenuSnapshotIntoStore(emptyWizardSnapshot);
-        usePlantSelectionStore.getState().resetForNewDrawing();
-
-        setActiveDrawingId(nextDrawing.id);
-        writeActiveDrawingIdToStorage(nextDrawing.id);
-        setSaveState("saved");
-        setIsCreateDrawingOpen(false);
-        setIsDrawingsDashboardOpen(false);
-        setIsFileMenuOpen(false);
-    }, [
-        createDrawingDocument,
-        loadSnapshotIntoStore,
-        loadRightStepMenuSnapshotIntoStore,
-    ]);
-
-    const handleDuplicateDrawingFromDashboard = useCallback((drawingId: string) => {
-        const sourceWizardSnapshot =
-            rightStepSnapshotsByDrawingId[drawingId] ?? createEmptyRightStepMenuSnapshot();
-
-        const sourcePlantSelectionSnapshot =
-            plantSelectionSnapshotsByDrawingId[drawingId] ??
-            createEmptyPlantSelectionSnapshot();
-
-        setEditorDrawings((prev) => {
-            const source = prev.find((drawing) => drawing.id === drawingId);
-            if (!source) return prev;
-
-            const baseName = source.name.replace(/ kopie(?: (\d+))?$/, "");
-
-            const usedNumbers = prev
-                .filter((drawing) =>
-                    drawing.name === `${baseName} kopie` ||
-                    drawing.name.startsWith(`${baseName} kopie `)
-                )
-                .map((drawing) => {
-                    const match = drawing.name.match(/ kopie(?: (\d+))?$/);
-                    if (!match) return null;
-                    return match[1] ? Number(match[1]) : 1;
-                })
-                .filter((value): value is number => value !== null);
-
-            const nextCopyNumber =
-                usedNumbers.length > 0 ? Math.max(...usedNumbers) + 1 : 1;
-
-            const duplicateName =
-                nextCopyNumber === 1
-                    ? `${baseName} kopie`
-                    : `${baseName} kopie ${nextCopyNumber}`;
-
-            const duplicatedDrawingId = `drawing-${Date.now()}`;
-
-            const duplicatedDrawing: PersistedDrawingDocument = {
-                ...source,
-                id: duplicatedDrawingId,
-                name: duplicateName,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                snapshot: cloneDrawingSnapshot(source.snapshot),
-            };
-
-            setRightStepSnapshotsByDrawingId((prevSnapshots) => ({
-                ...prevSnapshots,
-                [duplicatedDrawingId]: sanitizeRightStepMenuSnapshot(sourceWizardSnapshot),
-            }));
-
-            setPlantSelectionSnapshotsByDrawingId((prevSnapshots) => ({
-                ...prevSnapshots,
-                [duplicatedDrawing.id]: {
-                    selectedGroup: sourcePlantSelectionSnapshot.selectedGroup,
-                    viewMode: sourcePlantSelectionSnapshot.viewMode,
-                    sortValue: sourcePlantSelectionSnapshot.sortValue,
-                    filters: {
-                        ...sourcePlantSelectionSnapshot.filters,
-                    },
-                    plantListItems: sourcePlantSelectionSnapshot.plantListItems.map((item: any) => ({
-                        ...item,
-                        plant: {
-                            ...item.plant,
-                        },
-                    })),
-                },
-            }));
-
-            return [...prev, duplicatedDrawing];
-        });
-    }, [
-        cloneDrawingSnapshot,
-        rightStepSnapshotsByDrawingId,
-        plantSelectionSnapshotsByDrawingId,
-    ]);
-
-    const handleDeleteDrawingFromDashboard = useCallback((drawingId: string) => {
-        const nextDrawings = editorDrawings.filter((drawing) => drawing.id !== drawingId);
-
-        setEditorDrawings(nextDrawings);
-        setRightStepSnapshotsByDrawingId((prev) => {
-            const next = { ...prev };
-            delete next[drawingId];
-            return next;
-        });
-
-        setPlantSelectionSnapshotsByDrawingId((prev) => {
-            const next = { ...prev };
-            delete next[drawingId];
-            return next;
-        });
-
-        if (nextDrawings.length === 0) {
-            isRestoringDrawingRef.current = true;
-            isRestoringRightStepMenuRef.current = true;
-
-            loadSnapshotIntoStore(createEmptyDrawingSnapshot());
-            loadRightStepMenuSnapshotIntoStore(createEmptyRightStepMenuSnapshot());
-
-            setActiveDrawingId(null);
-            setSaveState("saved");
-            setIsDrawingsDashboardOpen(true);
-            return;
-        }
-
-        if (drawingId === activeDrawingId) {
-            const fallbackDrawing = nextDrawings[0];
-
-            isRestoringDrawingRef.current = true;
-            isRestoringRightStepMenuRef.current = true;
-
-            loadSnapshotIntoStore(fallbackDrawing.snapshot);
-            loadRightStepMenuSnapshotIntoStore(
-                rightStepSnapshotsByDrawingId[fallbackDrawing.id] ?? createEmptyRightStepMenuSnapshot()
-            );
-
-            setActiveDrawingId(fallbackDrawing.id);
-            setSaveState("saved");
-        }
-    }, [
-        activeDrawingId,
-        createEmptyDrawingSnapshot,
-        editorDrawings,
-        loadSnapshotIntoStore,
-        loadRightStepMenuSnapshotIntoStore,
-        rightStepSnapshotsByDrawingId,
-    ]);
-
-    const handleRenameDrawingFromDashboard = useCallback((drawingId: string, nextName: string) => {
-        const nowIso = new Date().toISOString();
-
-        setEditorDrawings((prev) =>
-            prev.map((drawing) =>
-                drawing.id === drawingId
-                    ? { ...drawing, name: nextName, updatedAt: nowIso }
-                    : drawing
-            )
-        );
-    }, []);
-
     const handleManualSaveActiveDrawing = useCallback(() => {
         if (!activeDrawingId) return;
-
         const nextSnapshot = exportSnapshotFromStore();
         const nowIso = new Date().toISOString();
-
         setSaveState("saving");
-
-        setEditorDrawings((prev) =>
-            prev.map((drawing) =>
-                drawing.id === activeDrawingId
-                    ? {
-                        ...drawing,
-                        updatedAt: nowIso,
-                        snapshot: nextSnapshot,
-                    }
-                    : drawing
-            )
-        );
-
-        window.setTimeout(() => {
-            setSaveState("saved");
-        }, 0);
-    }, [activeDrawingId, exportSnapshotFromStore]);
-
-    useEffect(() => {
-        if (typeof window === "undefined") return;
-
-        // Flag set by in-app navigation (goBackToEditor, goToPlantLinkingEditor,
-        // goToWorkflowStepFromPlantSelection). Absent on a fresh page load or
-        // browser refresh, which signals that the dashboard should open first.
-        const isReturningToEditor =
-            window.sessionStorage.getItem("hello-editor:return-to-editor") === "1";
-        window.sessionStorage.removeItem("hello-editor:return-to-editor");
-
-        try {
-            const { drawings: nextDrawings, activeDrawingId: restoredActiveDrawingId } =
-                readDrawingsFromStorage();
-
-            const nextRightStepSnapshotsByDrawingId =
-                readRightStepSnapshotsByDrawingIdFromStorage();
-
-            const nextPlantSelectionSnapshotsByDrawingId =
-                readPlantSelectionSnapshotsByDrawingIdFromStorage();
-
-            if (nextDrawings.length === 0 || !restoredActiveDrawingId) {
-                isRestoringDrawingRef.current = true;
-                isRestoringRightStepMenuRef.current = true;
-
-                loadSnapshotIntoStore(createEmptyDrawingSnapshot());
-                loadRightStepMenuSnapshotIntoStore(createEmptyRightStepMenuSnapshot());
-                usePlantSelectionStore.getState().resetForNewDrawing();
-
-                setEditorDrawings([]);
-                setRightStepSnapshotsByDrawingId({});
-                setPlantSelectionSnapshotsByDrawingId({});
-                setActiveDrawingId(null);
-                setSaveState("saved");
-                setIsDrawingsDashboardOpen(true);
-                setIsDrawingsHydrated(true);
-                return;
-            }
-
-            const restoredDrawing =
-                nextDrawings.find((drawing: PersistedDrawingDocument) => drawing.id === restoredActiveDrawingId) ??
-                nextDrawings[0];
-
-            setEditorDrawings(nextDrawings);
-            setRightStepSnapshotsByDrawingId(nextRightStepSnapshotsByDrawingId);
-            setPlantSelectionSnapshotsByDrawingId(nextPlantSelectionSnapshotsByDrawingId);
-
-            if (!isReturningToEditor) {
-                // Only show the dashboard on the very first visit ever.
-                // On subsequent refreshes, go straight to the last active drawing.
-                const HAS_VISITED_KEY = "hello-editor:has-visited";
-                const hasVisited =
-                    window.localStorage.getItem(HAS_VISITED_KEY) === "1";
-
-                // Mark as visited so future refreshes skip the dashboard.
-                window.localStorage.setItem(HAS_VISITED_KEY, "1");
-
-                if (!hasVisited) {
-                    // First time opening the app: show the dashboard.
-                    isRestoringDrawingRef.current = true;
-                    isRestoringRightStepMenuRef.current = true;
-
-                    loadSnapshotIntoStore(createEmptyDrawingSnapshot());
-                    loadRightStepMenuSnapshotIntoStore(createEmptyRightStepMenuSnapshot());
-                    usePlantSelectionStore.getState().resetForNewDrawing();
-
-                    setActiveDrawingId(null);
-                    setSaveState("saved");
-                    setIsDrawingsDashboardOpen(true);
-                    setIsDrawingsHydrated(true);
-                    return;
-                }
-                // Already visited before: fall through and load the last active drawing.
-            }
-
-            setActiveDrawingId(restoredDrawing.id);
-
-            isRestoringDrawingRef.current = true;
-            isRestoringRightStepMenuRef.current = true;
-
-            loadSnapshotIntoStore(restoredDrawing.snapshot);
-            loadRightStepMenuSnapshotIntoStore(
-                nextRightStepSnapshotsByDrawingId[restoredDrawing.id] ?? createEmptyRightStepMenuSnapshot()
-            );
-            usePlantSelectionStore.getState().loadSnapshot(
-                getPlantSelectionSnapshotForDrawing(
-                    restoredDrawing.id,
-                    nextPlantSelectionSnapshotsByDrawingId
-                )
-            );
-
-            writeActiveDrawingIdToStorage(restoredDrawing.id);
-
-            setSaveState("saved");
-            setIsDrawingsDashboardOpen(false);
-            setIsDrawingsHydrated(true);
-        } catch {
-            isRestoringDrawingRef.current = true;
-            isRestoringRightStepMenuRef.current = true;
-
-            loadSnapshotIntoStore(createEmptyDrawingSnapshot());
-            loadRightStepMenuSnapshotIntoStore(createEmptyRightStepMenuSnapshot());
-            usePlantSelectionStore.getState().resetForNewDrawing();
-
-            setEditorDrawings([]);
-            setRightStepSnapshotsByDrawingId({});
-            setPlantSelectionSnapshotsByDrawingId({});
-            setActiveDrawingId(null);
-            setSaveState("saved");
-            setIsDrawingsDashboardOpen(true);
-            setIsDrawingsHydrated(true);
-        }
-    }, [
-        createEmptyDrawingSnapshot,
-        loadSnapshotIntoStore,
-        loadRightStepMenuSnapshotIntoStore,
-    ]);
-
-    useEffect(() => {
-        if (!isDrawingsHydrated || typeof window === "undefined") return;
-
-        if (persistToStorageTimerRef.current !== null) {
-            window.clearTimeout(persistToStorageTimerRef.current);
-        }
-
-        persistToStorageTimerRef.current = window.setTimeout(() => {
-            writeDrawingsToStorage(editorDrawings, activeDrawingId);
-            writeActiveDrawingIdToStorage(activeDrawingId);
-
-            persistToStorageTimerRef.current = null;
-        }, 400);
-
-        return () => {
-            if (persistToStorageTimerRef.current !== null) {
-                window.clearTimeout(persistToStorageTimerRef.current);
-                persistToStorageTimerRef.current = null;
-            }
-        };
-    }, [activeDrawingId, editorDrawings, isDrawingsHydrated]);
-
-    useEffect(() => {
-        if (!isDrawingsHydrated || typeof window === "undefined") return;
-
-        if (persistRightStepTimerRef.current !== null) {
-            window.clearTimeout(persistRightStepTimerRef.current);
-        }
-
-        persistRightStepTimerRef.current = window.setTimeout(() => {
-            writeRightStepSnapshotsByDrawingIdToStorage(rightStepSnapshotsByDrawingId);
-            writePlantSelectionSnapshotsByDrawingIdToStorage(
-                plantSelectionSnapshotsByDrawingId as PersistedPlantSelectionSnapshotsByDrawingId
-            );
-
-            persistRightStepTimerRef.current = null;
-        }, 400);
-
-        return () => {
-            if (persistRightStepTimerRef.current !== null) {
-                window.clearTimeout(persistRightStepTimerRef.current);
-                persistRightStepTimerRef.current = null;
-            }
-        };
-    }, [
-        isDrawingsHydrated,
-        rightStepSnapshotsByDrawingId,
-        plantSelectionSnapshotsByDrawingId,
-    ]);
+        saveDrawingSnapshot(nextSnapshot, nowIso);
+        window.setTimeout(() => setSaveState("saved"), 0);
+    }, [activeDrawingId, exportSnapshotFromStore, saveDrawingSnapshot, setSaveState]);
     const getPlantbedLinkedCount = useProjectStore((s: any) => s.getPlantbedLinkedCount);
     const [topLeftNoticeLeft, setTopLeftNoticeLeft] = useState(0);
 
@@ -2411,6 +1926,12 @@ export default function HelloEditor() {
             stage.batchDraw();
         }
 
+        // During panning the Konva stage is already updated directly above.
+        // Skipping the React state RAF flush here means HelloEditor does NOT re-render
+        // on every mousemove frame while panning — the single biggest source of pan lag.
+        // flushViewportState() is called once, synchronously, when panning ends.
+        if (isPanningRef.current) return;
+
         if (!viewportRafRef.current) {
             viewportRafRef.current = requestAnimationFrame(flushViewportState);
         }
@@ -2478,6 +1999,9 @@ export default function HelloEditor() {
     const [isPanning, setIsPanning] = useState(false);
     const panStartRef = useRef<{ x: number; y: number } | null>(null);
     const stagePosStartRef = useRef<{ x: number; y: number } | null>(null);
+    // Ref that mirrors isPanning state but is set synchronously — used in scheduleViewportState
+    // to skip the React RAF flush during panning (Konva is already updated directly).
+    const isPanningRef = useRef(false);
 
     const startMiddleMousePan = useCallback((evt: MouseEvent | any) => {
         evt?.preventDefault?.();
@@ -2485,6 +2009,7 @@ export default function HelloEditor() {
         const clientX = evt?.clientX ?? 0;
         const clientY = evt?.clientY ?? 0;
 
+        isPanningRef.current = true; // set synchronously so scheduleViewportState skips RAF immediately
         setIsPanning(true);
         panStartRef.current = { x: clientX, y: clientY };
         stagePosStartRef.current = { ...stagePosRef.current };
@@ -2507,13 +2032,36 @@ export default function HelloEditor() {
     const plantbedLayoutCacheRef = useRef<Map<string, CachedPlantbedLayoutEntry>>(new Map());
     const livePlantbedLayoutCacheRef = useRef<Map<string, CachedPlantbedLayoutEntry>>(new Map());
 
+    // Only recompute treebedLabelBlockers when treebed objects actually change.
+    // Using a treebed-specific signature as dependency prevents unnecessary recalculation
+    // (and cascading cache invalidations) when non-treebed objects are added/moved.
+    const treebedObjectsSignature = useMemo(() => {
+        return (objects as PolyObject[])
+            .filter((o) => o.type === "treebed" && Array.isArray(o.points) && o.points.length >= 8)
+            .map((o) => `${o.id}:${o.points.join(",")}:${o.treebedVariant ?? ""}`)
+            .join("|");
+    }, [objects]);
+
     const treebedLabelBlockers = useMemo(() => {
         return buildTreebedLabelBlockers(objects as PolyObject[]);
-    }, [objects]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [treebedObjectsSignature]);
 
     const treebedLabelBlockersSignature = useMemo(() => {
         return buildTreebedBlockersSignature(treebedLabelBlockers);
     }, [treebedLabelBlockers]);
+
+    // Stable signature for plantbed/hedge/treebed shapes — only changes when these object types
+    // actually change their shape, position, or number. This prevents plantbedNumberLayouts from
+    // recalculating when unrelated objects (roads, fences, buildings) are added or moved.
+    const plantbedShapesSignature = useMemo(() => {
+        return (objects as PolyObject[])
+            .filter((o) => o.type === "plantbed" || o.type === "hedge" || o.type === "treebed")
+            .map((o) =>
+                `${o.id}:${o.plantbedNo ?? 0}:${o.points.join(",")}:${(o.holes ?? []).map((h) => h.join(",")).join(";")}`
+            )
+            .join("|");
+    }, [objects]);
 
     const plantbedNumberLayouts = useMemo(() => {
         const layouts = new Map<string, PlantbedNumberLayout>();
@@ -2569,7 +2117,10 @@ export default function HelloEditor() {
         }
 
         return layouts;
-    }, [objects, treebedLabelBlockers, treebedLabelBlockersSignature]);
+    // plantbedShapesSignature replaces [objects] — only recomputes when plantbed/hedge/treebed
+    // shapes change, not when unrelated objects move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [plantbedShapesSignature, treebedLabelBlockers, treebedLabelBlockersSignature]);
 
     const selectObject = useProjectStore((s) => s.selectObject);
     const selectObjects = useProjectStore((s) => s.selectObjects);
@@ -2780,25 +2331,9 @@ export default function HelloEditor() {
 
         autosaveTimerRef.current = window.setTimeout(() => {
             const nowIso = new Date().toISOString();
-
             setSaveState("saving");
-
-            setEditorDrawings((prev) =>
-                prev.map((drawing) =>
-                    drawing.id === activeDrawingId
-                        ? {
-                            ...drawing,
-                            updatedAt: nowIso,
-                            snapshot: nextSnapshot,
-                        }
-                        : drawing
-                )
-            );
-
-            window.setTimeout(() => {
-                setSaveState("saved");
-            }, 0);
-
+            saveDrawingSnapshot(nextSnapshot, nowIso);
+            window.setTimeout(() => setSaveState("saved"), 0);
             autosaveTimerRef.current = null;
         }, 700);
 
@@ -2816,6 +2351,7 @@ export default function HelloEditor() {
         plantbedLinks,
         viewVisibility,
         distributionOverrides,
+        saveDrawingSnapshot,
     ]);
 
     const saveStatusLabel = useMemo(() => {
@@ -2843,14 +2379,6 @@ export default function HelloEditor() {
     const draftPointsRef = useRef<number[]>([]);
     useEffect(() => void (draftPointsRef.current = draftPoints), [draftPoints]);
     const [draftRedoPoints, setDraftRedoPoints] = useState<number[]>([]);
-    const [treebedDraftPreviewPoint, setTreebedDraftPreviewPoint] = useState<{
-        x: number;
-        y: number;
-    } | null>(null);
-    const [draftMeasurementPreviewPoint, setDraftMeasurementPreviewPoint] = useState<{
-        x: number;
-        y: number;
-    } | null>(null);
 
     const [measurePoints, setMeasurePoints] = useState<number[]>([]);
     const measurePointsRef = useRef<number[]>([]);
@@ -2923,10 +2451,12 @@ export default function HelloEditor() {
     const draftRedoPointsRef = useRef<number[]>([]);
     useEffect(() => void (draftRedoPointsRef.current = draftRedoPoints), [draftRedoPoints]);
 
-    const [cursorCrosshairPoint, setCursorCrosshairPoint] = useState<{
-        x: number;
-        y: number;
-    } | null>(null);
+    // ── Imperative crosshair refs ─────────────────────────────────────────────
+    // The crosshair is updated directly on the Konva nodes instead of via React
+    // state. This means zero HelloEditor re-renders for cursor movement — the
+    // single biggest source of draw-mode lag on native window mousemove events.
+    const crosshairVRef = useRef<any>(null); // vertical dashed line
+    const crosshairHRef = useRef<any>(null); // horizontal dashed line
 
     const shouldShowCursorCrosshair =
         !isPanning &&
@@ -2937,11 +2467,21 @@ export default function HelloEditor() {
         );
 
     const clearCursorCrosshair = useCallback(() => {
-        setCursorCrosshairPoint((prev) => (prev === null ? prev : null));
+        const v = crosshairVRef.current;
+        const h = crosshairHRef.current;
+        if (!v && !h) return;
+        v?.visible(false);
+        h?.visible(false);
+        const layer = v?.getLayer?.() ?? h?.getLayer?.();
+        if (layer) layer.batchDraw();
     }, []);
 
     const updateCursorCrosshairPoint = useCallback(
         (rawX: number, rawY: number, targetType: ObjectType | null | undefined) => {
+            const v = crosshairVRef.current;
+            const h = crosshairHRef.current;
+            if (!v || !h) return;
+
             const snapped = snapWorldPointAgainstFenceBoundary(
                 rawX,
                 rawY,
@@ -2949,13 +2489,21 @@ export default function HelloEditor() {
                 objectsRef.current as PolyObject[]
             );
 
-            setCursorCrosshairPoint((prev) => {
-                if (prev && prev.x === snapped.x && prev.y === snapped.y) {
-                    return prev;
-                }
+            // Only repaint if the snapped position actually changed.
+            // Avoids redundant batchDraw calls at the same grid cell.
+            const vPts = v.points() as number[];
+            if (vPts.length >= 2 && vPts[0] === snapped.x && v.visible()) {
+                const hPts = h.points() as number[];
+                if (hPts.length >= 4 && hPts[1] === snapped.y) return;
+            }
 
-                return snapped;
-            });
+            v.points([snapped.x, -CROSSHAIR_HALF, snapped.x, CROSSHAIR_HALF]);
+            h.points([-CROSSHAIR_HALF, snapped.y, CROSSHAIR_HALF, snapped.y]);
+            v.visible(true);
+            h.visible(true);
+
+            const layer = v.getLayer?.();
+            if (layer) layer.batchDraw();
         },
         []
     );
@@ -2964,7 +2512,6 @@ export default function HelloEditor() {
         (stage: any, targetType: ObjectType | null | undefined) => {
             const world = getPointerWorldPos(stage);
             if (!world) return;
-
             updateCursorCrosshairPoint(world.x, world.y, targetType);
         },
         [updateCursorCrosshairPoint]
@@ -3004,7 +2551,7 @@ export default function HelloEditor() {
             activeDrawType === "treebed" ||
             draftPoints.length < 2
         ) {
-            setDraftMeasurementPreviewPoint(null);
+            setDrawPreviewPoint(null);
         }
     }, [activeTool, activeDrawType, draftPoints.length]);
 
@@ -3367,6 +2914,7 @@ export default function HelloEditor() {
 
                 vertexEditRef.current = null;
                 activeVertexIndexRef.current = null;
+                lastVertexDragWorldRef.current = null; // reset movement guard
 
                 isVertexDraggingRef.current = false;
                 setIsVertexDragging(false);
@@ -3536,6 +3084,20 @@ export default function HelloEditor() {
         });
     }, []);
 
+    // RAF throttle for alignment guides during edge resize — same pattern as EditorTopLayer's
+    // onDragMove. Without this, setAlignmentGuides fires on every raw mousemove event
+    // (potentially 120-240× per second on gaming mice), triggering an immediate HelloEditor
+    // re-render each time on top of the already-RAF-throttled edgeResizeTick re-render.
+    const edgeResizeAlignmentGuidesRafRef = useRef<number | null>(null);
+    const pendingEdgeResizeGuidesRef = useRef<AlignmentGuide[]>([]);
+
+    // Last world position seen during edge resize — used to skip geometry when the mouse
+    // hasn't actually moved (e.g., high-polling-rate mice, synthetic events).
+    const lastEdgeResizeWorldRef = useRef<{ x: number; y: number } | null>(null);
+
+    // Same deduplication guard for vertex drag.
+    const lastVertexDragWorldRef = useRef<{ x: number; y: number } | null>(null);
+
     const livePrimaryMeasurementObject = useMemo<PolyObject | null>(() => {
         if (!selectedObjectId) return null;
 
@@ -3616,7 +3178,13 @@ export default function HelloEditor() {
 
         const areaText = formatSquareMeters(getObjectAreaInSquareMeters(livePrimaryMeasurementObject));
         const hasHoles = (livePrimaryMeasurementObject.holes?.length ?? 0) > 0;
-        const isInteractiveEdit = isVertexDragging || isEdgeResizing;
+        // Also use the fast path for treebed rotate/resize previews — their points change every
+        // mousemove, causing a cache miss and running the full grid-scan on every frame otherwise.
+        const isInteractiveEdit =
+            isVertexDragging ||
+            isEdgeResizing ||
+            treebedRotatePreview !== null ||
+            treebedResizePreview !== null;
         const committedLayout = plantbedNumberLayouts.get(livePrimaryMeasurementObject.id);
         const blockersForLayout =
             livePrimaryMeasurementObject.type === "treebed"
@@ -3690,6 +3258,8 @@ export default function HelloEditor() {
         treebedLabelBlockersSignature,
         isVertexDragging,
         isEdgeResizing,
+        treebedRotatePreview,
+        treebedResizePreview,
     ]);
     const selectedLineRefs = useRef<Record<string, any>>({});
     const vertexHandleRefs = useRef<Record<string, Record<string, any>>>({});
@@ -4273,7 +3843,7 @@ export default function HelloEditor() {
         const secondaryGuide = draftSecondaryGuideLineRef.current;
 
         if (base.length < 2) {
-            setDraftMeasurementPreviewPoint(null);
+            setDrawPreviewPoint(null);
 
             if (preview) preview.points([]);
             if (guide) guide.points([]);
@@ -4300,12 +3870,10 @@ export default function HelloEditor() {
         };
 
         if (activeTool === "draw" && activeDrawType !== "treebed") {
-            setDraftMeasurementPreviewPoint({
-                x: fallbackNext.x,
-                y: fallbackNext.y,
-            });
+            // Update the external store — only DrawModePreviewSection re-renders, not HelloEditor.
+            setDrawPreviewPoint({ x: fallbackNext.x, y: fallbackNext.y });
         } else {
-            setDraftMeasurementPreviewPoint(null);
+            setDrawPreviewPoint(null);
         }
 
         if (preview) {
@@ -4556,6 +4124,7 @@ export default function HelloEditor() {
             }
 
             if (activeTool === "hand" && evt.button === 0) {
+                isPanningRef.current = true; // synchronous — scheduleViewportState skips RAF immediately
                 setIsPanning(true);
                 panStartRef.current = { x: evt.clientX, y: evt.clientY };
                 stagePosStartRef.current = { ...stagePosRef.current };
@@ -4743,7 +4312,7 @@ export default function HelloEditor() {
 
                             setDraftPoints([]);
                             setDraftRedoPoints([]);
-                            setTreebedDraftPreviewPoint(null);
+                            setTreebedDrawPreviewPoint(null);
 
                             lastPreviewKeyRef.current = "";
                             pendingPreviewRef.current = null;
@@ -4788,7 +4357,7 @@ export default function HelloEditor() {
                     if (base.length === 0) {
                         setDraftPoints([x, y]);
                         setDraftRedoPoints([]);
-                        setTreebedDraftPreviewPoint({ x, y });
+                        setTreebedDrawPreviewPoint({ x, y });
 
                         lastPreviewKeyRef.current = `${x},${y}`;
                         pendingPreviewRef.current = resolved;
@@ -4823,7 +4392,7 @@ export default function HelloEditor() {
 
                         setDraftPoints([]);
                         setDraftRedoPoints([]);
-                        setTreebedDraftPreviewPoint(null);
+                        setTreebedDrawPreviewPoint(null);
 
                         lastPreviewKeyRef.current = "";
                         pendingPreviewRef.current = null;
@@ -4853,7 +4422,7 @@ export default function HelloEditor() {
 
                         setDraftPoints([]);
                         setDraftRedoPoints([]);
-                        setTreebedDraftPreviewPoint(null);
+                        setTreebedDrawPreviewPoint(null);
 
                         lastPreviewKeyRef.current = "";
                         pendingPreviewRef.current = null;
@@ -4885,7 +4454,7 @@ export default function HelloEditor() {
 
                         setDraftPoints([]);
                         setDraftRedoPoints([]);
-                        setTreebedDraftPreviewPoint(null);
+                        setTreebedDrawPreviewPoint(null);
 
                         lastPreviewKeyRef.current = "";
                         pendingPreviewRef.current = null;
@@ -4903,7 +4472,7 @@ export default function HelloEditor() {
 
                 setDraftPoints((prev) => [...prev, x, y]);
                 setDraftRedoPoints([]);
-                setTreebedDraftPreviewPoint(null);
+                setTreebedDrawPreviewPoint(null);
 
                 lastPreviewKeyRef.current = `${x},${y}`;
                 pendingPreviewRef.current = resolved;
@@ -4943,6 +4512,12 @@ export default function HelloEditor() {
                 const world = getPointerWorldPos(stage);
                 if (!edit || !world) return;
 
+                // Skip expensive geometry when the mouse hasn't actually moved.
+                // High-polling-rate mice (120-240Hz) can fire many events at the same position.
+                const last = lastEdgeResizeWorldRef.current;
+                if (last && Math.abs(world.x - last.x) < 0.1 && Math.abs(world.y - last.y) < 0.1) return;
+                lastEdgeResizeWorldRef.current = world;
+
                 const editedObj = (objectsRef.current as PolyObject[]).find((o) => o.id === edit.objectId);
 
                 const snapped = snapWorldPointAgainstFenceBoundary(
@@ -4963,7 +4538,16 @@ export default function HelloEditor() {
                 const cx = alignmentSnap.x;
                 const cy = alignmentSnap.y;
 
-                setAlignmentGuides(alignmentSnap.guides);
+                // Throttle alignment guide updates to one per animation frame.
+                // Without this, setAlignmentGuides fires on every raw mousemove — causing a
+                // HelloEditor re-render each time, on top of the RAF-throttled edgeResizeTick.
+                pendingEdgeResizeGuidesRef.current = alignmentSnap.guides;
+                if (!edgeResizeAlignmentGuidesRafRef.current) {
+                    edgeResizeAlignmentGuidesRafRef.current = requestAnimationFrame(() => {
+                        edgeResizeAlignmentGuidesRafRef.current = null;
+                        setAlignmentGuides(pendingEdgeResizeGuidesRef.current);
+                    });
+                }
 
                 if (edit.holeIndex !== null) {
                     const nextHoles = (edit.workingHoles ?? []).map((h) => [...h]);
@@ -5030,6 +4614,11 @@ export default function HelloEditor() {
 
                 const world = getPointerWorldPos(stage);
                 if (!edit || vi === null || !world) return;
+
+                // Skip geometry when mouse hasn't moved (same deduplication as edge resize).
+                const lastVD = lastVertexDragWorldRef.current;
+                if (lastVD && Math.abs(world.x - lastVD.x) < 0.1 && Math.abs(world.y - lastVD.y) < 0.1) return;
+                lastVertexDragWorldRef.current = world;
 
                 const editedObj = (objectsRef.current as PolyObject[]).find((o) => o.id === edit.objectId);
 
@@ -5173,8 +4762,8 @@ export default function HelloEditor() {
                     if (previewKey === lastPreviewKeyRef.current) return;
 
                     lastPreviewKeyRef.current = previewKey;
-                    setDraftMeasurementPreviewPoint(null);
-                    setTreebedDraftPreviewPoint({ x: resolved.x, y: resolved.y });
+                    setDrawPreviewPoint(null);
+                    setTreebedDrawPreviewPoint({ x: resolved.x, y: resolved.y });
                     return;
                 }
 
@@ -5240,6 +4829,14 @@ export default function HelloEditor() {
 
                 edgeResizeRef.current = null;
                 isEdgeResizingRef.current = false;
+                lastEdgeResizeWorldRef.current = null; // reset movement guard
+
+                // Cancel any pending alignment guide RAF so it doesn't fire after resize ends.
+                if (edgeResizeAlignmentGuidesRafRef.current) {
+                    cancelAnimationFrame(edgeResizeAlignmentGuidesRafRef.current);
+                    edgeResizeAlignmentGuidesRafRef.current = null;
+                }
+
                 setIsEdgeResizing(false);
                 setAlignmentGuides([]);
 
@@ -5264,6 +4861,7 @@ export default function HelloEditor() {
 
                 vertexEditRef.current = null;
                 activeVertexIndexRef.current = null;
+                lastVertexDragWorldRef.current = null; // reset movement guard
 
                 isVertexDraggingRef.current = false;
                 setIsVertexDragging(false);
@@ -5312,6 +4910,16 @@ export default function HelloEditor() {
             }
 
             if (evt.button === 1 || (activeTool === "hand" && evt.button === 0)) {
+                isPanningRef.current = false;
+
+                // We skipped all React RAF flushes during panning — sync the final position now.
+                // Cancel any pending RAF first to avoid a double flush.
+                if (viewportRafRef.current) {
+                    cancelAnimationFrame(viewportRafRef.current);
+                    viewportRafRef.current = null;
+                }
+                flushViewportState();
+
                 setIsPanning(false);
                 panStartRef.current = null;
                 stagePosStartRef.current = null;
@@ -5327,7 +4935,7 @@ export default function HelloEditor() {
                                 : "default";
             }
         },
-        [activeTool, isBoxSelecting, objects, selectionBox, selectObjects, moveObjectAndMerge]
+        [activeTool, isBoxSelecting, objects, selectionBox, selectObjects, moveObjectAndMerge, flushViewportState]
     );
 
     // Keyboard
@@ -5370,8 +4978,8 @@ export default function HelloEditor() {
                 clearSelection();
                 setDraftPoints([]);
                 setDraftRedoPoints([]);
-                setTreebedDraftPreviewPoint(null);
-                setDraftMeasurementPreviewPoint(null);
+                setTreebedDrawPreviewPoint(null);
+                setDrawPreviewPoint(null);
                 setMeasurePoints([]);
                 setMeasurePreviewPoint(null);
                 setMeasureLines([]);
@@ -5394,6 +5002,13 @@ export default function HelloEditor() {
             const isUndo = (e.ctrlKey || e.metaKey) && key === "z";
             const isRedo = (e.ctrlKey || e.metaKey) && key === "y";
             const isDuplicate = (e.ctrlKey || e.metaKey) && key === "d";
+            const isSave = (e.ctrlKey || e.metaKey) && key === "s";
+
+            if (isSave) {
+                e.preventDefault();
+                handleManualSaveActiveDrawing();
+                return;
+            }
 
             if (isDuplicate) {
                 e.preventDefault();
@@ -5475,7 +5090,8 @@ export default function HelloEditor() {
                 }
 
                 if (currentDrawType === "treebed") {
-                    if (prev.length < 2 || !treebedDraftPreviewPoint) {
+                    const treebedPreviewPt = useDrawPreviewStore.getState().treebedPreviewPoint;
+                    if (prev.length < 2 || !treebedPreviewPt) {
                         notify(APP_NOTIFICATIONS.chooseObjectTypeFirst());
                         return;
                     }
@@ -5490,15 +5106,15 @@ export default function HelloEditor() {
                         points: createTreebedPointsFromCenterDrag(
                             cx,
                             cy,
-                            treebedDraftPreviewPoint.x,
-                            treebedDraftPreviewPoint.y,
+                            treebedPreviewPt.x,
+                            treebedPreviewPt.y,
                             activeTreebedDrawVariant
                         ),
                     });
 
                     setDraftPoints([]);
                     setDraftRedoPoints([]);
-                    setTreebedDraftPreviewPoint(null);
+                    setTreebedDrawPreviewPoint(null);
 
                     lastPreviewKeyRef.current = "";
                     pendingPreviewRef.current = null;
@@ -5522,7 +5138,7 @@ export default function HelloEditor() {
 
                 setDraftPoints([]);
                 setDraftRedoPoints([]);
-                setTreebedDraftPreviewPoint(null);
+                setTreebedDrawPreviewPoint(null);
 
                 lastPreviewKeyRef.current = "";
                 pendingPreviewRef.current = null;
@@ -5540,8 +5156,8 @@ export default function HelloEditor() {
             if (!isUndo && !isRedo && e.key === "Escape") {
                 setDraftPoints([]);
                 setDraftRedoPoints([]);
-                setTreebedDraftPreviewPoint(null);
-                setDraftMeasurementPreviewPoint(null);
+                setTreebedDrawPreviewPoint(null);
+                setDrawPreviewPoint(null);
                 setMeasurePoints([]);
                 setMeasurePreviewPoint(null);
                 setMeasureLines([]);
@@ -5570,7 +5186,7 @@ export default function HelloEditor() {
 
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [mode, activeTool, setActiveTool, handleUndo, handleRedo, deleteSelected, activeDrawType, addObject, cutObjectsByPolygon, setActiveDrawType, notify, handleDuplicateSelection, clearSelection]);
+    }, [mode, activeTool, setActiveTool, handleUndo, handleRedo, deleteSelected, activeDrawType, addObject, cutObjectsByPolygon, setActiveDrawType, notify, handleDuplicateSelection, clearSelection, handleManualSaveActiveDrawing]);
 
     const handleRotateCanvasClockwise = useCallback(() => {
         const currentObjects = useProjectStore.getState().objects as PolyObject[];
@@ -5595,8 +5211,8 @@ export default function HelloEditor() {
 
         setDraftPoints([]);
         setDraftRedoPoints([]);
-        setTreebedDraftPreviewPoint(null);
-        setDraftMeasurementPreviewPoint(null);
+        setTreebedDrawPreviewPoint(null);
+        setDrawPreviewPoint(null);
         setTreebedResizePreview(null);
         setTreebedRotatePreview(null);
 
@@ -5643,8 +5259,6 @@ export default function HelloEditor() {
         clearSelection,
         setDraftPoints,
         setDraftRedoPoints,
-        setTreebedDraftPreviewPoint,
-        setDraftMeasurementPreviewPoint,
         setTreebedResizePreview,
         setTreebedRotatePreview,
     ]);
@@ -5667,7 +5281,11 @@ export default function HelloEditor() {
                 object.points.length >= 4
         );
 
-        if (drawableObjects.length === 0) return;
+        if (drawableObjects.length === 0) {
+            // Empty drawing — mark as handled so we don't auto-center when the user draws the first object
+            lastAutoCenteredDrawingIdRef.current = activeDrawingId;
+            return;
+        }
 
         lastAutoCenteredDrawingIdRef.current = activeDrawingId;
         handleCenterCanvas();
@@ -5689,11 +5307,7 @@ export default function HelloEditor() {
         }
 
         const nextSnapshot = exportRightStepMenuSnapshotFromStore();
-
-        setRightStepSnapshotsByDrawingId((prev) => ({
-            ...prev,
-            [activeDrawingId]: nextSnapshot,
-        }));
+        setRightStepSnapshot(activeDrawingId, nextSnapshot);
     }, [
         activeDrawingId,
         isDrawingsHydrated,
@@ -5703,17 +5317,14 @@ export default function HelloEditor() {
         rightStep3,
         rightStep4,
         exportRightStepMenuSnapshotFromStore,
+        setRightStepSnapshot,
     ]);
 
     useEffect(() => {
         if (!isDrawingsHydrated || !activeDrawingId) return;
 
         const nextSnapshot = exportPlantSelectionSnapshotFromStore();
-
-        setPlantSelectionSnapshotsByDrawingId((prev) => ({
-            ...prev,
-            [activeDrawingId]: exportPlantSelectionSnapshotFromStore(),
-        }));
+        setPlantSelectionSnapshot(activeDrawingId, nextSnapshot);
     }, [
         activeDrawingId,
         isDrawingsHydrated,
@@ -5723,6 +5334,7 @@ export default function HelloEditor() {
         plantSelectionSortValue,
         plantSelectionFilters,
         plantSelectionItems,
+        setPlantSelectionSnapshot,
     ]);
 
     const shouldHideHeavySceneDecorations =
@@ -5748,19 +5360,23 @@ export default function HelloEditor() {
         isPanning ||
         isBoxSelecting;
 
+    // Stable map: only rebuilt when selectedLocationType changes, NOT on every objects change.
+    // Keeps getObjectMenuSections() out of the hot sceneObjectBuckets path.
+    const visibilitySectionByObjectType = useMemo(() => {
+        const map = new Map<ObjectType, string>();
+        getObjectMenuSections(selectedLocationType).forEach((section) => {
+            section.items.forEach((item) => {
+                map.set(item.id, section.id);
+            });
+        });
+        return map;
+    }, [selectedLocationType]);
+
     const sceneObjectBuckets = useMemo(() => {
         const selectedSet = new Set<string>(selectedObjectIds);
 
         const zSort = (a: PolyObject, b: PolyObject) =>
             TYPE_Z_INDEX[a.type] - TYPE_Z_INDEX[b.type];
-
-        const visibilitySectionByObjectType = new Map<ObjectType, string>();
-
-        getObjectMenuSections(selectedLocationType).forEach((section) => {
-            section.items.forEach((item) => {
-                visibilitySectionByObjectType.set(item.id, section.id);
-            });
-        });
 
         const resolveViewVisibilityKeyForType = (type: ObjectType): ViewVisibilityKey => {
             if (type === "plantbed" || type === "hedge") return "showPlantbeds";
@@ -5782,16 +5398,28 @@ export default function HelloEditor() {
             return viewVisibility[key] ?? true;
         });
 
-        const selected = visibleObjects
-            .filter((o) => selectedSet.has(o.id))
-            .sort(zSort);
+        // Single-pass split: 1 iteration instead of 4 separate filter passes.
+        // Each object is visited exactly once and routed into the right bucket.
+        const selected: PolyObject[] = [];
+        const unselectedPlantbeds: PolyObject[] = [];
+        const unselectedNonPlantbeds: PolyObject[] = [];
 
-        const unselected = visibleObjects
-            .filter((o) => !selectedSet.has(o.id))
-            .sort(zSort);
+        for (const o of visibleObjects) {
+            if (selectedSet.has(o.id)) {
+                selected.push(o);
+            } else if (o.type === "plantbed") {
+                unselectedPlantbeds.push(o);
+            } else {
+                unselectedNonPlantbeds.push(o);
+            }
+        }
 
-        const unselectedPlantbeds = unselected.filter((o) => o.type === "plantbed");
-        const unselectedNonPlantbeds = unselected.filter((o) => o.type !== "plantbed");
+        selected.sort(zSort);
+        unselectedPlantbeds.sort(zSort);
+        unselectedNonPlantbeds.sort(zSort);
+
+        // Reconstruct unselected in z-order (non-plantbeds draw below plantbeds, matching original).
+        const unselected = [...unselectedNonPlantbeds, ...unselectedPlantbeds].sort(zSort);
 
         return {
             visibleObjects,
@@ -5800,7 +5428,7 @@ export default function HelloEditor() {
             unselectedPlantbeds,
             unselectedNonPlantbeds,
         };
-    }, [objects, selectedLocationType, selectedObjectIds, viewVisibility]);
+    }, [objects, selectedLocationType, selectedObjectIds, viewVisibility, visibilitySectionByObjectType]);
 
     const changeTypeMenuSections = useMemo(() => {
         return getObjectMenuSections(selectedLocationType);
@@ -6152,8 +5780,10 @@ export default function HelloEditor() {
             <CreateDrawingModal
                 isOpen={isCreateDrawingOpen}
                 onClose={() => {
-                    setIsCreateDrawingOpen(false);
-                    setIsDrawingsDashboardOpen(createDrawingOpenSource === "dashboard");
+                    handleCloseCreateDrawingModal();
+                    if (createDrawingOpenSource === "dashboard") {
+                        openDrawingsDashboardFromLifecycle();
+                    }
                     setIsFileMenuOpen(false);
                 }}
                 onSubmit={handleCreateDrawingFromDashboard}
@@ -6233,18 +5863,7 @@ export default function HelloEditor() {
                                 return false;
                             }
 
-                            setEditorDrawings((prev) =>
-                                prev.map((drawing) =>
-                                    drawing.id === activeDrawingId
-                                        ? {
-                                            ...drawing,
-                                            name: nextName,
-                                            updatedAt: new Date().toISOString(),
-                                        }
-                                        : drawing
-                                )
-                            );
-
+                            handleRenameDrawingFromDashboard(activeDrawingId, nextName);
                             return true;
                         }}
                         onNew={() => handleOpenCreateDrawingModal("editor")}
@@ -6318,7 +5937,7 @@ export default function HelloEditor() {
 
                             setDraftPoints([]);
                             setDraftRedoPoints([]);
-                            setTreebedDraftPreviewPoint(null);
+                            setTreebedDrawPreviewPoint(null);
                             setMeasurePoints([]);
                             setMeasurePreviewPoint(null);
                             setMeasureLines([]);
@@ -6342,7 +5961,7 @@ export default function HelloEditor() {
 
                             setDraftPoints([]);
                             setDraftRedoPoints([]);
-                            setTreebedDraftPreviewPoint(null);
+                            setTreebedDrawPreviewPoint(null);
                             setMeasurePoints([]);
                             setMeasurePreviewPoint(null);
                             setMeasureLines([]);
@@ -6382,8 +6001,8 @@ export default function HelloEditor() {
                                 } else {
                                     setDraftPoints([]);
                                     setDraftRedoPoints([]);
-                                    setTreebedDraftPreviewPoint(null);
-                                    setDraftMeasurementPreviewPoint(null);
+                                    setTreebedDrawPreviewPoint(null);
+                                    setDrawPreviewPoint(null);
                                     setMeasurePoints([]);
                                     setMeasurePreviewPoint(null);
                                     setMeasureLines([]);
@@ -6822,7 +6441,6 @@ export default function HelloEditor() {
                                                 activeTool={activeTool}
                                                 activeDrawType={activeDrawType}
                                                 draftPoints={draftPoints}
-                                                draftMeasurementPreviewPoint={draftMeasurementPreviewPoint}
                                                 measurePoints={measurePoints}
                                                 measurePreviewPoint={measurePreviewPoint}
                                                 measureLines={measureLines}
@@ -6831,10 +6449,6 @@ export default function HelloEditor() {
                                                 plantbedNumberLayouts={plantbedNumberLayouts}
                                                 livePlantbedNumberLayouts={livePlantbedNumberLayouts}
                                                 livePrimaryMeasurementObject={livePrimaryMeasurementObject}
-                                                shouldShowCursorCrosshair={shouldShowCursorCrosshair}
-                                                cursorCrosshairPoint={cursorCrosshairPoint}
-                                                stagePos={stagePos}
-                                                canvasSize={canvasSize}
                                                 COLORS={COLORS}
 
                                                 stageRef={stageRef}
@@ -6893,13 +6507,42 @@ export default function HelloEditor() {
                                                 changeTreebedVariant={changeTreebedVariant}
                                                 useProjectStore={useProjectStore}
                                                 activeTreebedDrawVariant={activeTreebedDrawVariant}
-                                                treebedDraftPreviewPoint={treebedDraftPreviewPoint}
                                                 createTreebedPointsFromCenterDrag={createTreebedPointsFromCenterDrag}
                                                 draftGuideLineRef={draftGuideLineRef}
                                                 draftSecondaryGuideLineRef={draftSecondaryGuideLineRef}
                                                 draftPreviewLineRef={draftPreviewLineRef}
                                                 applyViewportWheel={applyViewportWheel}
                                             />
+
+                                            {/* ── Crosshair: imperative Konva refs, zero React re-renders on cursor movement ── */}
+                                            <Layer listening={false}>
+                                                <Line
+                                                    ref={crosshairVRef}
+                                                    points={[]}
+                                                    visible={false}
+                                                    stroke={COLORS.green}
+                                                    strokeWidth={1}
+                                                    strokeScaleEnabled={false}
+                                                    dash={[6, 6]}
+                                                    dashEnabled
+                                                    opacity={0.85}
+                                                    listening={false}
+                                                    perfectDrawEnabled={false}
+                                                />
+                                                <Line
+                                                    ref={crosshairHRef}
+                                                    points={[]}
+                                                    visible={false}
+                                                    stroke={COLORS.green}
+                                                    strokeWidth={1}
+                                                    strokeScaleEnabled={false}
+                                                    dash={[6, 6]}
+                                                    dashEnabled
+                                                    opacity={0.85}
+                                                    listening={false}
+                                                    perfectDrawEnabled={false}
+                                                />
+                                            </Layer>
                                         </>
                                     );
                                 })()}

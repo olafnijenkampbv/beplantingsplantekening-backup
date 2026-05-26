@@ -102,7 +102,10 @@ function getReadablePlantbedLabelColor(fillColor: string) {
     return `#${toHex(rr)}${toHex(gg)}${toHex(bb)}`;
 }
 
-export default function BaseFillLayer({
+// React.memo prevents re-renders when props haven't changed.
+// During panning and object dragging, objects/layouts don't change → layer stays frozen,
+// which means Konva doesn't redraw these shapes and the canvas stays smooth.
+export default React.memo(function BaseFillLayer({
     unselectedNonPlantbeds,
     unselectedPlantbeds,
     objects,
@@ -639,4 +642,4 @@ export default function BaseFillLayer({
             })}
         </Layer>
     );
-}
+});

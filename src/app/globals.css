@@ -69,6 +69,12 @@ body {
   display: none;
 }
 
+/* Left menu search input placeholder colour */
+.left-menu-search-input::placeholder {
+  color: #898988;
+  opacity: 1;
+}
+
 /* Algemene dunne scrollbar utility */
 .app-thin-scrollbar {
   scrollbar-width: thin;

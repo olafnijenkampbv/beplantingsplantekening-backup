@@ -73,7 +73,8 @@ function isVerticalGuideBlocked(
     source: AlignmentBox,
     target: AlignmentBox,
     targetObjectId: string,
-    targetObjects: PolyObject[]
+    targetObjects: PolyObject[],
+    boxCache?: Map<string, AlignmentBox>
 ) {
     const sourceBottom = source.y + source.h;
     const targetBottom = target.y + target.h;
@@ -86,7 +87,7 @@ function isVerticalGuideBlocked(
     return targetObjects.some((object) => {
         if (object.id === targetObjectId) return false;
 
-        const box = getAlignmentBoxForObject(object);
+        const box = boxCache?.get(object.id) ?? getAlignmentBoxForObject(object);
         const boxBottom = box.y + box.h;
 
         const crossesGuideX =
@@ -106,7 +107,8 @@ function isHorizontalGuideBlocked(
     source: AlignmentBox,
     target: AlignmentBox,
     targetObjectId: string,
-    targetObjects: PolyObject[]
+    targetObjects: PolyObject[],
+    boxCache?: Map<string, AlignmentBox>
 ) {
     const sourceRight = source.x + source.w;
     const targetRight = target.x + target.w;
@@ -119,7 +121,7 @@ function isHorizontalGuideBlocked(
     return targetObjects.some((object) => {
         if (object.id === targetObjectId) return false;
 
-        const box = getAlignmentBoxForObject(object);
+        const box = boxCache?.get(object.id) ?? getAlignmentBoxForObject(object);
         const boxRight = box.x + box.w;
 
         const crossesGuideY =
@@ -221,6 +223,15 @@ export function calculateAlignmentSnapForSelection(args: {
 
     const snapThreshold = Math.max(4, 10 / Math.max(stageScale, 0.1));
 
+    // Precompute bounding boxes for all target objects ONCE.
+    // Previously getAlignmentBoxForObject() was called inside the forEach loop AND inside
+    // isVerticalGuideBlocked/isHorizontalGuideBlocked — meaning O(N²) box calculations.
+    // Now it's O(N) total.
+    const targetBoxCache = new Map<string, AlignmentBox>();
+    for (const obj of targetObjects) {
+        targetBoxCache.set(obj.id, getAlignmentBoxForObject(obj));
+    }
+
     const bestXRef: {
         current: {
             delta: number;
@@ -245,7 +256,7 @@ export function calculateAlignmentSnapForSelection(args: {
     const horizontalGuideCandidates: AlignmentCandidate[] = [];
 
     targetObjects.forEach((targetObject) => {
-        const targetBox = getAlignmentBoxForObject(targetObject);
+        const targetBox = targetBoxCache.get(targetObject.id)!;
 
         const crossAxisGapY = getRangeGap(
             sourceBox.y,
@@ -277,7 +288,7 @@ export function calculateAlignmentSnapForSelection(args: {
                 const distance = Math.abs(delta);
 
                 if (distance > snapThreshold) return;
-                if (isVerticalGuideBlocked(targetX, sourceBox, targetBox, targetObject.id, targetObjects)) return;
+                if (isVerticalGuideBlocked(targetX, sourceBox, targetBox, targetObject.id, targetObjects, targetBoxCache)) return;
 
                 const score = getSelectionAlignmentCandidateScore(distance, crossAxisGapY);
                 const minY = Math.min(sourceBox.y, targetBox.y);
@@ -310,7 +321,7 @@ export function calculateAlignmentSnapForSelection(args: {
                 const distance = Math.abs(delta);
 
                 if (distance > snapThreshold) return;
-                if (isHorizontalGuideBlocked(targetY, sourceBox, targetBox, targetObject.id, targetObjects)) return;
+                if (isHorizontalGuideBlocked(targetY, sourceBox, targetBox, targetObject.id, targetObjects, targetBoxCache)) return;
 
                 const score = getSelectionAlignmentCandidateScore(distance, crossAxisGapX);
                 const minX = Math.min(sourceBox.x, targetBox.x);

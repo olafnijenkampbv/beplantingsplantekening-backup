@@ -97,6 +97,17 @@ import {
     setTreebedDrawPreviewPoint,
     useDrawPreviewStore,
 } from "@/features/editor/state/drawPreviewStore";
+import { setSelectionDragAlignmentGuides } from "@/features/editor/state/selectionDragStore";
+import {
+    useBoxSelectStore,
+    setBoxSelectSelectionBox,
+} from "@/features/editor/state/boxSelectStore";
+import { setMeasurePreviewPoint } from "@/features/editor/state/measureStore";
+import {
+    useLiveEditStore,
+    setLiveEditMeasurement,
+    clearLiveEditMeasurement,
+} from "@/features/editor/state/liveEditStore";
 
 type DrawMode = "draw";
 
@@ -112,6 +123,28 @@ const COLORS = {
 const BASE_SCALE = 0.6;
 const HEADER_HEIGHT = 56;
 const TOOLBAR_OFFSET = 12;
+
+// Isolated component: subscribes to boxSelectStore so only THIS component re-renders
+// when the selection box updates during drag — not HelloEditor.
+// Without this, every mouse move during box-select caused a full HelloEditor re-render.
+function BoxSelectRect() {
+    const selectionBox = useBoxSelectStore((s) => s.selectionBox);
+    if (!selectionBox) return null;
+    return (
+        <Rect
+            x={selectionBox.x}
+            y={selectionBox.y}
+            width={selectionBox.w}
+            height={selectionBox.h}
+            stroke={COLORS.orange}
+            strokeWidth={1}
+            dash={[6, 4]}
+            fill={COLORS.orangeLight}
+            opacity={0.35}
+            listening={false}
+        />
+    );
+}
 const GRID_SIZE = EDITOR_GRID_SIZE;
 const FENCE_GATE_STROKE_WIDTH = 14;
 
@@ -1684,12 +1717,26 @@ export default function HelloEditor() {
         handleDuplicateDrawingFromDashboard,
         handleDeleteDrawingFromDashboard,
         handleRenameDrawingFromDashboard,
+        handleUpdateDrawingFromDashboard,
         saveDrawingSnapshot,
         setRightStepSnapshot,
         setPlantSelectionSnapshot,
         isRestoringDrawingRef,
         isRestoringRightStepMenuRef,
     } = useDrawingLifecycle();
+
+    // Edit drawing modal state (separate from create modal)
+    const [editDrawingId, setEditDrawingId] = useState<string | null>(null);
+    const [isEditDrawingOpen, setIsEditDrawingOpen] = useState(false);
+
+    const handleOpenEditDrawing = useCallback((drawingId: string) => {
+        setEditDrawingId(drawingId);
+        setIsEditDrawingOpen(true);
+    }, []);
+
+    const handleCloseEditDrawing = useCallback(() => {
+        setIsEditDrawingOpen(false);
+    }, []);
 
     // Close the file menu when opening the drawings dashboard
     const handleOpenDrawingsDashboard = useCallback(() => {
@@ -2032,6 +2079,12 @@ export default function HelloEditor() {
     const plantbedLayoutCacheRef = useRef<Map<string, CachedPlantbedLayoutEntry>>(new Map());
     const livePlantbedLayoutCacheRef = useRef<Map<string, CachedPlantbedLayoutEntry>>(new Map());
 
+    // Stable refs for values used inside RAF callbacks (computeAndPublishLiveMeasurement).
+    // Using refs avoids stale-closure problems without adding these as useCallback deps.
+    const plantbedNumberLayoutsRef = useRef<Map<string, any>>(new Map());
+    const treebedLabelBlockersRef = useRef<any[]>([]);
+    const treebedLabelBlockersSignatureRef = useRef<string>("");
+
     // Only recompute treebedLabelBlockers when treebed objects actually change.
     // Using a treebed-specific signature as dependency prevents unnecessary recalculation
     // (and cascading cache invalidations) when non-treebed objects are added/moved.
@@ -2050,6 +2103,10 @@ export default function HelloEditor() {
     const treebedLabelBlockersSignature = useMemo(() => {
         return buildTreebedBlockersSignature(treebedLabelBlockers);
     }, [treebedLabelBlockers]);
+
+    // Keep refs in sync so RAF callbacks can read stable values without stale closures.
+    useEffect(() => { treebedLabelBlockersRef.current = treebedLabelBlockers; }, [treebedLabelBlockers]);
+    useEffect(() => { treebedLabelBlockersSignatureRef.current = treebedLabelBlockersSignature; }, [treebedLabelBlockersSignature]);
 
     // Stable signature for plantbed/hedge/treebed shapes — only changes when these object types
     // actually change their shape, position, or number. This prevents plantbedNumberLayouts from
@@ -2121,6 +2178,9 @@ export default function HelloEditor() {
     // shapes change, not when unrelated objects move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [plantbedShapesSignature, treebedLabelBlockers, treebedLabelBlockersSignature]);
+
+    // Keep ref in sync — used by computeAndPublishLiveMeasurement inside RAF callbacks.
+    useEffect(() => { plantbedNumberLayoutsRef.current = plantbedNumberLayouts; }, [plantbedNumberLayouts]);
 
     const selectObject = useProjectStore((s) => s.selectObject);
     const selectObjects = useProjectStore((s) => s.selectObjects);
@@ -2383,10 +2443,6 @@ export default function HelloEditor() {
     const [measurePoints, setMeasurePoints] = useState<number[]>([]);
     const measurePointsRef = useRef<number[]>([]);
     useEffect(() => void (measurePointsRef.current = measurePoints), [measurePoints]);
-    const [measurePreviewPoint, setMeasurePreviewPoint] = useState<{
-        x: number;
-        y: number;
-    } | null>(null);
     const [measureLines, setMeasureLines] = useState<number[][]>([]);
     const measureLinesRef = useRef<number[][]>([]);
     useEffect(() => void (measureLinesRef.current = measureLines), [measureLines]);
@@ -2403,8 +2459,6 @@ export default function HelloEditor() {
         x: number;
         y: number;
     } | null>(null);
-
-    const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
 
     const [activeTreebedDrawVariant, setActiveTreebedDrawVariant] = useState<TreebedVariant>("standard");
 
@@ -2583,7 +2637,6 @@ export default function HelloEditor() {
     // Box select
     const [isBoxSelecting, setIsBoxSelecting] = useState(false);
     const boxStartRef = useRef<{ x: number; y: number } | null>(null);
-    const [selectionBox, setSelectionBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
     // ✅ Vertex editing (Figma-like)
     const [isVertexDragging, setIsVertexDragging] = useState(false);
@@ -2615,6 +2668,16 @@ export default function HelloEditor() {
         labelX: number;
         labelY: number;
     } | null>(null);
+
+    // RAF throttle refs for treebed resize/rotate preview — without these, setTreebedResizePreview
+    // and setTreebedRotatePreview fire on every raw mousemove (120-240Hz), triggering that many
+    // HelloEditor + EditorTopLayer re-renders. Throttling to ~60Hz matches display frame rate.
+    const treebedResizeRafRef = useRef<number | null>(null);
+    const treebedRotateRafRef = useRef<number | null>(null);
+
+    // Stable ref for computeAndPublishLiveMeasurement — used by treebed RAF callbacks which are
+    // defined before computeAndPublishLiveMeasurement (the real fn is declared later in the component).
+    const computeAndPublishLiveMeasurementRef = useRef<(() => void) | null>(null);
 
     const treebedResizeRef = useRef<null | {
         objectId: string;
@@ -2721,7 +2784,16 @@ export default function HelloEditor() {
         };
 
         treebedResizePreviewRef.current = nextPreview;
-        setTreebedResizePreview(nextPreview);
+
+        // RAF-throttle: only trigger a HelloEditor re-render at display frame rate (~60fps).
+        // Without this, setTreebedResizePreview fires on every raw mousemove (120-240Hz).
+        if (!treebedResizeRafRef.current) {
+            treebedResizeRafRef.current = requestAnimationFrame(() => {
+                treebedResizeRafRef.current = null;
+                setTreebedResizePreview(treebedResizePreviewRef.current);
+                computeAndPublishLiveMeasurementRef.current?.();
+            });
+        }
     }, []);
 
     const finishTreebedResize = useCallback(() => {
@@ -2732,6 +2804,14 @@ export default function HelloEditor() {
         treebedResizeRef.current = null;
         treebedResizePreviewRef.current = null;
         isTreebedResizeHandleHoveredRef.current = false;
+
+        // Cancel any pending RAF and flush immediately with null to clear the visual
+        if (treebedResizeRafRef.current) {
+            cancelAnimationFrame(treebedResizeRafRef.current);
+            treebedResizeRafRef.current = null;
+        }
+
+        clearLiveEditMeasurement();
 
         const st = stageRef.current;
         if (st) {
@@ -2837,7 +2917,16 @@ export default function HelloEditor() {
             labelY: active.cy + active.height / 2 + 38,
         };
         treebedRotatePreviewRef.current = nextPreview;
-        setTreebedRotatePreview(nextPreview);
+
+        // RAF-throttle: only trigger a HelloEditor re-render at display frame rate (~60fps).
+        // Without this, setTreebedRotatePreview fires on every raw mousemove (120-240Hz).
+        if (!treebedRotateRafRef.current) {
+            treebedRotateRafRef.current = requestAnimationFrame(() => {
+                treebedRotateRafRef.current = null;
+                setTreebedRotatePreview(treebedRotatePreviewRef.current);
+                computeAndPublishLiveMeasurementRef.current?.();
+            });
+        }
 
         const rotateCursor = getTreebedRotateCursorFromPoint(
             active.cx,
@@ -2858,6 +2947,14 @@ export default function HelloEditor() {
         treebedRotatePreviewRef.current = null;
         isTreebedRotateHotspotHoveredRef.current = false;
         treebedRotateCursorRef.current = null;
+
+        // Cancel any pending RAF and flush immediately with null to clear the visual
+        if (treebedRotateRafRef.current) {
+            cancelAnimationFrame(treebedRotateRafRef.current);
+            treebedRotateRafRef.current = null;
+        }
+
+        clearLiveEditMeasurement();
 
         const st = stageRef.current;
         if (st) {
@@ -2891,7 +2988,8 @@ export default function HelloEditor() {
                 edgeResizeRef.current = null;
                 isEdgeResizingRef.current = false;
                 setIsEdgeResizing(false);
-                setAlignmentGuides([]);
+                setSelectionDragAlignmentGuides([]);
+                clearLiveEditMeasurement();
 
                 if (edit) {
                     moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
@@ -2918,6 +3016,7 @@ export default function HelloEditor() {
 
                 isVertexDraggingRef.current = false;
                 setIsVertexDragging(false);
+                clearLiveEditMeasurement();
 
                 if (edit?.boundaryBeforeObject && edit.workingBoundarySegments?.length) {
                     useProjectStore
@@ -3003,30 +3102,134 @@ export default function HelloEditor() {
         moveObjectAndMerge,
     ]);
 
-    // ✅ Force React rerender tijdens vertex-drag / live edit, maar begrensd
-    const [vertexDragTick, setVertexDragTick] = useState(0);
+    // RAF refs for throttling live measurement store updates during vertex/edge editing.
     const vertexDragRafRef = useRef<number | null>(null);
-    const lastInteractionRerenderAtRef = useRef(0);
-    const INTERACTION_RERENDER_INTERVAL_MS = 33;
+    const edgeLiveMeasureRafRef = useRef<number | null>(null);
 
-    const requestVertexDragRerender = useCallback(() => {
-        const now = performance.now();
-        const elapsed = now - lastInteractionRerenderAtRef.current;
+    // Computes the live primary object and layout, then pushes to liveEditStore.
+    // Runs inside RAF callbacks — reads everything from refs to avoid stale closures.
+    // Replaces the old vertexDragTick/edgeResizeTick mechanism: instead of triggering a full
+    // HelloEditor + EditorTopLayer re-render, only LiveMeasurementSection re-renders.
+    const computeAndPublishLiveMeasurement = useCallback(() => {
+        const objects = objectsRef.current as PolyObject[];
+        const selectedObjectId = selectedObjectIdRef.current;
+        if (!selectedObjectId) { clearLiveEditMeasurement(); return; }
 
-        if (elapsed >= INTERACTION_RERENDER_INTERVAL_MS) {
-            lastInteractionRerenderAtRef.current = now;
-            setVertexDragTick((t) => t + 1);
+        const baseObject = objects.find((o) => o.id === selectedObjectId) ?? null;
+        if (!baseObject) { clearLiveEditMeasurement(); return; }
+
+        // Mirror livePrimaryMeasurementObject logic but reads from refs, not state
+        let livePrimary: any = baseObject;
+
+        if (
+            treebedRotatePreviewRef.current?.objectId === baseObject.id &&
+            Array.isArray(treebedRotatePreviewRef.current.points) &&
+            treebedRotatePreviewRef.current.points.length >= 6
+        ) {
+            livePrimary = { ...baseObject, points: treebedRotatePreviewRef.current.points };
+        } else if (
+            treebedResizePreviewRef.current?.objectId === baseObject.id &&
+            Array.isArray(treebedResizePreviewRef.current.points) &&
+            treebedResizePreviewRef.current.points.length >= 6
+        ) {
+            livePrimary = { ...baseObject, points: treebedResizePreviewRef.current.points };
+        } else if (
+            isVertexDraggingRef.current &&
+            vertexEditRef.current?.objectId === baseObject.id &&
+            Array.isArray(vertexEditRef.current.workingPoints) &&
+            vertexEditRef.current.workingPoints.length >= 6
+        ) {
+            livePrimary = {
+                ...baseObject,
+                points: [...vertexEditRef.current.workingPoints],
+                holes: (vertexEditRef.current.workingHoles ?? baseObject.holes ?? []).map((h: number[]) => [...h]),
+            };
+        } else if (
+            isEdgeResizingRef.current &&
+            edgeResizeRef.current?.objectId === baseObject.id &&
+            Array.isArray(edgeResizeRef.current.workingPoints) &&
+            edgeResizeRef.current.workingPoints.length >= 6
+        ) {
+            livePrimary = {
+                ...baseObject,
+                points: [...edgeResizeRef.current.workingPoints],
+                holes: (edgeResizeRef.current.workingHoles ?? baseObject.holes ?? []).map((h: number[]) => [...h]),
+            };
+        }
+
+        // Mirror livePlantbedNumberLayouts logic
+        const plantbedNumberLayouts = plantbedNumberLayoutsRef.current;
+        const layouts = new Map(plantbedNumberLayouts);
+
+        if (
+            livePrimary.type !== "plantbed" &&
+            livePrimary.type !== "hedge" &&
+            livePrimary.type !== "treebed"
+        ) {
+            livePlantbedLayoutCacheRef.current.clear();
+            setLiveEditMeasurement(livePrimary, layouts);
             return;
         }
 
-        if (vertexDragRafRef.current) return;
+        const areaText = formatSquareMeters(getObjectAreaInSquareMeters(livePrimary));
+        const hasHoles = (livePrimary.holes?.length ?? 0) > 0;
+        const isInteractiveEdit =
+            isVertexDraggingRef.current ||
+            isEdgeResizingRef.current ||
+            treebedRotatePreviewRef.current !== null ||
+            treebedResizePreviewRef.current !== null;
+        const committedLayout = plantbedNumberLayouts.get(livePrimary.id);
+        const blockersForLayout = livePrimary.type === "treebed" ? [] : treebedLabelBlockersRef.current;
 
+        if (isInteractiveEdit) {
+            const fastLayout = hasHoles
+                ? getLiveHolePlantbedNumberLayout(
+                    livePrimary.points, livePrimary.holes ?? [],
+                    livePrimary.plantbedNo ?? 0, areaText, committedLayout)
+                : getFastPlantbedNumberLayout(
+                    livePrimary.points, livePrimary.holes ?? [],
+                    livePrimary.plantbedNo ?? 0, areaText);
+
+            livePlantbedLayoutCacheRef.current.set(livePrimary.id, {
+                signature: buildPlantbedLayoutSignature(
+                    livePrimary.points, livePrimary.holes ?? [],
+                    livePrimary.plantbedNo ?? 0, areaText,
+                    livePrimary.type === "treebed" ? "" : treebedLabelBlockersSignatureRef.current),
+                layout: fastLayout,
+            });
+            layouts.set(livePrimary.id, fastLayout);
+        } else {
+            const signature = buildPlantbedLayoutSignature(
+                livePrimary.points, livePrimary.holes ?? [],
+                livePrimary.plantbedNo ?? 0, areaText,
+                livePrimary.type === "treebed" ? "" : treebedLabelBlockersSignatureRef.current);
+            const cached = livePlantbedLayoutCacheRef.current.get(livePrimary.id);
+            if (cached?.signature === signature) {
+                layouts.set(livePrimary.id, cached.layout);
+            } else {
+                const fullLayout = getPlantbedNumberLayout(
+                    livePrimary.points, livePrimary.holes ?? [],
+                    livePrimary.plantbedNo ?? 0, areaText, blockersForLayout);
+                livePlantbedLayoutCacheRef.current.set(livePrimary.id, { signature, layout: fullLayout });
+                layouts.set(livePrimary.id, fullLayout);
+            }
+        }
+
+        setLiveEditMeasurement(livePrimary, layouts);
+    }, []); // stable — reads everything from refs and module-level fns
+
+    // Wire up the ref so treebed RAF callbacks (declared earlier) can call this stable fn.
+    computeAndPublishLiveMeasurementRef.current = computeAndPublishLiveMeasurement;
+
+    const requestVertexDragRerender = useCallback(() => {
+        // Throttle to one store update per animation frame (~60fps).
+        // This replaces setVertexDragTick — only LiveMeasurementSection re-renders.
+        if (vertexDragRafRef.current) return;
         vertexDragRafRef.current = requestAnimationFrame(() => {
             vertexDragRafRef.current = null;
-            lastInteractionRerenderAtRef.current = performance.now();
-            setVertexDragTick((t) => t + 1);
+            computeAndPublishLiveMeasurement();
         });
-    }, []);
+    }, [computeAndPublishLiveMeasurement]);
 
     useEffect(() => {
         return () => {
@@ -3071,18 +3274,15 @@ export default function HelloEditor() {
         workingHoles?: number[][];
     } | null>(null);
 
-    // ✅ Edge-resize moet frame-synchroon lopen, anders loopt fill/label/measurement visueel achter
-    const [edgeResizeTick, setEdgeResizeTick] = useState(0);
-    const edgeResizeRafRef = useRef<number | null>(null);
-
+    // Edge-resize live measurement — uses liveEditStore (same pattern as vertex drag).
+    // Only LiveMeasurementSection re-renders; no HelloEditor re-render.
     const requestEdgeResizeRerender = useCallback(() => {
-        if (edgeResizeRafRef.current) return;
-
-        edgeResizeRafRef.current = requestAnimationFrame(() => {
-            edgeResizeRafRef.current = null;
-            setEdgeResizeTick((tick) => tick + 1);
+        if (edgeLiveMeasureRafRef.current) return;
+        edgeLiveMeasureRafRef.current = requestAnimationFrame(() => {
+            edgeLiveMeasureRafRef.current = null;
+            computeAndPublishLiveMeasurement();
         });
-    }, []);
+    }, [computeAndPublishLiveMeasurement]);
 
     // RAF throttle for alignment guides during edge resize — same pattern as EditorTopLayer's
     // onDragMove. Without this, setAlignmentGuides fires on every raw mousemove event
@@ -3160,107 +3360,10 @@ export default function HelloEditor() {
         selectedObjectId,
         treebedResizePreview,
         treebedRotatePreview,
-        vertexDragTick,
-        edgeResizeTick,
     ]);
 
-    const livePlantbedNumberLayouts = useMemo(() => {
-        const layouts = new Map(plantbedNumberLayouts);
-
-        if (
-            livePrimaryMeasurementObject?.type !== "plantbed" &&
-            livePrimaryMeasurementObject?.type !== "hedge" &&
-            livePrimaryMeasurementObject?.type !== "treebed"
-        ) {
-            livePlantbedLayoutCacheRef.current.clear();
-            return layouts;
-        }
-
-        const areaText = formatSquareMeters(getObjectAreaInSquareMeters(livePrimaryMeasurementObject));
-        const hasHoles = (livePrimaryMeasurementObject.holes?.length ?? 0) > 0;
-        // Also use the fast path for treebed rotate/resize previews — their points change every
-        // mousemove, causing a cache miss and running the full grid-scan on every frame otherwise.
-        const isInteractiveEdit =
-            isVertexDragging ||
-            isEdgeResizing ||
-            treebedRotatePreview !== null ||
-            treebedResizePreview !== null;
-        const committedLayout = plantbedNumberLayouts.get(livePrimaryMeasurementObject.id);
-        const blockersForLayout =
-            livePrimaryMeasurementObject.type === "treebed"
-                ? []
-                : treebedLabelBlockers;
-
-        if (isInteractiveEdit) {
-            const fastInteractiveLayout = hasHoles
-                ? getLiveHolePlantbedNumberLayout(
-                    livePrimaryMeasurementObject.points,
-                    livePrimaryMeasurementObject.holes ?? [],
-                    livePrimaryMeasurementObject.plantbedNo ?? 0,
-                    areaText,
-                    committedLayout
-                )
-                : getFastPlantbedNumberLayout(
-                    livePrimaryMeasurementObject.points,
-                    livePrimaryMeasurementObject.holes ?? [],
-                    livePrimaryMeasurementObject.plantbedNo ?? 0,
-                    areaText
-                );
-
-            livePlantbedLayoutCacheRef.current.set(livePrimaryMeasurementObject.id, {
-                signature: buildPlantbedLayoutSignature(
-                    livePrimaryMeasurementObject.points,
-                    livePrimaryMeasurementObject.holes ?? [],
-                    livePrimaryMeasurementObject.plantbedNo ?? 0,
-                    areaText,
-                    livePrimaryMeasurementObject.type === "treebed" ? "" : treebedLabelBlockersSignature
-                ),
-                layout: fastInteractiveLayout,
-            });
-
-            layouts.set(livePrimaryMeasurementObject.id, fastInteractiveLayout);
-            return layouts;
-        }
-
-        const signature = buildPlantbedLayoutSignature(
-            livePrimaryMeasurementObject.points,
-            livePrimaryMeasurementObject.holes ?? [],
-            livePrimaryMeasurementObject.plantbedNo ?? 0,
-            areaText,
-            livePrimaryMeasurementObject.type === "treebed" ? "" : treebedLabelBlockersSignature
-        );
-
-        const cached = livePlantbedLayoutCacheRef.current.get(livePrimaryMeasurementObject.id);
-        if (cached?.signature === signature) {
-            layouts.set(livePrimaryMeasurementObject.id, cached.layout);
-            return layouts;
-        }
-
-        const fullLayout = getPlantbedNumberLayout(
-            livePrimaryMeasurementObject.points,
-            livePrimaryMeasurementObject.holes ?? [],
-            livePrimaryMeasurementObject.plantbedNo ?? 0,
-            areaText,
-            blockersForLayout
-        );
-
-        livePlantbedLayoutCacheRef.current.set(livePrimaryMeasurementObject.id, {
-            signature,
-            layout: fullLayout,
-        });
-
-        layouts.set(livePrimaryMeasurementObject.id, fullLayout);
-        return layouts;
-    }, [
-        plantbedNumberLayouts,
-        livePrimaryMeasurementObject,
-        treebedLabelBlockers,
-        treebedLabelBlockersSignature,
-        isVertexDragging,
-        isEdgeResizing,
-        treebedRotatePreview,
-        treebedResizePreview,
-    ]);
+    // livePlantbedNumberLayouts useMemo removed — live layout data now flows through liveEditStore
+    // via computeAndPublishLiveMeasurement → LiveMeasurementSection in EditorTopLayer.
     const selectedLineRefs = useRef<Record<string, any>>({});
     const vertexHandleRefs = useRef<Record<string, Record<string, any>>>({});
     const activeVertexIndexRef = useRef<number | null>(null);
@@ -3423,6 +3526,8 @@ export default function HelloEditor() {
     useEffect(() => {
         return () => {
             if (boxSelectRafRef.current) cancelAnimationFrame(boxSelectRafRef.current);
+            if (treebedResizeRafRef.current) cancelAnimationFrame(treebedResizeRafRef.current);
+            if (treebedRotateRafRef.current) cancelAnimationFrame(treebedRotateRafRef.current);
         };
     }, []);
 
@@ -3783,9 +3888,9 @@ export default function HelloEditor() {
                 vertexDragRafRef.current = null;
             }
 
-            if (edgeResizeRafRef.current) {
-                cancelAnimationFrame(edgeResizeRafRef.current);
-                edgeResizeRafRef.current = null;
+            if (edgeLiveMeasureRafRef.current) {
+                cancelAnimationFrame(edgeLiveMeasureRafRef.current);
+                edgeLiveMeasureRafRef.current = null;
             }
 
             if (fenceHintRaf1Ref.current) {
@@ -4143,7 +4248,7 @@ export default function HelloEditor() {
 
                     setIsBoxSelecting(true);
                     boxStartRef.current = { x: world.x, y: world.y };
-                    setSelectionBox({ x: world.x, y: world.y, w: 0, h: 0 });
+                    setBoxSelectSelectionBox({ x: world.x, y: world.y, w: 0, h: 0 });
                     clearSelection();
                     return;
                 }
@@ -4545,7 +4650,7 @@ export default function HelloEditor() {
                 if (!edgeResizeAlignmentGuidesRafRef.current) {
                     edgeResizeAlignmentGuidesRafRef.current = requestAnimationFrame(() => {
                         edgeResizeAlignmentGuidesRafRef.current = null;
-                        setAlignmentGuides(pendingEdgeResizeGuidesRef.current);
+                        setSelectionDragAlignmentGuides(pendingEdgeResizeGuidesRef.current);
                     });
                 }
 
@@ -4568,6 +4673,15 @@ export default function HelloEditor() {
 
                     edit.workingHoles = nextHoles;
                     requestEdgeResizeRerender();
+
+                    // Imperatively move the two hole vertex handles that define this edge.
+                    const holeHandles = vertexHandleRefs.current[edit.objectId] ?? {};
+                    const aHoleHandleIdx = edit.edgeIndex;
+                    const bHoleHandleIdx = (edit.edgeIndex + 1) % pointCount;
+                    const hha = holeHandles[`h-${edit.holeIndex}-${aHoleHandleIdx}`];
+                    const hhb = holeHandles[`h-${edit.holeIndex}-${bHoleHandleIdx}`];
+                    if (hha) hha.position({ x: ring[aIdx], y: ring[aIdx + 1] });
+                    if (hhb) hhb.position({ x: ring[bIdx], y: ring[bIdx + 1] });
 
                     const line = selectedLineRefs.current[edit.objectId];
                     const layer = line?.getLayer?.();
@@ -4592,6 +4706,15 @@ export default function HelloEditor() {
 
                 edit.workingPoints = nextPoints;
                 requestEdgeResizeRerender();
+
+                // Imperatively move the two vertex handles that define this edge.
+                const handles = vertexHandleRefs.current[edit.objectId] ?? {};
+                const aHandleIdx = edit.edgeIndex;
+                const bHandleIdx = (edit.edgeIndex + 1) % pointCount;
+                const ha = handles[`${aHandleIdx}`];
+                const hb = handles[`${bHandleIdx}`];
+                if (ha) ha.position({ x: nextPoints[aIdx], y: nextPoints[aIdx + 1] });
+                if (hb) hb.position({ x: nextPoints[bIdx], y: nextPoints[bIdx + 1] });
 
                 const line = selectedLineRefs.current[edit.objectId];
                 if (line) {
@@ -4682,7 +4805,7 @@ export default function HelloEditor() {
                 if (!start || !world) return;
 
                 const r = normalizeRect(start.x, start.y, world.x, world.y);
-                setSelectionBox(r);
+                setBoxSelectSelectionBox(r);
 
                 // ✅ live selection (throttled)
                 pendingBoxRectRef.current = r;
@@ -4838,7 +4961,8 @@ export default function HelloEditor() {
                 }
 
                 setIsEdgeResizing(false);
-                setAlignmentGuides([]);
+                setSelectionDragAlignmentGuides([]);
+                clearLiveEditMeasurement();
 
                 if (edit) {
                     moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
@@ -4865,6 +4989,7 @@ export default function HelloEditor() {
 
                 isVertexDraggingRef.current = false;
                 setIsVertexDragging(false);
+                clearLiveEditMeasurement();
 
                 if (edit?.boundaryBeforeObject && edit.workingBoundarySegments?.length) {
                     useProjectStore
@@ -4888,7 +5013,8 @@ export default function HelloEditor() {
             if (evt.button === 0 && isBoxSelecting && activeTool === "select") {
                 setIsBoxSelecting(false);
 
-                const box = selectionBox;
+                // Read directly from store — selectionBox is no longer React state
+                const box = useBoxSelectStore.getState().selectionBox;
 
                 // force last live update (if any) before cleanup
                 if (boxSelectRafRef.current) {
@@ -4904,7 +5030,7 @@ export default function HelloEditor() {
                 // cleanup
                 pendingBoxRectRef.current = null;
                 boxStartRef.current = null;
-                setSelectionBox(null);
+                setBoxSelectSelectionBox(null);
 
                 return;
             }
@@ -4935,7 +5061,7 @@ export default function HelloEditor() {
                                 : "default";
             }
         },
-        [activeTool, isBoxSelecting, objects, selectionBox, selectObjects, moveObjectAndMerge, flushViewportState]
+        [activeTool, isBoxSelecting, objects, selectObjects, moveObjectAndMerge, flushViewportState]
     );
 
     // Keyboard
@@ -5714,54 +5840,17 @@ export default function HelloEditor() {
             <DrawingsDashboardModal
                 isOpen={isDrawingsDashboardOpen}
                 drawings={editorDrawings.map((drawing: PersistedDrawingDocument) => {
-                    const wizardSnapshot =
-                        rightStepSnapshotsByDrawingId[drawing.id] ?? createEmptyRightStepMenuSnapshot();
-
-                    let completedStepCount = 0;
-
-                    const isStep1Complete =
-                        !!wizardSnapshot.step1.locationType &&
-                        wizardSnapshot.step1.gardenZones.length > 0;
-
-                    const isStep2Complete =
-                        wizardSnapshot.step2.standplaatsen.length > 0 &&
-                        wizardSnapshot.step2.groundTypes.length > 0 &&
-                        !!wizardSnapshot.step2.maintenanceLevel &&
-                        !!wizardSnapshot.step2.certificationPreference;
-
-                    const isStep3Complete = (() => {
-                        if (!wizardSnapshot.step3.structureStyle) return false;
-                        if (wizardSnapshot.step3.structureStyle !== "vrij-samenstellen") return true;
-
-                        const values = [
-                            Number(wizardSnapshot.step3.customPercentages.bodembedekkers || 0),
-                            Number(wizardSnapshot.step3.customPercentages.vastePlanten || 0),
-                            Number(wizardSnapshot.step3.customPercentages.heestersEnStruiken || 0),
-                            Number(wizardSnapshot.step3.customPercentages.bomen || 0),
-                        ];
-
-                        const hasAllValues = Object.values(
-                            wizardSnapshot.step3.customPercentages
-                        ).every((value) => value !== "");
-
-                        const total = values.reduce((sum, value) => sum + value, 0);
-
-                        return hasAllValues && total === 100;
-                    })();
-
-                    const isStep4Complete =
-                        !!wizardSnapshot.step4.seasonExperience &&
-                        !!wizardSnapshot.step4.heightStyle;
-
-                    if (isStep1Complete) completedStepCount = 1;
-                    if (isStep2Complete) completedStepCount = 2;
-                    if (isStep3Complete) completedStepCount = 3;
-                    if (isStep4Complete) completedStepCount = 4;
+                    const b = drawing.budget;
+                    const budgetLabel =
+                        b !== undefined
+                            ? `Budget: ${b % 1 === 0 ? `€${b.toLocaleString("nl-NL")},-` : `€${b.toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}`
+                            : "Geen budget ingesteld";
 
                     return {
                         id: drawing.id,
                         name: drawing.name,
-                        stepProgressLabel: `Stap ${completedStepCount} van 4 ingevuld`,
+                        budgetLabel,
+                        budget: drawing.budget,
                         createdAtLabel: getRelativeUpdatedAtLabel(drawing.updatedAt),
                         previewObjects: drawing.snapshot.objects ?? [],
                     };
@@ -5774,7 +5863,7 @@ export default function HelloEditor() {
                 onCreateDrawing={handleCreateDrawingFromDashboard}
                 onDuplicateDrawing={handleDuplicateDrawingFromDashboard}
                 onDeleteDrawing={handleDeleteDrawingFromDashboard}
-                onRenameDrawing={handleRenameDrawingFromDashboard}
+                onEditDrawing={handleOpenEditDrawing}
             />
 
             <CreateDrawingModal
@@ -5789,6 +5878,26 @@ export default function HelloEditor() {
                 onSubmit={handleCreateDrawingFromDashboard}
                 drawings={editorDrawings.map((drawing: PersistedDrawingDocument) => ({ name: drawing.name }))}
             />
+
+            {editDrawingId !== null && (() => {
+                const editingDrawing = editorDrawings.find((d: PersistedDrawingDocument) => d.id === editDrawingId);
+                return (
+                    <CreateDrawingModal
+                        isOpen={isEditDrawingOpen}
+                        onClose={handleCloseEditDrawing}
+                        onSubmit={(name, budget) => {
+                            handleUpdateDrawingFromDashboard(editDrawingId, name, budget);
+                            handleCloseEditDrawing();
+                        }}
+                        drawings={editorDrawings
+                            .filter((d: PersistedDrawingDocument) => d.id !== editDrawingId)
+                            .map((d: PersistedDrawingDocument) => ({ name: d.name }))}
+                        mode="edit"
+                        initialName={editingDrawing?.name}
+                        initialBudget={editingDrawing?.budget}
+                    />
+                );
+            })()}
 
             <AppNotificationsRenderer topLeftLeftOffset={topLeftNoticeLeft} />
 
@@ -5930,7 +6039,7 @@ export default function HelloEditor() {
                         onPickDrawType={(t) => {
                             clearSelection();
                             setIsBoxSelecting(false);
-                            setSelectionBox(null);
+                            setBoxSelectSelectionBox(null);
 
                             setActiveDrawType(t);
                             setActiveTool("draw");
@@ -5953,7 +6062,7 @@ export default function HelloEditor() {
                         onPickTreebedVariant={(variant) => {
                             clearSelection();
                             setIsBoxSelecting(false);
-                            setSelectionBox(null);
+                            setBoxSelectSelectionBox(null);
 
                             setActiveTreebedDrawVariant(variant);
                             setActiveDrawType("treebed");
@@ -5984,7 +6093,7 @@ export default function HelloEditor() {
                             onSelectTool={(tool) => {
                                 setActiveTool(tool);
 
-                                if (tool === "cut" || tool === "measure") {
+                                if (tool === "cut" || tool === "measure" || tool === "hand") {
                                     clearSelection();
                                 }
 
@@ -6083,7 +6192,7 @@ export default function HelloEditor() {
                     </div>
 
                     {shouldShowPlantSidebar && (
-                        <EstimatedPlantingPriceBadge />
+                        <EstimatedPlantingPriceBadge budget={activeDrawing?.budget} />
                     )}
 
                     <div className="relative z-20">
@@ -6414,20 +6523,9 @@ export default function HelloEditor() {
                                                     showSelectedDimensions={false}
                                                 />
 
-                                                {selectionBox && (
-                                                    <Rect
-                                                        x={selectionBox.x}
-                                                        y={selectionBox.y}
-                                                        width={selectionBox.w}
-                                                        height={selectionBox.h}
-                                                        stroke={COLORS.orange}
-                                                        strokeWidth={1}
-                                                        dash={[6, 4]}
-                                                        fill={COLORS.orangeLight}
-                                                        opacity={0.35}
-                                                        listening={false}
-                                                    />
-                                                )}
+                                                {/* BoxSelectRect: isolated — only re-renders when selectionBox changes.
+                                                    HelloEditor does NOT re-render on box-select mouse moves. */}
+                                                <BoxSelectRect />
                                             </Layer>
 
                                             {/* =============== TOP LAYER (treebeds + selection + draft) =============== */}
@@ -6442,13 +6540,10 @@ export default function HelloEditor() {
                                                 activeDrawType={activeDrawType}
                                                 draftPoints={draftPoints}
                                                 measurePoints={measurePoints}
-                                                measurePreviewPoint={measurePreviewPoint}
                                                 measureLines={measureLines}
                                                 shouldHideHeavySceneDecorations={shouldHideHeavySceneDecorations}
                                                 stageScale={stageScale}
                                                 plantbedNumberLayouts={plantbedNumberLayouts}
-                                                livePlantbedNumberLayouts={livePlantbedNumberLayouts}
-                                                livePrimaryMeasurementObject={livePrimaryMeasurementObject}
                                                 COLORS={COLORS}
 
                                                 stageRef={stageRef}
@@ -6458,8 +6553,6 @@ export default function HelloEditor() {
                                                 selectObjects={selectObjects}
                                                 moveObjectAndMerge={moveObjectAndMerge}
                                                 moveObjectsBatch={moveObjectsBatch}
-                                                alignmentGuides={alignmentGuides}
-                                                setAlignmentGuides={setAlignmentGuides}
                                                 getAlignmentSnapForSelection={getAlignmentSnapForSelection}
                                                 setLiveSelectionDragDelta={setLiveSelectionDragDelta}
                                                 isVertexDragging={isVertexDragging}

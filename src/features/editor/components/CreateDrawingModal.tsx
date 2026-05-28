@@ -1,11 +1,14 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 
 type Props = {
     isOpen: boolean;
     onClose: () => void;
-    onSubmit: (name: string) => void;
+    onSubmit: (name: string, budget?: number) => void;
     drawings: { name: string }[];
+    mode?: "create" | "edit";
+    initialName?: string;
+    initialBudget?: number;
 };
 
 const COLORS = {
@@ -20,10 +23,24 @@ const CreateDrawingModal: React.FC<Props> = ({
     onClose,
     onSubmit,
     drawings,
+    mode = "create",
+    initialName,
+    initialBudget,
 }) => {
     const [value, setValue] = useState("");
+    const [budget, setBudget] = useState<string>("");
     const [showRequiredError, setShowRequiredError] = useState(false);
     const [showDuplicateError, setShowDuplicateError] = useState(false);
+
+    // Sync fields when modal opens (supports switching between different drawings in edit mode)
+    useEffect(() => {
+        if (isOpen) {
+            setValue(initialName ?? "");
+            setBudget(initialBudget !== undefined ? String(initialBudget) : "");
+            setShowRequiredError(false);
+            setShowDuplicateError(false);
+        }
+    }, [isOpen, initialName, initialBudget]);
 
     if (!isOpen) return null;
 
@@ -51,8 +68,8 @@ const CreateDrawingModal: React.FC<Props> = ({
             >
                 <button
                     onClick={() => {
-                        setValue("");
                         setShowRequiredError(false);
+                        setShowDuplicateError(false);
                         onClose();
                     }}
                     style={{
@@ -92,7 +109,7 @@ const CreateDrawingModal: React.FC<Props> = ({
                         color: COLORS.text,
                     }}
                 >
-                    Geef een naam aan de tekening
+                    {mode === "edit" ? "Tekening bewerken" : "Geef een naam aan de tekening"}
                 </div>
 
                 <div
@@ -102,7 +119,7 @@ const CreateDrawingModal: React.FC<Props> = ({
                         marginBottom: 16,
                     }}
                 >
-                    Waar is de tekening voor
+                    {mode === "edit" ? "Pas de naam en het budget aan" : "Waar is de tekening voor"}
                 </div>
 
                 {/* INPUT */}
@@ -135,6 +152,58 @@ const CreateDrawingModal: React.FC<Props> = ({
                         color: COLORS.text,
                     }}
                 />
+
+                {/* BUDGET INPUT */}
+                <div style={{ marginBottom: 16 }}>
+                    <div
+                        style={{
+                            fontSize: 13,
+                            color: COLORS.text,
+                            marginBottom: 6,
+                        }}
+                    >
+                        Budget (optioneel)
+                    </div>
+                    <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                        <span
+                            style={{
+                                position: "absolute",
+                                left: 12,
+                                fontSize: 14,
+                                color: COLORS.muted,
+                                pointerEvents: "none",
+                                userSelect: "none",
+                            }}
+                        >
+                            €
+                        </span>
+                        <input
+                            type="number"
+                            min={0}
+                            value={budget}
+                            onChange={(e) => {
+                                const v = e.target.value;
+                                if (v === "" || parseFloat(v) >= 0) {
+                                    setBudget(v);
+                                }
+                            }}
+                            onKeyDown={(e) => {
+                                e.stopPropagation();
+                            }}
+                            placeholder="bijv. 500"
+                            style={{
+                                width: "100%",
+                                height: 40,
+                                border: `1px solid ${COLORS.border}`,
+                                borderRadius: 6,
+                                padding: "0 12px 0 28px",
+                                fontSize: 14,
+                                outline: "none",
+                                color: COLORS.text,
+                            }}
+                        />
+                    </div>
+                </div>
 
                 {showRequiredError && (
                     <div
@@ -187,9 +256,11 @@ const CreateDrawingModal: React.FC<Props> = ({
                             return;
                         }
 
-                        onSubmit(trimmed);
+                        const parsedBudget =
+                            budget.trim() !== "" ? parseFloat(budget) : undefined;
 
-                        setValue("");
+                        onSubmit(trimmed, parsedBudget);
+
                         setShowRequiredError(false);
                         setShowDuplicateError(false);
                     }}
@@ -208,11 +279,15 @@ const CreateDrawingModal: React.FC<Props> = ({
                         gap: 8,
                     }}
                 >
-                    Begin met tekenen
-                    <img
-                        src="/icons/chevron-right.svg"
-                        style={{ filter: "invert(1)", width: 16 }}
-                    />
+                    {mode === "edit" ? "Opslaan" : (
+                        <>
+                            Begin met tekenen
+                            <img
+                                src="/icons/chevron-right.svg"
+                                style={{ filter: "invert(1)", width: 16 }}
+                            />
+                        </>
+                    )}
                 </button>
             </div>
         </div>,

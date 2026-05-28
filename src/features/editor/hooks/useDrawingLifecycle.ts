@@ -61,10 +61,11 @@ export type DrawingLifecycleReturn = {
     handleOpenCreateDrawingModal: (source: "editor" | "dashboard") => void;
     handleCloseCreateDrawingModal: () => void;
     handleOpenDrawingFromDashboard: (drawingId: string) => void;
-    handleCreateDrawingFromDashboard: (name: string) => void;
+    handleCreateDrawingFromDashboard: (name: string, budget?: number) => void;
     handleDuplicateDrawingFromDashboard: (drawingId: string) => void;
     handleDeleteDrawingFromDashboard: (drawingId: string) => void;
     handleRenameDrawingFromDashboard: (drawingId: string, nextName: string) => void;
+    handleUpdateDrawingFromDashboard: (drawingId: string, name: string, budget?: number) => void;
     saveDrawingSnapshot: (snapshot: PersistedDrawingSnapshot, nowIso: string) => void;
     setRightStepSnapshot: (drawingId: string, snapshot: PersistedRightStepMenuSnapshot) => void;
     setPlantSelectionSnapshot: (drawingId: string, snapshot: PersistedPlantSelectionSnapshot) => void;
@@ -380,11 +381,11 @@ export function useDrawingLifecycle(): DrawingLifecycleReturn {
     );
 
     const handleCreateDrawingFromDashboard = useCallback(
-        (name: string) => {
+        (name: string, budget?: number) => {
             const trimmed = name.trim();
             if (!trimmed) return;
 
-            const nextDrawing = createDrawingDocument(trimmed);
+            const nextDrawing = createDrawingDocument(trimmed, budget);
             const emptyWizardSnapshot = createEmptyRightStepMenuSnapshot();
 
             setEditorDrawings((prev) => [...prev, nextDrawing]);
@@ -544,6 +545,18 @@ export function useDrawingLifecycle(): DrawingLifecycleReturn {
         []
     );
 
+    const handleUpdateDrawingFromDashboard = useCallback(
+        (drawingId: string, name: string, budget?: number) => {
+            const nowIso = new Date().toISOString();
+            setEditorDrawings((prev) =>
+                prev.map((d) =>
+                    d.id === drawingId ? { ...d, name, budget, updatedAt: nowIso } : d
+                )
+            );
+        },
+        []
+    );
+
     // Called by HelloEditor's autosave effect and manual save handler
     const saveDrawingSnapshot = useCallback(
         (snapshot: PersistedDrawingSnapshot, nowIso: string) => {
@@ -595,6 +608,7 @@ export function useDrawingLifecycle(): DrawingLifecycleReturn {
         handleDuplicateDrawingFromDashboard,
         handleDeleteDrawingFromDashboard,
         handleRenameDrawingFromDashboard,
+        handleUpdateDrawingFromDashboard,
         saveDrawingSnapshot,
         setRightStepSnapshot,
         setPlantSelectionSnapshot,

@@ -1,6 +1,12 @@
 import React from "react";
 import { Layer, Line, Rect, Group, Circle, Text } from "react-konva";
 import { useDrawPreviewStore } from "@/features/editor/state/drawPreviewStore";
+import {
+    useSelectionDragStore,
+    setSelectionDragAlignmentGuides,
+} from "@/features/editor/state/selectionDragStore";
+import { useMeasureStore } from "@/features/editor/state/measureStore";
+import { useLiveEditStore } from "@/features/editor/state/liveEditStore";
 import { Html } from "react-konva-utils";
 import { PolyObject, ObjectType, OBJECT_STYLES } from "@/state/projectStore";
 import MeasurementOverlay from "@/features/editor/components/MeasurementOverlay";
@@ -282,6 +288,142 @@ function DrawModePreviewSection({
     );
 }
 
+// Isolated component: subscribes to selectionDragStore so only THIS component re-renders
+// when alignment guides change during object drag — not HelloEditor or EditorTopLayerInner.
+// Without this, every RAF-throttled guide update triggered a full HelloEditor re-render.
+function AlignmentGuidesSection({
+    stageScale,
+    COLORS,
+}: {
+    stageScale: number;
+    COLORS: any;
+}) {
+    const alignmentGuides = useSelectionDragStore((s) => s.alignmentGuides);
+
+    if (alignmentGuides.length === 0) return null;
+
+    const crossSize = Math.max(1.5, 2 / Math.max(stageScale, 0.1));
+    const strokeWidth = Math.max(0.75, 0.75 / Math.max(stageScale, 0.1));
+
+    const renderCross = (x: number, y: number, key: string) => (
+        <React.Fragment key={key}>
+            <Line
+                points={[x - crossSize, y - crossSize, x + crossSize, y + crossSize]}
+                closed={false}
+                fillEnabled={false}
+                stroke={COLORS.orange}
+                strokeWidth={strokeWidth}
+                lineCap="butt"
+                lineJoin="miter"
+                listening={false}
+                perfectDrawEnabled={false}
+                opacity={0.95}
+            />
+            <Line
+                points={[x - crossSize, y + crossSize, x + crossSize, y - crossSize]}
+                closed={false}
+                fillEnabled={false}
+                stroke={COLORS.orange}
+                strokeWidth={strokeWidth}
+                lineCap="butt"
+                lineJoin="miter"
+                listening={false}
+                perfectDrawEnabled={false}
+                opacity={0.95}
+            />
+        </React.Fragment>
+    );
+
+    return (
+        <>
+            {alignmentGuides.map((guide: any) => {
+                const [x1, y1, x2, y2] = guide.points;
+                return (
+                    <React.Fragment key={guide.id}>
+                        <Line
+                            points={guide.points}
+                            closed={false}
+                            fillEnabled={false}
+                            stroke={COLORS.orange}
+                            strokeWidth={strokeWidth}
+                            lineCap="butt"
+                            lineJoin="miter"
+                            listening={false}
+                            perfectDrawEnabled={false}
+                            opacity={0.95}
+                        />
+                        {renderCross(x1, y1, `${guide.id}-cross-start`)}
+                        {renderCross(x2, y2, `${guide.id}-cross-end`)}
+                    </React.Fragment>
+                );
+            })}
+        </>
+    );
+}
+
+// Isolated component: subscribes to measureStore so only THIS component re-renders
+// when the measure preview point changes during mouse move in measure mode.
+// Without this, every mouse move during measuring caused a full HelloEditor re-render.
+function MeasurePreviewSection({
+    stageScale,
+    measurePoints,
+}: {
+    stageScale: number;
+    measurePoints: number[];
+}) {
+    const measurePreviewPoint = useMeasureStore((s) => s.measurePreviewPoint);
+    return (
+        <MeasureToolOverlay
+            stageScale={stageScale}
+            committedPoints={measurePoints}
+            previewPoint={measurePreviewPoint}
+        />
+    );
+}
+
+// Isolated component: subscribes to liveEditStore so only THIS component re-renders
+// when live measurement data changes during vertex drag, edge resize, or treebed interaction.
+// Without this, every RAF-throttled update triggered a full EditorTopLayerInner re-render.
+function LiveMeasurementSection({
+    selected,
+    selectedObjectId,
+    stageScale,
+    activeDrawType,
+    plantbedNumberLayouts,
+    isSelectionDragging,
+}: {
+    selected: any[];
+    selectedObjectId: string | null;
+    stageScale: number;
+    activeDrawType: any;
+    plantbedNumberLayouts: Map<string, any>;
+    isSelectionDragging: boolean;
+}) {
+    const livePrimary = useLiveEditStore((s) => s.livePrimary);
+    const liveLayouts = useLiveEditStore((s) => s.liveLayouts);
+
+    const primaryMeasurementObject =
+        livePrimary ?? (selected.length === 1 ? selected[0] : null);
+    const effectiveLayouts = liveLayouts ?? plantbedNumberLayouts;
+
+    return (
+        <MeasurementOverlay
+            unselectedObjects={[]}
+            selectedObjects={selected}
+            selectedObjectId={selectedObjectId}
+            stageScale={stageScale}
+            activeTool={"select"}
+            activeDrawType={activeDrawType}
+            draftPoints={[]}
+            draftMeasurementPoints={[]}
+            primaryMeasurementObject={primaryMeasurementObject}
+            plantbedNumberLayouts={effectiveLayouts}
+            showSelectedDimensions={selected.length === 1}
+            showDetailedSelectedDimensions={!isSelectionDragging}
+        />
+    );
+}
+
 function EditorTopLayerInner(props: any) {
     const {
         unselectedNonPlantbeds,
@@ -293,13 +435,10 @@ function EditorTopLayerInner(props: any) {
         activeDrawType,
         draftPoints,
         measurePoints,
-        measurePreviewPoint,
         measureLines,
         shouldHideHeavySceneDecorations,
         stageScale,
         plantbedNumberLayouts,
-        livePlantbedNumberLayouts,
-        livePrimaryMeasurementObject,
         COLORS,
 
         stageRef,
@@ -309,8 +448,6 @@ function EditorTopLayerInner(props: any) {
         selectObjects,
         moveObjectAndMerge,
         moveObjectsBatch,
-        alignmentGuides,
-        setAlignmentGuides,
         getAlignmentSnapForSelection,
         liveSelectionDragDelta,
         setLiveSelectionDragDelta,
@@ -1362,70 +1499,9 @@ function EditorTopLayerInner(props: any) {
                     );
                 })()}
 
-                {(alignmentGuides ?? []).map((guide: any) => {
-                    const [x1, y1, x2, y2] = guide.points;
-                    const crossSize = Math.max(1.5, 2 / Math.max(stageScale, 0.1));
-                    const strokeWidth = Math.max(0.75, 0.75 / Math.max(stageScale, 0.1));
-
-                    const renderCross = (x: number, y: number, key: string) => (
-                        <React.Fragment key={key}>
-                            <Line
-                                points={[
-                                    x - crossSize,
-                                    y - crossSize,
-                                    x + crossSize,
-                                    y + crossSize,
-                                ]}
-                                closed={false}
-                                fillEnabled={false}
-                                stroke={COLORS.orange}
-                                strokeWidth={strokeWidth}
-                                lineCap="butt"
-                                lineJoin="miter"
-                                listening={false}
-                                perfectDrawEnabled={false}
-                                opacity={0.95}
-                            />
-                            <Line
-                                points={[
-                                    x - crossSize,
-                                    y + crossSize,
-                                    x + crossSize,
-                                    y - crossSize,
-                                ]}
-                                closed={false}
-                                fillEnabled={false}
-                                stroke={COLORS.orange}
-                                strokeWidth={strokeWidth}
-                                lineCap="butt"
-                                lineJoin="miter"
-                                listening={false}
-                                perfectDrawEnabled={false}
-                                opacity={0.95}
-                            />
-                        </React.Fragment>
-                    );
-
-                    return (
-                        <React.Fragment key={guide.id}>
-                            <Line
-                                points={guide.points}
-                                closed={false}
-                                fillEnabled={false}
-                                stroke={COLORS.orange}
-                                strokeWidth={strokeWidth}
-                                lineCap="butt"
-                                lineJoin="miter"
-                                listening={false}
-                                perfectDrawEnabled={false}
-                                opacity={0.95}
-                            />
-
-                            {renderCross(x1, y1, `${guide.id}-cross-start`)}
-                            {renderCross(x2, y2, `${guide.id}-cross-end`)}
-                        </React.Fragment>
-                    );
-                })}
+                {/* AlignmentGuidesSection: isolated component — only re-renders when guides change.
+                    HelloEditor and EditorTopLayerInner do NOT re-render on every drag RAF frame. */}
+                <AlignmentGuidesSection stageScale={stageScale} COLORS={COLORS} />
 
                 {/* Selected */}
                 {selected.length > 0 && (
@@ -1471,7 +1547,7 @@ function EditorTopLayerInner(props: any) {
                             }
 
                             setIsSelectionDragging(true);
-                            setAlignmentGuides?.([]);
+                            setSelectionDragAlignmentGuides([]);
                             setLiveSelectionDragDelta({ x: 0, y: 0 });
 
                             // ✅ drag gestart -> eventuele “klik na drag” blokkeren
@@ -1519,14 +1595,15 @@ function EditorTopLayerInner(props: any) {
                                     ? getAlignmentSnapForSelection(selectedTyped, baseDx, baseDy)
                                     : { dx: baseDx, dy: baseDy, guides: [] };
 
-                            // Throttle alignment guide state updates to one per animation frame.
-                            // setAlignmentGuides triggers a HelloEditor re-render; without throttling
-                            // this fires on every mousemove event (potentially 3-5× per frame).
+                            // Throttle alignment guide store updates to one per animation frame.
+                            // Without throttling this fires on every mousemove event (potentially 3-5× per frame).
+                            // AlignmentGuidesSection subscribes to the store directly — HelloEditor and
+                            // EditorTopLayerInner do NOT re-render when guides change.
                             pendingAlignmentGuidesRef.current = alignmentSnap.guides ?? [];
                             if (!alignmentGuidesRafRef.current) {
                                 alignmentGuidesRafRef.current = requestAnimationFrame(() => {
                                     alignmentGuidesRafRef.current = null;
-                                    setAlignmentGuides?.(pendingAlignmentGuidesRef.current);
+                                    setSelectionDragAlignmentGuides(pendingAlignmentGuidesRef.current);
                                 });
                             }
 
@@ -1591,7 +1668,7 @@ function EditorTopLayerInner(props: any) {
                             const effectiveDx = alignmentSnap.dx;
                             const effectiveDy = alignmentSnap.dy;
 
-                            setAlignmentGuides?.([]);
+                            setSelectionDragAlignmentGuides([]);
 
                             if (effectiveDx === 0 && effectiveDy === 0) {
                                 requestAnimationFrame(() => {
@@ -3643,19 +3720,13 @@ function EditorTopLayerInner(props: any) {
                                 </>
                             )}
                         {selected.length > 0 && (
-                            <MeasurementOverlay
-                                unselectedObjects={[]}
-                                selectedObjects={selected}
+                            <LiveMeasurementSection
+                                selected={selected}
                                 selectedObjectId={selectedObjectId}
                                 stageScale={stageScale}
-                                activeTool={"select"}
                                 activeDrawType={activeDrawType}
-                                draftPoints={[]}
-                                draftMeasurementPoints={[]}
-                                primaryMeasurementObject={livePrimaryMeasurementObject}
-                                plantbedNumberLayouts={livePlantbedNumberLayouts}
-                                showSelectedDimensions={selected.length === 1}
-                                showDetailedSelectedDimensions={!isSelectionDragging}
+                                plantbedNumberLayouts={plantbedNumberLayouts}
+                                isSelectionDragging={isSelectionDragging}
                             />
                         )}
                     </Group>
@@ -3672,10 +3743,12 @@ function EditorTopLayerInner(props: any) {
                             />
                         ))}
 
-                        <MeasureToolOverlay
+                        {/* MeasurePreviewSection: isolated — only re-renders when measurePreviewPoint
+                            changes. HelloEditor and EditorTopLayerInner do NOT re-render on mouse move
+                            during measuring. */}
+                        <MeasurePreviewSection
                             stageScale={stageScale}
-                            committedPoints={measurePoints}
-                            previewPoint={measurePreviewPoint}
+                            measurePoints={measurePoints}
                         />
                     </>
                 )}

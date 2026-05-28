@@ -19,7 +19,8 @@ type DrawingPreviewObject = {
 type DrawingDashboardItem = {
     id: string;
     name: string;
-    stepProgressLabel: string;
+    budgetLabel: string;
+    budget?: number;
     createdAtLabel: string;
     previewObjects: DrawingPreviewObject[];
 };
@@ -35,7 +36,7 @@ type Props = {
     onCreateDrawing: (name: string) => void;
     onDuplicateDrawing: (drawingId: string) => void;
     onDeleteDrawing: (drawingId: string) => void;
-    onRenameDrawing: (drawingId: string, nextName: string) => void;
+    onEditDrawing: (drawingId: string) => void;
 };
 
 const COLORS = {
@@ -347,13 +348,10 @@ const DrawingsDashboardModal: React.FC<Props> = ({
     onCreateDrawing,
     onDuplicateDrawing,
     onDeleteDrawing,
-    onRenameDrawing,
+    onEditDrawing,
 }) => {
     const [searchValue, setSearchValue] = useState("");
     const [currentPage, setCurrentPage] = useState(1);
-    const [editingDrawingId, setEditingDrawingId] = useState<string | null>(null);
-    const [editingValue, setEditingValue] = useState("");
-    const [renameError, setRenameError] = useState("");
     const [hoveredDrawingId, setHoveredDrawingId] = useState<string | null>(null);
     useEffect(() => {
         if (!isOpen) return;
@@ -373,13 +371,6 @@ const DrawingsDashboardModal: React.FC<Props> = ({
     useEffect(() => {
         setCurrentPage(1);
     }, [searchValue]);
-
-    useEffect(() => {
-        if (!isOpen) {
-            setEditingDrawingId(null);
-            setEditingValue("");
-        }
-    }, [isOpen]);
 
     const filteredDrawings = useMemo(() => {
         const query = searchValue.trim().toLowerCase();
@@ -404,35 +395,6 @@ const DrawingsDashboardModal: React.FC<Props> = ({
         const start = (safePage - 1) * ITEMS_PER_PAGE;
         return filteredDrawings.slice(start, start + ITEMS_PER_PAGE);
     }, [filteredDrawings, safePage]);
-
-    const startRename = (drawingId: string, currentName: string) => {
-        setEditingDrawingId(drawingId);
-        setEditingValue(currentName);
-    };
-
-    const commitRename = () => {
-        if (!editingDrawingId) return;
-
-        const trimmed = editingValue.trim();
-        if (!trimmed) return;
-
-        const alreadyExists = drawings.some(
-            (d) =>
-                d.id !== editingDrawingId &&
-                d.name.trim().toLowerCase() === trimmed.toLowerCase()
-        );
-
-        if (alreadyExists) {
-            setRenameError("Er bestaat al een tekening met deze naam");
-            return;
-        }
-
-        onRenameDrawing(editingDrawingId, trimmed);
-
-        setRenameError("");
-        setEditingDrawingId(null);
-        setEditingValue("");
-    };
 
     if (!isOpen) return null;
 
@@ -602,7 +564,6 @@ const DrawingsDashboardModal: React.FC<Props> = ({
                 >
                     {pageItems.map((drawing) => {
                         const isActive = drawing.id === activeDrawingId;
-                        const isEditing = drawing.id === editingDrawingId;
                         const isHovered = drawing.id === hoveredDrawingId;
 
                         return (
@@ -644,128 +605,23 @@ const DrawingsDashboardModal: React.FC<Props> = ({
                                 >
                                     <div
                                         style={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: 8,
                                             marginBottom: 10,
                                         }}
                                     >
-                                        {isEditing ? (
-                                            <div
-                                                style={{
-                                                    width: "100%",
-                                                    minWidth: 0,
-                                                    display: "flex",
-                                                    flexDirection: "column",
-                                                    alignItems: "flex-start",
-                                                }}
-                                            >
-                                                <input
-                                                    autoFocus
-                                                    value={editingValue}
-                                                    onChange={(e) => {
-                                                        setEditingValue(e.target.value);
-                                                        setRenameError("");
-                                                    }}
-                                                    onBlur={commitRename}
-                                                    onKeyDown={(e) => {
-                                                        e.stopPropagation();
-
-                                                        if (e.key === "Enter") {
-                                                            commitRename();
-                                                        }
-                                                        if (e.key === "Escape") {
-                                                            setEditingDrawingId(null);
-                                                            setEditingValue("");
-                                                            setRenameError("");
-                                                        }
-                                                    }}
-                                                    onClick={(e) => e.stopPropagation()}
-                                                    style={{
-                                                        width: "100%",
-                                                        minWidth: 0,
-                                                        border: `1px solid ${COLORS.border}`,
-                                                        boxShadow: "5px 3px 46px -25px rgba(0,0,0,0.25)",
-                                                        borderRadius: 6,
-                                                        padding: "6px 8px",
-                                                        fontSize: 16,
-                                                        fontWeight: 700,
-                                                        color: COLORS.text,
-                                                        outline: "none",
-                                                        background: "#FFFFFF",
-                                                    }}
-                                                />
-
-                                                {renameError && (
-                                                    <div
-                                                        style={{
-                                                            marginTop: 4,
-                                                            fontSize: 12,
-                                                            color: COLORS.orange,
-                                                            fontStyle: "italic",
-                                                            lineHeight: 1.3,
-                                                        }}
-                                                    >
-                                                        * {renameError}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <div
-                                                    style={{
-                                                        fontSize: 16,
-                                                        lineHeight: 1.2,
-                                                        fontWeight: 700,
-                                                        color: COLORS.text,
-                                                        minWidth: 0,
-                                                        overflow: "hidden",
-                                                        textOverflow: "ellipsis",
-                                                        whiteSpace: "nowrap",
-                                                    }}
-                                                >
-                                                    {drawing.name}
-                                                </div>
-
-                                                <button
-                                                    type="button"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        startRename(drawing.id, drawing.name);
-                                                    }}
-                                                    aria-label="Tekening hernoemen"
-                                                    style={{
-                                                        flexShrink: 0,
-                                                        width: 24,
-                                                        height: 24,
-                                                        border: "none",
-                                                        background: "transparent",
-                                                        padding: 0,
-                                                        cursor: "pointer",
-                                                        display: "flex",
-                                                        alignItems: "center",
-                                                        justifyContent: "center",
-                                                        borderRadius: 4,
-                                                    }}
-                                                    onMouseEnter={(e) => {
-                                                        e.currentTarget.style.background = "#f2f2f2";
-                                                    }}
-                                                    onMouseLeave={(e) => {
-                                                        e.currentTarget.style.background = "transparent";
-                                                    }}
-                                                >
-                                                    <img
-                                                        src="/icons/edit.svg"
-                                                        alt=""
-                                                        style={{
-                                                            width: 14,
-                                                            height: 14,
-                                                            display: "block",
-                                                        }}
-                                                    />
-                                                </button>
-                                            </>
-                                        )}
+                                        <div
+                                            style={{
+                                                fontSize: 16,
+                                                lineHeight: 1.2,
+                                                fontWeight: 700,
+                                                color: COLORS.text,
+                                                minWidth: 0,
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                                whiteSpace: "nowrap",
+                                            }}
+                                        >
+                                            {drawing.name}
+                                        </div>
                                     </div>
 
                                     <div
@@ -776,7 +632,7 @@ const DrawingsDashboardModal: React.FC<Props> = ({
                                             marginBottom: 6,
                                         }}
                                     >
-                                        {drawing.stepProgressLabel}
+                                        {drawing.budgetLabel}
                                     </div>
 
                                     <div
@@ -878,7 +734,45 @@ const DrawingsDashboardModal: React.FC<Props> = ({
                                     </div>
                                 </div>
 
-                                <DrawingCardPreview objects={drawing.previewObjects ?? []} />
+                                <div style={{ position: "relative", flexShrink: 0 }}>
+                                    <DrawingCardPreview objects={drawing.previewObjects ?? []} />
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            onEditDrawing(drawing.id);
+                                        }}
+                                        aria-label="Tekening bewerken"
+                                        style={{
+                                            position: "absolute",
+                                            top: 7,
+                                            right: 7,
+                                            width: 26,
+                                            height: 26,
+                                            border: "none",
+                                            background: "rgba(255,255,255,0.88)",
+                                            borderRadius: 5,
+                                            padding: 0,
+                                            cursor: "pointer",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                            boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            e.currentTarget.style.background = "#ffffff";
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.currentTarget.style.background = "rgba(255,255,255,0.88)";
+                                        }}
+                                    >
+                                        <img
+                                            src="/icons/edit.svg"
+                                            alt=""
+                                            style={{ width: 13, height: 13, display: "block" }}
+                                        />
+                                    </button>
+                                </div>
                             </div>
                         );
                     })}

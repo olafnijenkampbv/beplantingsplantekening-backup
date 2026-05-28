@@ -26,6 +26,7 @@ export type PersistedDrawingDocument = {
     updatedAt: string;
     schemaVersion: number;
     snapshot: PersistedDrawingSnapshot;
+    budget?: number;
 };
 
 export const DRAWINGS_STORAGE_KEY = "hello-editor:drawings:v1";
@@ -162,6 +163,7 @@ export function sanitizeDrawingDocument(value: any): PersistedDrawingDocument | 
                 ? value.schemaVersion
                 : DRAWING_SCHEMA_VERSION,
         snapshot: sanitizeDrawingSnapshot(value.snapshot),
+        budget: typeof value.budget === "number" && value.budget >= 0 ? value.budget : undefined,
     };
 }
 
@@ -216,6 +218,7 @@ export function buildPlantbedLinkedCountFromLinks(links: Record<string, string[]
 
 export function createDrawingDocument(
     name: string,
+    budget?: number,
     snapshot?: PersistedDrawingSnapshot
 ): PersistedDrawingDocument {
     const nowIso = new Date().toISOString();
@@ -229,6 +232,7 @@ export function createDrawingDocument(
         snapshot: snapshot
             ? cloneDrawingSnapshot(snapshot)
             : createEmptyDrawingSnapshot(),
+        budget: budget ?? undefined,
     };
 }
 

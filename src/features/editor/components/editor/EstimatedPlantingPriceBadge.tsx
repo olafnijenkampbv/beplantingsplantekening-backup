@@ -44,6 +44,16 @@ function formatEuro(value: number): string {
     })}`;
 }
 
+function formatBudget(value: number): string {
+    if (value % 1 === 0) {
+        return `€${value.toLocaleString("nl-NL")},-`;
+    }
+    return `€${value.toLocaleString("nl-NL", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
+}
+
 // ---------------------------------------------------------------------------
 // Typen
 // ---------------------------------------------------------------------------
@@ -158,7 +168,7 @@ function computeLinkStatus(params: {
 // Hoofdcomponent
 // ---------------------------------------------------------------------------
 
-export default function EstimatedPlantingPriceBadge() {
+export default function EstimatedPlantingPriceBadge({ budget }: { budget?: number }) {
     const [open, setOpen] = useState(false);
     const [contentHeight, setContentHeight] = useState(0);
     const contentRef = useRef<HTMLDivElement | null>(null);
@@ -308,7 +318,35 @@ export default function EstimatedPlantingPriceBadge() {
                         />
                     </div>
 
-                    {/* Regel 2: koppelstatus + voortgangsbalk (altijd zichtbaar) */}
+                    {/* Regel 2: budget-vergelijking (altijd zichtbaar) */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <span
+                            style={{
+                                fontSize: 12,
+                                fontWeight: 500,
+                                color: COLORS.mutedText,
+                                whiteSpace: "nowrap",
+                            }}
+                        >
+                            {budget !== undefined
+                                ? `Budget: ${formatBudget(budget)}`
+                                : "Geen budget ingesteld"}
+                        </span>
+                        {budget !== undefined && priceData.totalIncVat > budget && (
+                            <span
+                                style={{
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    color: COLORS.priceRed,
+                                    whiteSpace: "nowrap",
+                                }}
+                            >
+                                Je bent €{(priceData.totalIncVat - budget).toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} boven je budget
+                            </span>
+                        )}
+                    </div>
+
+                    {/* Regel 3: koppelstatus + voortgangsbalk (altijd zichtbaar) */}
                     <div
                         style={{
                             display: "flex",

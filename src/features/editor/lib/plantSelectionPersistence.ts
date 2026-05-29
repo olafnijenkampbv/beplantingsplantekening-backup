@@ -1,9 +1,9 @@
 import { DRAWINGS_STORAGE_KEY } from "@/features/editor/editorDrawingsPersistence";
 import type {
-    DummyPlant,
     PlantGroupKey,
     ViewMode,
 } from "@/features/editor/lib/plantSelectionDummyData";
+import type { ApiPlant } from "@/lib/db/plantTypes";
 import type {
     PlantListItem,
     PlantSelectionFiltersState,
@@ -40,26 +40,21 @@ function sanitizeOptionalString(value: unknown, fallback = ""): string {
     return typeof value === "string" ? value : fallback;
 }
 
-function sanitizePlant(value: unknown): DummyPlant | null {
+function sanitizePlant(value: unknown): ApiPlant | null {
     if (!value || typeof value !== "object") return null;
 
-    const plant = value as DummyPlant;
+    const plant = value as Record<string, unknown>;
 
     if (
         typeof plant.id !== "string" ||
-        typeof plant.group !== "string" ||
-        typeof plant.name !== "string" ||
-        typeof plant.latinName !== "string" ||
-        typeof plant.stockLabel !== "string" ||
-        typeof plant.imageSrc !== "string"
+        typeof plant.botanicalName !== "string" ||
+        typeof plant.dutchName !== "string" ||
+        typeof plant.imageUrl !== "string"
     ) {
         return null;
     }
 
-    return {
-        ...plant,
-        badge: typeof plant.badge === "string" ? plant.badge : undefined,
-    };
+    return value as ApiPlant;
 }
 
 function sanitizePlantListItem(value: unknown): PlantListItem | null {
@@ -73,12 +68,12 @@ function sanitizePlantListItem(value: unknown): PlantListItem | null {
     return {
         id: raw.id,
         plant,
-        size: sanitizeOptionalString(raw.size, "15-20 cm C1"),
+        size: sanitizeOptionalString(raw.size, ""),
         note: sanitizeOptionalString(raw.note, ""),
         quantity:
             typeof raw.quantity === "number" && Number.isFinite(raw.quantity)
                 ? Math.max(0, raw.quantity)
-                : 120,
+                : 0,
         isSelected: sanitizeBoolean(raw.isSelected, false),
     };
 }

@@ -1,7 +1,11 @@
 "use client";
 
 import React from "react";
-import type { DummyPlantSpecificationRow } from "@/features/editor/lib/plantSelectionDummyData";
+type DummyPlantSpecificationRow = {
+    label: string;
+    value: string;
+    iconSrc: string;
+};
 
 const COLORS = {
     borderSoft: "#E0DEDF",

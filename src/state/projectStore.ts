@@ -537,6 +537,8 @@ export type PlantItem = {
     nr: number;
     latin: string;
     dutch: string;
+    planthoeveelheidPerM2?: number | null;
+    pricePerPiece?: number | null;
 };
 
 export type PlantbedLinksMap = Record<string, string[]>; // key = plantbedId, value = plantIds[]

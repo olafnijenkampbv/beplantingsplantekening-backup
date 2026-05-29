@@ -3,10 +3,6 @@ import {
     getMetersFromEditorUnits,
     getObjectAreaInSquareMeters,
 } from "@/state/areaMetrics";
-import {
-    DUMMY_PLANTS,
-    getDummyPlantSpecificationsForPlant,
-} from "@/features/editor/lib/plantSelectionDummyData";
 
 export type ProjectPlantLike = {
     id: string;
@@ -55,46 +51,32 @@ export function parsePositiveNumber(value: unknown): number | null {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function getPlantQuantityPerSquareMeterFromSpecifications(plantId: string): number | null {
-    const dummyPlant = DUMMY_PLANTS.find((plant) => plant.id === plantId);
-    if (!dummyPlant) return null;
-    const specifications = getDummyPlantSpecificationsForPlant(dummyPlant);
-    const rows = [...specifications.leftColumn, ...specifications.rightColumn];
-    const quantityRow = rows.find(
-        (row) => row.label.trim().toLowerCase() === "planthoeveelheid per m²"
-    );
-    return parsePositiveNumber(quantityRow?.value);
-}
-
 export function getPlantQuantityPerSquareMeter(
     projectPlant: ProjectPlantLike | undefined,
-    plantId: string
+    _plantId: string
 ): number | null {
     return (
         parsePositiveNumber(projectPlant?.planthoeveelheidPerM2) ??
         parsePositiveNumber(projectPlant?.plantQuantityPerM2) ??
         parsePositiveNumber(projectPlant?.quantityPerSquareMeter) ??
-        getPlantQuantityPerSquareMeterFromSpecifications(plantId)
+        null
     );
 }
 
 export function getPlantDisplayNames(
     projectPlant: ProjectPlantLike | undefined,
-    plantId: string
+    _plantId: string
 ): { latinName: string; dutchName: string } {
-    const dummyPlant = DUMMY_PLANTS.find((plant) => plant.id === plantId);
     return {
         latinName:
             projectPlant?.latin ??
             projectPlant?.name ??
             projectPlant?.botanicalName ??
-            dummyPlant?.name ??
             "Onbekende plant",
         dutchName:
             projectPlant?.dutch ??
             projectPlant?.latinName ??
             projectPlant?.dutchName ??
-            dummyPlant?.latinName ??
             "",
     };
 }

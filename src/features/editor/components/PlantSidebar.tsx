@@ -6,8 +6,8 @@ import type { TreebedVariant } from "@/state/projectStore";
 import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwatch";
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
-import { DUMMY_PLANTS } from "@/features/editor/lib/plantSelectionDummyData";
 import { goToFinalisatie } from "@/features/editor/lib/editorWorkflowNavigation";
+import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 
 const COLORS = {
     orange: "#E94E1B",
@@ -558,10 +558,6 @@ export default function PlantSidebar(props: {
         const seenPlantIds = new Set<string>();
         let nextNr = 1;
 
-        const dummyPlantById = Object.fromEntries(
-            DUMMY_PLANTS.map((plant) => [plant.id, plant])
-        ) as Record<string, (typeof DUMMY_PLANTS)[number]>;
-
         return plantListItems.flatMap((item) => {
             const plantId = item.plant.id;
 
@@ -575,11 +571,12 @@ export default function PlantSidebar(props: {
                 {
                     id: plantId,
                     nr: nextNr++,
-                    latin: item.plant.name,
-                    dutch: item.plant.latinName,
+                    latin: item.plant.botanicalName,
+                    dutch: item.plant.dutchName,
                     size: item.size || "Geen maat geselecteerd",
-                    imageSrc: dummyPlantById[plantId]?.imageSrc ?? "/images/placeholder-plant.jpg",
+                    imageSrc: item.plant.imageUrl ?? "/images/placeholder-plant.jpg",
                     pricePerPiece: item.plant.pricePerPiece,
+                    planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2,
                 },
             ];
         });
@@ -780,13 +777,13 @@ export default function PlantSidebar(props: {
     }, [plantSidebarFocus?.nonce, plantbeds]);
     
     const filteredPlants = useMemo(() => {
-        const q = query.trim().toLowerCase();
+        const q = query.trim();
         if (!q) return plants;
 
         return plants.filter((p) => {
             return (
-                p.latin.toLowerCase().includes(q) ||
-                p.dutch.toLowerCase().includes(q) ||
+                matchesSearchQuery(p.latin, q) ||
+                matchesSearchQuery(p.dutch, q) ||
                 String(p.nr).includes(q)
             );
         });

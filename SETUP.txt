@@ -1,0 +1,124 @@
+====================================================
+  SETUP INSTRUCTIES — BEPLANTINGSPLANTEKENING
+====================================================
+
+Volg deze stappen na een git pull op een nieuwe machine
+(of na een herinstallatie).
+
+
+----------------------------------------------------
+STAP 1 — Code ophalen
+----------------------------------------------------
+
+  git pull
+
+
+----------------------------------------------------
+STAP 2 — Packages installeren
+----------------------------------------------------
+
+  npm install
+
+
+----------------------------------------------------
+STAP 3 — Omgevingsvariabelen aanmaken
+----------------------------------------------------
+
+Maak in de projectmap een bestand aan met de naam:
+
+  .env.local
+
+Zet daar de volgende regel in (vervang met jouw eigen wachtwoord):
+
+  SYNC_SECRET=jouw_wachtwoord_hier
+
+Dit bestand staat in .gitignore en gaat nooit mee naar GitHub.
+Zonder dit bestand werkt de sync niet.
+
+
+----------------------------------------------------
+STAP 4 — Applicatie starten
+----------------------------------------------------
+
+  npm run dev
+
+De app is nu bereikbaar op: http://localhost:3000
+
+De plantendatabase is op dit moment nog leeg —
+er worden nog geen planten getoond. Ga door naar stap 5.
+
+
+----------------------------------------------------
+STAP 5 — Database vullen (sync uitvoeren)
+----------------------------------------------------
+
+De plantendatabase (SQLite) staat NIET in GitHub.
+Je moet de sync eenmalig draaien om de planten
+vanuit de webshop-feed in te laden.
+
+Open een nieuw terminalvenster (laat npm run dev draaien)
+en voer het volgende commando uit:
+
+  curl -X POST http://localhost:3000/api/admin/sync ^
+       -H "x-sync-secret: jouw_wachtwoord_hier"
+
+curl.exe -X POST http://localhost:3000/api/admin/sync -H "x-sync-secret: JOUW_WACHTWOORD"
+
+Of gebruik PowerShell:
+
+  Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:3000/api/admin/sync" `
+    -Headers @{ "x-sync-secret" = "jouw_wachtwoord_hier" }
+
+Vervang "jouw_wachtwoord_hier" met het wachtwoord
+dat je in .env.local hebt ingevuld.
+
+De sync duurt 5 tot 15 seconden. Als het klaar is
+krijg je een bevestiging terug met het aantal
+geimporteerde planten en varianten, bijvoorbeeld:
+
+  {
+    "success": true,
+    "plantsImported": 10258,
+    "variantsImported": 30409,
+    "durationMs": 8200
+  }
+
+Na de sync worden alle planten direct getoond
+in de applicatie. Je hoeft de app niet te herstarten.
+
+
+----------------------------------------------------
+STAP 6 — Klaar
+----------------------------------------------------
+
+Ga naar http://localhost:3000 en de applicatie
+werkt volledig met de volledige plantendatabase.
+
+
+====================================================
+  SYNC OPNIEUW UITVOEREN (bijv. na feed-update)
+====================================================
+
+Herhaal gewoon stap 5. De sync vervangt alle
+bestaande data volledig met de nieuwste feed.
+De applicatie hoeft niet opnieuw opgestart te worden.
+
+
+====================================================
+  VEELVOORKOMENDE PROBLEMEN
+====================================================
+
+"SYNC_SECRET environment variable is not configured"
+  -> .env.local ontbreekt of bevat geen SYNC_SECRET regel.
+
+"401 Unauthorized"
+  -> Het wachtwoord in het curl-commando klopt niet.
+     Controleer of het overeenkomt met .env.local.
+
+Planten worden niet getoond na sync
+  -> Herlaad de pagina (F5) in de browser.
+
+"npm run dev" start niet op
+  -> Controleer of Node.js is geinstalleerd: node --version
+  -> Voer eerst "npm install" uit.

@@ -1,9 +1,6 @@
 import { create } from "zustand";
-import {
-    getDummyPlantSearchCardDataForPlant,
-} from "@/features/editor/lib/plantSelectionDummyData";
+import type { ApiPlant } from "@/lib/db/plantTypes";
 import type {
-    DummyPlant,
     PlantGroupKey,
     ViewMode,
 } from "@/features/editor/lib/plantSelectionDummyData";
@@ -15,8 +12,9 @@ export type PlantSelectionFiltersState = {
 
 export type PlantListItem = {
     id: string;
-    plant: DummyPlant;
+    plant: ApiPlant;
     size: string;
+    fixedSize?: boolean;
     note: string;
     quantity: number;
     isSelected: boolean;
@@ -46,7 +44,7 @@ type PlantSelectionState = {
     openSummary: () => void;
     closeSummary: () => void;
 
-    addPlantToList: (plant: DummyPlant) => void;
+    addPlantToList: (plant: ApiPlant, size?: string, fixedSize?: boolean) => void;
     setPlantListItems: (items: PlantListItem[]) => void;
     clearPlantList: () => void;
 
@@ -72,15 +70,18 @@ function sanitizePlantListItems(value: unknown): PlantListItem[] {
     if (!Array.isArray(value)) return [];
 
     return value.filter((item): item is PlantListItem => {
+        if (!item || typeof item !== "object") return false;
+        const it = item as PlantListItem;
         return (
-            !!item &&
-            typeof item === "object" &&
-            typeof (item as PlantListItem).id === "string" &&
-            !!(item as PlantListItem).plant &&
-            typeof (item as PlantListItem).size === "string" &&
-            typeof (item as PlantListItem).note === "string" &&
-            typeof (item as PlantListItem).quantity === "number" &&
-            typeof (item as PlantListItem).isSelected === "boolean"
+            typeof it.id === "string" &&
+            !!it.plant &&
+            typeof it.plant === "object" &&
+            typeof it.plant.id === "string" &&
+            typeof it.plant.botanicalName === "string" &&
+            typeof it.size === "string" &&
+            typeof it.note === "string" &&
+            typeof it.quantity === "number" &&
+            typeof it.isSelected === "boolean"
         );
     });
 }
@@ -171,27 +172,21 @@ export const usePlantSelectionStore = create<PlantSelectionState>((set, get) => 
     openSummary: () => set({ isSummaryOpen: true }),
     closeSummary: () => set({ isSummaryOpen: false }),
 
-    addPlantToList: (plant) =>
-        set((state) => {
-            const defaultSize =
-                state.selectedGroup === "zoek-zelf"
-                    ? getDummyPlantSearchCardDataForPlant(plant).sizeLabel
-                    : "";
-
-            return {
-                plantListItems: [
-                    ...state.plantListItems,
-                    {
-                        id: `plant-list-${plant.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                        plant,
-                        size: defaultSize,
-                        note: "",
-                        quantity: 0,
-                        isSelected: false,
-                    },
-                ],
-            };
-        }),
+    addPlantToList: (plant, size?, fixedSize?) =>
+        set((state) => ({
+            plantListItems: [
+                ...state.plantListItems,
+                {
+                    id: `plant-list-${plant.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    plant,
+                    size: size ?? "",
+                    fixedSize: fixedSize ?? false,
+                    note: "",
+                    quantity: 0,
+                    isSelected: false,
+                },
+            ],
+        })),
 
     setPlantListItems: (items) => set({ plantListItems: items }),
     clearPlantList: () => set({ plantListItems: [] }),

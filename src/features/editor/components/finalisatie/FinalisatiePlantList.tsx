@@ -1,23 +1,66 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-    getDummyPlantSpecificationsForPlant,
-    type DummyPlantSpecificationRow,
-} from "@/features/editor/lib/plantSelectionDummyData";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
+import type { ApiPlant } from "@/lib/db/plantTypes";
 import {
     usePlantSelectionStore,
     type PlantListItem,
 } from "@/features/editor/state/plantSelectionStore";
 import { useProjectStore, OBJECT_STYLES } from "@/state/projectStore";
 import { type ObjectType } from "@/features/editor/components/editor/objectMenuConfig";
-import { buildAdviceData, getEstimatedHedgeLengthInMeters } from "@/features/editor/lib/plantAdvice";
+import { buildAdviceData, getEstimatedHedgeLengthInMeters, type ProjectPlantLike } from "@/features/editor/lib/plantAdvice";
 import type { PolyObject } from "@/state/projectStore";
 import FinalisatieAdviceCalculation, {
     type PlantAdviceInfo,
     type VakAdviceEntry,
 } from "./FinalisatieAdviceCalculation";
+
+type DummyPlantSpecificationRow = {
+    label: string;
+    value: string;
+    iconSrc: string;
+};
+
+function buildSpecificationsFromApiPlant(plant: ApiPlant): {
+    leftColumn: DummyPlantSpecificationRow[];
+    rightColumn: DummyPlantSpecificationRow[];
+    toelichting: string;
+} {
+    const leftColumn: DummyPlantSpecificationRow[] = [];
+    const rightColumn: DummyPlantSpecificationRow[] = [];
+
+    if (plant.dutchName) {
+        leftColumn.push({ label: "Nederlandse naam", value: plant.dutchName, iconSrc: "/icons/nederlandse-naam.svg" });
+    }
+    if (plant.planthoeveelheidPerM2) {
+        leftColumn.push({ label: "Planthoeveelheid/m²", value: String(plant.planthoeveelheidPerM2), iconSrc: "/icons/planthoeveelheid-per-m2.svg" });
+    }
+    if (plant.volwassenHoogte) {
+        leftColumn.push({ label: "Volwassen hoogte", value: plant.volwassenHoogte, iconSrc: "/icons/volwassen-hoogte.svg" });
+    }
+    if (plant.kleuren.length > 0) {
+        leftColumn.push({ label: "Kleur bloem", value: plant.kleuren.join(", "), iconSrc: "/icons/kleur-bloem.svg" });
+    }
+    if (plant.kleurBlad.length > 0) {
+        leftColumn.push({ label: "Kleur blad", value: plant.kleurBlad.join(", "), iconSrc: "/icons/kleur-blad.svg" });
+    }
+    if (plant.bloeiperiode) {
+        rightColumn.push({ label: "Bloeiperiode", value: plant.bloeiperiode, iconSrc: "/icons/bloeiperiode.svg" });
+    }
+    rightColumn.push({ label: "Inheems", value: plant.inheems ? "Ja" : "Nee", iconSrc: "/icons/inheems.svg" });
+    if (plant.stikstofbehoefte) {
+        rightColumn.push({ label: "Stikstofbehoefte", value: plant.stikstofbehoefte, iconSrc: "/icons/stikstofbehoefte.svg" });
+    }
+    if (plant.standplaatsen.length > 0) {
+        rightColumn.push({ label: "Standplaats", value: plant.standplaatsen.join(", "), iconSrc: "/icons/standplaats.svg" });
+    }
+    if (plant.grondsoorten.length > 0) {
+        rightColumn.push({ label: "Grondsoort", value: plant.grondsoorten.join(", "), iconSrc: "/icons/grondsoort.svg" });
+    }
+
+    return { leftColumn, rightColumn, toelichting: plant.toelichting ?? "" };
+}
 
 const COLORS = {
     cardBg: "#FFFFFF",
@@ -100,8 +143,9 @@ function PlantSpecificationInfoRow(props: DummyPlantSpecificationRow) {
 function PlantSpecificationsPanel(props: {
     leftColumn: DummyPlantSpecificationRow[];
     rightColumn: DummyPlantSpecificationRow[];
+    toelichting?: string;
 }) {
-    const { leftColumn, rightColumn } = props;
+    const { leftColumn, rightColumn, toelichting } = props;
 
     return (
         <div
@@ -114,34 +158,36 @@ function PlantSpecificationsPanel(props: {
                         <React.Fragment key={row.label}>
                             <PlantSpecificationInfoRow {...row} />
                             {index < leftColumn.length - 1 ? (
-                                <div
-                                    className="h-px w-full"
-                                    style={{ backgroundColor: COLORS.borderSoft }}
-                                />
+                                <div className="h-px w-full" style={{ backgroundColor: COLORS.borderSoft }} />
                             ) : null}
                         </React.Fragment>
                     ))}
                 </div>
 
-                <div
-                    className="hidden xl:block"
-                    style={{ backgroundColor: COLORS.borderSoft }}
-                />
+                <div className="hidden xl:block" style={{ backgroundColor: COLORS.borderSoft }} />
 
                 <div>
                     {rightColumn.map((row, index) => (
                         <React.Fragment key={row.label}>
                             <PlantSpecificationInfoRow {...row} />
                             {index < rightColumn.length - 1 ? (
-                                <div
-                                    className="h-px w-full"
-                                    style={{ backgroundColor: COLORS.borderSoft }}
-                                />
+                                <div className="h-px w-full" style={{ backgroundColor: COLORS.borderSoft }} />
                             ) : null}
                         </React.Fragment>
                     ))}
                 </div>
             </div>
+
+            {toelichting ? (
+                <>
+                    <div className="h-px w-full my-3" style={{ backgroundColor: COLORS.borderSoft }} />
+                    <PlantSpecificationInfoRow
+                        label="Toelichting"
+                        value={toelichting}
+                        iconSrc="/icons/toelichting.svg"
+                    />
+                </>
+            ) : null}
         </div>
     );
 }
@@ -427,8 +473,8 @@ function buildPlantAdviceInfoForList(
     if (!linkedEntries.length) return null;
 
     const item = plantListItems.find((li) => li.plant.id === plantId);
-    let displayName = item?.plant.name ?? "";
-    let dutchName = item?.plant.latinName ?? "";
+    let displayName = item?.plant.botanicalName ?? "";
+    let dutchName = item?.plant.dutchName ?? "";
 
     const vakken: VakAdviceEntry[] = [];
 
@@ -535,10 +581,14 @@ export default function FinalisatiePlantList() {
         (s: { distributionOverrides: Record<string, Record<string, number>> }) =>
             s.distributionOverrides
     );
-    const plants = useProjectStore(
-        (s: { plants: import("@/features/editor/lib/plantAdvice").ProjectPlantLike[] }) =>
-            s.plants
-    );
+    const plants = useMemo<ProjectPlantLike[]>(() => {
+        const seen = new Set<string>();
+        return items.flatMap((item) => {
+            if (seen.has(item.plant.id)) return [];
+            seen.add(item.plant.id);
+            return [{ id: item.plant.id, latin: item.plant.botanicalName, dutch: item.plant.dutchName, planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2 }];
+        });
+    }, [items]);
 
     const [searchQuery, setSearchQuery] = useState("");
     const [sortValue, setSortValue] = useState("");
@@ -563,18 +613,18 @@ export default function FinalisatiePlantList() {
         let nextItems = items.filter((item) => {
             if (!normalizedQuery) return true;
             return (
-                matchesSearchQuery(item.plant.name, normalizedQuery) ||
-                matchesSearchQuery(item.plant.latinName, normalizedQuery)
+                matchesSearchQuery(item.plant.botanicalName, normalizedQuery) ||
+                matchesSearchQuery(item.plant.dutchName, normalizedQuery)
             );
         });
 
         if (sortValue === "naam-a-z") {
             nextItems = [...nextItems].sort((a, b) =>
-                a.plant.name.localeCompare(b.plant.name)
+                a.plant.botanicalName.localeCompare(b.plant.botanicalName)
             );
         } else if (sortValue === "naam-z-a") {
             nextItems = [...nextItems].sort((a, b) =>
-                b.plant.name.localeCompare(a.plant.name)
+                b.plant.botanicalName.localeCompare(a.plant.botanicalName)
             );
         } else if (sortValue === "prijs-laag-hoog") {
             nextItems = [...nextItems].sort((a, b) =>
@@ -1061,7 +1111,7 @@ export default function FinalisatiePlantList() {
                                             }}
                                         />
                                         <span>
-                                            Laat hier los om &ldquo;{draggingItem.plant.name}&rdquo; hierheen te verplaatsen
+                                            Laat hier los om &ldquo;{draggingItem.plant.botanicalName}&rdquo; hierheen te verplaatsen
                                         </span>
                                     </div>
                                 </div>
@@ -1077,7 +1127,7 @@ export default function FinalisatiePlantList() {
                                 const isSpecificationsOpen =
                                     openSpecificationItemIds.includes(item.id);
                                 const specificationColumns =
-                                    getDummyPlantSpecificationsForPlant(item.plant);
+                                    buildSpecificationsFromApiPlant(item.plant);
 
                                 const linkGroups = buildLinkGroups(
                                     item.plant.id,
@@ -1138,8 +1188,8 @@ export default function FinalisatiePlantList() {
                                                         }}
                                                     >
                                                         <img
-                                                            src={item.plant.imageSrc}
-                                                            alt={item.plant.name}
+                                                            src={item.plant.imageUrl}
+                                                            alt={item.plant.botanicalName}
                                                             className="block h-full w-full"
                                                             style={{
                                                                 objectFit: "cover",
@@ -1155,13 +1205,13 @@ export default function FinalisatiePlantList() {
                                                         className="text-[15px] font-semibold leading-[1.35]"
                                                         style={{ color: COLORS.text }}
                                                     >
-                                                        {item.plant.name}
+                                                        {item.plant.botanicalName}
                                                     </div>
                                                     <div
                                                         className="mt-1 text-[14px] leading-[1.35]"
                                                         style={{ color: COLORS.muted }}
                                                     >
-                                                        {item.plant.latinName}
+                                                        {item.plant.dutchName}
                                                     </div>
                                                     <button
                                                         type="button"
@@ -1373,7 +1423,7 @@ export default function FinalisatiePlantList() {
                                                         style={{
                                                             cursor: isDragging ? "grabbing" : "grab",
                                                         }}
-                                                        aria-label={`Verplaats ${item.plant.name}`}
+                                                        aria-label={`Verplaats ${item.plant.botanicalName}`}
                                                     >
                                                         <span
                                                             className="flex h-full w-full items-center justify-center"
@@ -1411,12 +1461,9 @@ export default function FinalisatiePlantList() {
                                                     >
                                                         <div style={{ gridColumn: "1 / 8" }}>
                                                             <PlantSpecificationsPanel
-                                                                leftColumn={
-                                                                    specificationColumns.leftColumn
-                                                                }
-                                                                rightColumn={
-                                                                    specificationColumns.rightColumn
-                                                                }
+                                                                leftColumn={specificationColumns.leftColumn}
+                                                                rightColumn={specificationColumns.rightColumn}
+                                                                toelichting={specificationColumns.toelichting}
                                                             />
                                                         </div>
                                                     </div>
@@ -1454,7 +1501,7 @@ export default function FinalisatiePlantList() {
                                                         }}
                                                     />
                                                     <span>
-                                                        Laat hier los om &ldquo;{draggingItem?.plant.name}&rdquo; hierheen te verplaatsen
+                                                        Laat hier los om &ldquo;{draggingItem?.plant.botanicalName}&rdquo; hierheen te verplaatsen
                                                     </span>
                                                 </div>
                                             </div>

@@ -1,20 +1,17 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import type { PlantSelectionFiltersState } from "@/features/editor/state/plantSelectionStore";
 import type {
-    DummyPlant,
     PlantGroupKey,
     PlantSelectionAdvancedArrayFilterKey,
     PlantSelectionAdvancedFilters,
     ViewMode,
 } from "@/features/editor/lib/plantSelectionDummyData";
-import { getDummyPlantSearchCardDataForPlant } from "@/features/editor/lib/plantSelectionDummyData";
-import {
-    matchesPlantSizeSearch,
-    matchesSearchQuery,
-} from "@/features/editor/lib/plantSelectionSearch";
+import type { ApiPlant } from "@/lib/db/plantTypes";
+import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
+import { usePlantVariantStore, type ApiPlantVariant } from "@/features/editor/state/plantVariantStore";
 
 const COLORS = {
     cardBg: "#FFFFFF",
@@ -26,11 +23,17 @@ const COLORS = {
     muted: "#6B7280",
 };
 
+
 const INITIAL_VISIBLE_COUNT = 6;
 const LOAD_MORE_STEP = 6;
 
 const GREEN_ICON_FILTER =
     "brightness(0) saturate(100%) invert(36%) sepia(13%) saturate(707%) hue-rotate(56deg) brightness(92%) contrast(86%)";
+
+function formatVariantPrice(price: number): string {
+    if (!price || price <= 0) return "";
+    return `€${price.toFixed(2).replace(".", ",")} p/st`;
+}
 
 const SEARCH_ICON_FILTER =
     "brightness(0) saturate(100%) invert(66%) sepia(1%) saturate(0%) hue-rotate(179deg) brightness(91%) contrast(86%)";
@@ -73,31 +76,7 @@ function AvailabilityBadge(props: { stockLabel: string }) {
     );
 }
 
-function PlantTypeBadge(props: { label: string }) {
-    const { label } = props;
 
-    const meta =
-        label === "Vaste plant"
-            ? { backgroundColor: "#EEF0ED", color: "#58694C" }
-            : label === "Bodembedekker"
-                ? { backgroundColor: "#E0DED4", color: "#58694C" }
-                : label === "Heesters & struiken"
-                    ? { backgroundColor: "#58694C", color: "#FFFFFF" }
-                    : { backgroundColor: "#FDF2E0", color: "#58694C" };
-
-    return (
-        <span
-            className="inline-flex items-center rounded-[4px] px-3 py-[5px] text-[11px] font-semibold"
-            style={meta}
-        >
-            {label}
-        </span>
-    );
-}
-
-function formatPricePerPiece(price: number) {
-    return `€${price.toFixed(2).replace(".", ",")} p/st`;
-}
 
 function SearchFilterChip(props: {
     label: string;
@@ -135,17 +114,21 @@ function SearchFilterChip(props: {
 }
 
 function SearchModeGridCard(props: {
-    plant: DummyPlant;
-    onAddToPlantList: (plant: DummyPlant) => void;
+    plant: ApiPlant;
+    sizeLabel: string;
+    variantPrice: number;
+    variantInStock: boolean;
+    onAddToPlantList: (plant: ApiPlant, size: string) => void;
 }) {
-    const { plant, onAddToPlantList } = props;
+    const { plant, sizeLabel, variantPrice, variantInStock, onAddToPlantList } = props;
     const notify = useAppNotify();
     const [isAdded, setIsAdded] = useState(false);
-    const cardData = getDummyPlantSearchCardDataForPlant(plant);
+    const [isCartHovered, setIsCartHovered] = useState(false);
+    const stockLabel = variantInStock ? "Op voorraad" : "Binnen een week leverbaar";
 
     const handleAddToPlantList = () => {
-        onAddToPlantList(plant);
-        notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.name));
+        onAddToPlantList(plant, sizeLabel);
+        notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.botanicalName));
         setIsAdded(true);
 
         window.setTimeout(() => {
@@ -166,18 +149,20 @@ function SearchModeGridCard(props: {
                 className="relative overflow-hidden bg-[#F1F1EE]"
                 style={{ aspectRatio: "1 / 0.82" }}
             >
-                <img
-                    src={plant.imageSrc}
-                    alt={cardData.botanicalName}
-                    className="block h-full w-full"
-                    style={{
-                        objectFit: "cover",
-                        objectPosition: "center",
-                    }}
-                />
+                {plant.imageUrl ? (
+                    <img
+                        src={plant.imageUrl}
+                        alt={plant.botanicalName}
+                        className="block h-full w-full"
+                        style={{
+                            objectFit: "cover",
+                            objectPosition: "center",
+                        }}
+                    />
+                ) : null}
 
                 <div className="absolute right-2 top-2">
-                    <AvailabilityBadge stockLabel={cardData.stockLabel} />
+                    <AvailabilityBadge stockLabel={stockLabel} />
                 </div>
             </div>
 
@@ -186,60 +171,45 @@ function SearchModeGridCard(props: {
                     className="text-[15px] font-semibold leading-[1.35]"
                     style={{ color: COLORS.text }}
                 >
-                    {cardData.botanicalName}
+                    {plant.botanicalName}
                 </div>
 
                 <div
                     className="mt-1 text-[13px] leading-[1.35]"
                     style={{ color: COLORS.muted }}
                 >
-                    {cardData.dutchName}
+                    {plant.dutchName}
                 </div>
 
-                <div
-                    className="mt-3 text-[12px] leading-[1.35]"
-                    style={{ color: COLORS.text }}
-                >
-                    {cardData.sizeLabel}
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                    {cardData.plantGroupBadges.map((badge) => (
-                        <PlantTypeBadge key={badge} label={badge} />
-                    ))}
-                </div>
-
-                <div className="mt-3 text-[13px]" style={{ color: "#FF0000" }}>
-                    {formatPricePerPiece(plant.pricePerPiece)}
-                </div>
-
-                <div className="mt-1 flex items-end justify-between gap-3">
-                    <button
-                        type="button"
-                        className="inline-flex items-center gap-2 text-[12px] underline"
-                        style={{ color: COLORS.green }}
+                {sizeLabel ? (
+                    <div
+                        className="mt-3 text-[13px] leading-[1.35]"
+                        style={{ color: COLORS.text }}
                     >
-                        <span>Meer informatie</span>
-                        <img
-                            src="/icons/arrow-right.svg"
-                            alt=""
-                            style={{
-                                width: 12,
-                                height: 12,
-                                display: "block",
-                                filter: GREEN_ICON_FILTER,
-                            }}
-                        />
-                    </button>
+                        {sizeLabel}
+                    </div>
+                ) : null}
+
+                <div className="mt-auto flex items-end justify-between gap-3 pt-2">
+                    {formatVariantPrice(variantPrice) ? (
+                        <div
+                            className="text-[13px] leading-[1.35]"
+                            style={{ color: "#FF0000" }}
+                        >
+                            {formatVariantPrice(variantPrice)}
+                        </div>
+                    ) : <div />}
 
                     <button
                         type="button"
                         onClick={handleAddToPlantList}
+                        onMouseEnter={() => setIsCartHovered(true)}
+                        onMouseLeave={() => setIsCartHovered(false)}
                         className="flex shrink-0 cursor-pointer items-center justify-center rounded-[6px]"
                         style={{
                             width: 40,
                             height: 40,
-                            backgroundColor: isAdded ? "#008000" : COLORS.orange,
+                            backgroundColor: isAdded ? "#008000" : isCartHovered ? "#BF3D12" : COLORS.orange,
                             transition: "background-color 220ms ease, transform 220ms ease",
                             transform: isAdded ? "scale(1.06)" : "scale(1)",
                         }}
@@ -262,17 +232,21 @@ function SearchModeGridCard(props: {
 }
 
 function SearchModeListCard(props: {
-    plant: DummyPlant;
-    onAddToPlantList: (plant: DummyPlant) => void;
+    plant: ApiPlant;
+    sizeLabel: string;
+    variantPrice: number;
+    variantInStock: boolean;
+    onAddToPlantList: (plant: ApiPlant, size: string) => void;
 }) {
-    const { plant, onAddToPlantList } = props;
+    const { plant, sizeLabel, variantPrice, variantInStock, onAddToPlantList } = props;
     const notify = useAppNotify();
     const [isAdded, setIsAdded] = useState(false);
-    const cardData = getDummyPlantSearchCardDataForPlant(plant);
+    const [isCartHovered, setIsCartHovered] = useState(false);
+    const stockLabel = variantInStock ? "Op voorraad" : "Binnen een week leverbaar";
 
     const handleAddToPlantList = () => {
-        onAddToPlantList(plant);
-        notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.name));
+        onAddToPlantList(plant, sizeLabel);
+        notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.botanicalName));
         setIsAdded(true);
 
         window.setTimeout(() => {
@@ -297,15 +271,17 @@ function SearchModeListCard(props: {
                     height: 168,
                 }}
             >
-                <img
-                    src={plant.imageSrc}
-                    alt={cardData.botanicalName}
-                    className="block h-full w-full"
-                    style={{
-                        objectFit: "cover",
-                        objectPosition: "center",
-                    }}
-                />
+                {plant.imageUrl ? (
+                    <img
+                        src={plant.imageUrl}
+                        alt={plant.botanicalName}
+                        className="block h-full w-full"
+                        style={{
+                            objectFit: "cover",
+                            objectPosition: "center",
+                        }}
+                    />
+                ) : null}
             </div>
 
             <div className="flex min-w-0 flex-1 items-stretch justify-between gap-6">
@@ -314,44 +290,47 @@ function SearchModeListCard(props: {
                         className="text-[18px] font-semibold leading-[1.35]"
                         style={{ color: COLORS.text }}
                     >
-                        {cardData.botanicalName}
+                        {plant.botanicalName}
                     </div>
 
                     <div
                         className="mt-1 text-[14px] leading-[1.35]"
                         style={{ color: COLORS.muted }}
                     >
-                        {cardData.dutchName}
+                        {plant.dutchName}
                     </div>
 
-                    <div
-                        className="mt-4 text-[13px] leading-[1.35]"
-                        style={{ color: COLORS.text }}
-                    >
-                        {cardData.sizeLabel}
-                    </div>
+                    {sizeLabel ? (
+                        <div
+                            className="mt-2 text-[13px] leading-[1.35]"
+                            style={{ color: COLORS.text }}
+                        >
+                            {sizeLabel}
+                        </div>
+                    ) : null}
 
-                    <div className="mt-2 text-[13px]" style={{ color: "#FF0000" }}>
-                        {formatPricePerPiece(plant.pricePerPiece)}
-                    </div>
-
-                    <div className="mt-auto flex flex-wrap gap-2 pt-4">
-                        {cardData.plantGroupBadges.map((badge) => (
-                            <PlantTypeBadge key={badge} label={badge} />
-                        ))}
-                    </div>
+                    {formatVariantPrice(variantPrice) ? (
+                        <div
+                            className="mt-2 text-[13px] leading-[1.35]"
+                            style={{ color: "#FF0000" }}
+                        >
+                            {formatVariantPrice(variantPrice)}
+                        </div>
+                    ) : null}
                 </div>
 
                 <div className="flex shrink-0 flex-col items-start justify-center gap-4">
-                    <AvailabilityBadge stockLabel={cardData.stockLabel} />
+                    <AvailabilityBadge stockLabel={stockLabel} />
 
                     <button
                         type="button"
                         onClick={handleAddToPlantList}
+                        onMouseEnter={() => setIsCartHovered(true)}
+                        onMouseLeave={() => setIsCartHovered(false)}
                         className="flex cursor-pointer items-center gap-2 rounded-[6px] px-4"
                         style={{
                             height: 44,
-                            backgroundColor: isAdded ? "#008000" : COLORS.orange,
+                            backgroundColor: isAdded ? "#008000" : isCartHovered ? "#BF3D12" : COLORS.orange,
                             color: "#FFFFFF",
                             transition: "background-color 220ms ease, transform 220ms ease",
                             transform: isAdded ? "scale(1.03)" : "scale(1)",
@@ -371,24 +350,6 @@ function SearchModeListCard(props: {
                             {isAdded ? "Toegevoegd" : "Toevoegen aan plantenlijst"}
                         </span>
                     </button>
-
-                    <button
-                        type="button"
-                        className="inline-flex items-center gap-2 text-[12px] underline"
-                        style={{ color: COLORS.green }}
-                    >
-                        <span>Meer informatie</span>
-                        <img
-                            src="/icons/arrow-right.svg"
-                            alt=""
-                            style={{
-                                width: 12,
-                                height: 12,
-                                display: "block",
-                                filter: GREEN_ICON_FILTER,
-                            }}
-                        />
-                    </button>
                 </div>
             </div>
         </div>
@@ -396,17 +357,19 @@ function SearchModeListCard(props: {
 }
 
 function DefaultPlantCard(props: {
-    plant: DummyPlant;
+    plant: ApiPlant;
     viewMode: ViewMode;
-    onAddToPlantList: (plant: DummyPlant) => void;
+    onAddToPlantList: (plant: ApiPlant) => void;
 }) {
     const { plant, viewMode, onAddToPlantList } = props;
     const notify = useAppNotify();
     const [isAdded, setIsAdded] = useState(false);
+    const [isCartHovered, setIsCartHovered] = useState(false);
+    const stockLabel = plant.inStock ? "Op voorraad" : "Binnen een week leverbaar";
 
     const handleAddToPlantList = () => {
         onAddToPlantList(plant);
-        notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.name));
+        notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.botanicalName));
         setIsAdded(true);
 
         window.setTimeout(() => {
@@ -433,8 +396,8 @@ function DefaultPlantCard(props: {
                     }}
                 >
                     <img
-                        src={plant.imageSrc}
-                        alt={plant.name}
+                        src={plant.imageUrl}
+                        alt={plant.botanicalName}
                         className="block h-full w-full"
                         style={{
                             objectFit: "cover",
@@ -449,28 +412,21 @@ function DefaultPlantCard(props: {
                             className="text-[16px] font-semibold leading-[1.35]"
                             style={{ color: COLORS.text }}
                         >
-                            {plant.name}
+                            {plant.botanicalName}
                         </div>
 
                         <div
                             className="mt-1 text-[13px]"
                             style={{ color: COLORS.muted }}
                         >
-                            {plant.latinName}
-                        </div>
-
-                        <div
-                            className="mt-3 text-[13px]"
-                            style={{ color: "#FF0000" }}
-                        >
-                            {formatPricePerPiece(plant.pricePerPiece)}
+                            {plant.dutchName}
                         </div>
 
                         <div
                             className="mt-auto text-[12px]"
                             style={{ color: COLORS.orange }}
                         >
-                            {plant.stockLabel}
+                            {stockLabel}
                         </div>
                     </div>
 
@@ -480,12 +436,14 @@ function DefaultPlantCard(props: {
                             className="flex cursor-pointer items-center gap-2 rounded-[6px] px-4"
                             style={{
                                 height: 44,
-                                backgroundColor: isAdded ? "#008000" : COLORS.orange,
+                                backgroundColor: isAdded ? "#008000" : isCartHovered ? "#BF3D12" : COLORS.orange,
                                 color: "#FFFFFF",
                                 transition: "background-color 220ms ease, transform 220ms ease",
                                 transform: isAdded ? "scale(1.03)" : "scale(1)",
                             }}
                             onClick={handleAddToPlantList}
+                            onMouseEnter={() => setIsCartHovered(true)}
+                            onMouseLeave={() => setIsCartHovered(false)}
                         >
                             <img
                                 src={isAdded ? "/icons/check.svg" : "/icons/add-to-cart.svg"}
@@ -522,15 +480,17 @@ function DefaultPlantCard(props: {
                     aspectRatio: "1 / 0.82",
                 }}
             >
-                <img
-                    src={plant.imageSrc}
-                    alt={plant.name}
-                    className="block h-full w-full"
-                    style={{
-                        objectFit: "cover",
-                        objectPosition: "center",
-                    }}
-                />
+                {plant.imageUrl ? (
+                    <img
+                        src={plant.imageUrl}
+                        alt={plant.botanicalName}
+                        className="block h-full w-full"
+                        style={{
+                            objectFit: "cover",
+                            objectPosition: "center",
+                        }}
+                    />
+                ) : null}
             </div>
 
             <div className="p-3">
@@ -538,20 +498,16 @@ function DefaultPlantCard(props: {
                     className="text-[15px] font-semibold leading-[1.2]"
                     style={{ color: COLORS.text }}
                 >
-                    {plant.name}
+                    {plant.botanicalName}
                 </div>
 
                 <div className="mt-[2px] text-[13px]" style={{ color: COLORS.muted }}>
-                    {plant.latinName}
-                </div>
-
-                <div className="mt-3 text-[13px]" style={{ color: "#FF0000" }}>
-                    {formatPricePerPiece(plant.pricePerPiece)}
+                    {plant.dutchName}
                 </div>
 
                 <div className="mt-2 flex items-center justify-between">
                     <div className="text-[12px]" style={{ color: COLORS.orange }}>
-                        {plant.stockLabel}
+                        {stockLabel}
                     </div>
 
                     <button
@@ -560,11 +516,13 @@ function DefaultPlantCard(props: {
                         style={{
                             width: 40,
                             height: 40,
-                            backgroundColor: isAdded ? "#008000" : COLORS.orange,
+                            backgroundColor: isAdded ? "#008000" : isCartHovered ? "#BF3D12" : COLORS.orange,
                             transition: "background-color 220ms ease, transform 220ms ease",
                             transform: isAdded ? "scale(1.06)" : "scale(1)",
                         }}
                         onClick={handleAddToPlantList}
+                        onMouseEnter={() => setIsCartHovered(true)}
+                        onMouseLeave={() => setIsCartHovered(false)}
                     >
                         <img
                             src={isAdded ? "/icons/check.svg" : "/icons/add-to-cart.svg"}
@@ -586,7 +544,9 @@ function DefaultPlantCard(props: {
 type PlantProposalGridProps = {
     title: string;
     resultsCount: number;
-    plants: DummyPlant[];
+    currentPage: number;
+    totalPages: number;
+    plants: ApiPlant[];
     viewMode: ViewMode;
     sortValue: string;
     selectedGroup: PlantGroupKey;
@@ -594,18 +554,23 @@ type PlantProposalGridProps = {
     advancedFilters: PlantSelectionAdvancedFilters;
     onChangeSort: (value: string) => void;
     onChangeViewMode: (mode: ViewMode) => void;
-    onAddToPlantList: (plant: DummyPlant) => void;
+    onAddToPlantList: (plant: ApiPlant, size?: string) => void;
     onRemoveFilterChip: (
         key: PlantSelectionAdvancedArrayFilterKey | keyof PlantSelectionFiltersState,
         value?: string
     ) => void;
     onClearAllFilters: () => void;
+    onLoadMoreFromApi: () => void;
+    /** Called (debounced) when the user types in the plant-name search box */
+    onSearchQueryChange: (q: string) => void;
 };
 
 export default function PlantProposalGrid(props: PlantProposalGridProps) {
     const {
         title,
         resultsCount,
+        currentPage,
+        totalPages,
         plants,
         viewMode,
         sortValue,
@@ -617,6 +582,8 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
         onAddToPlantList,
         onRemoveFilterChip,
         onClearAllFilters,
+        onLoadMoreFromApi,
+        onSearchQueryChange,
     } = props;
 
     const isSearchMode = selectedGroup === "zoek-zelf";
@@ -625,6 +592,27 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
     const [sizeQuery, setSizeQuery] = useState("");
     const [isPlantNameSearchFocused, setIsPlantNameSearchFocused] = useState(false);
     const [isSizeSearchFocused, setIsSizeSearchFocused] = useState(false);
+
+    const variantCache = usePlantVariantStore((s) => s.cache);
+    const fetchVariants = usePlantVariantStore((s) => s.fetchVariants);
+
+    // Pre-fetch variants for all loaded plants in search mode so sizeQuery filtering works.
+    useEffect(() => {
+        if (!isSearchMode) return;
+        plants.forEach((p) => fetchVariants(p.id));
+    }, [isSearchMode, plants, fetchVariants]);
+
+    // Debounce the plant-name search so the API is called 300 ms after the user
+    // stops typing instead of on every keystroke.
+    useEffect(() => {
+        if (!isSearchMode) return;
+        const timer = setTimeout(() => {
+            onSearchQueryChange(plantNameQuery);
+        }, 300);
+        return () => clearTimeout(timer);
+    // onSearchQueryChange is stable (Zustand action), no need in deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isSearchMode, plantNameQuery]);
 
     useEffect(() => {
         setVisibleCount(INITIAL_VISIBLE_COUNT);
@@ -679,13 +667,10 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
         !hasActiveFilterChips;
 
     const filteredPlants = useMemo(() => {
-        if (!isSearchMode) {
-            return plants;
-        }
+        if (!isSearchMode) return plants;
 
         const normalizedPlantNameQuery = plantNameQuery.trim();
         const normalizedSizeQuery = sizeQuery.trim();
-
         const hasEnoughPlantNameInput = normalizedPlantNameQuery.length >= 2;
         const hasEnoughSizeInput = normalizedSizeQuery.length >= 2;
 
@@ -693,43 +678,88 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
             return [];
         }
 
-        return plants.filter((plant) => {
-            const cardData = getDummyPlantSearchCardDataForPlant(plant);
-
-            const matchesPlantName =
-                !normalizedPlantNameQuery ||
-                matchesSearchQuery(cardData.botanicalName, normalizedPlantNameQuery) ||
-                matchesSearchQuery(cardData.dutchName, normalizedPlantNameQuery);
-
-            const matchesSize =
-                !normalizedSizeQuery ||
-                matchesPlantSizeSearch(cardData.sizeLabel, normalizedSizeQuery);
-
-            return matchesPlantName && matchesSize;
-        });
+        return plants.filter((plant) =>
+            !normalizedPlantNameQuery ||
+            matchesSearchQuery(plant.botanicalName, normalizedPlantNameQuery) ||
+            matchesSearchQuery(plant.dutchName, normalizedPlantNameQuery)
+        );
     }, [hasActiveFilterChips, isSearchMode, plantNameQuery, plants, sizeQuery]);
+
+    // In search mode: one entry per plant×variant combination so each size gets its own card.
+    const searchModeCombos = useMemo(() => {
+        if (!isSearchMode) return [];
+        const normalizedSizeQuery = sizeQuery.trim().toLowerCase();
+        const combos: Array<{ key: string; plant: ApiPlant; variant: ApiPlantVariant }> = [];
+
+        for (const plant of filteredPlants) {
+            const cached = variantCache[plant.id];
+            if (!cached || cached.status !== "success") continue;
+
+            for (const variant of cached.variants) {
+                if (normalizedSizeQuery && !variant.sizeLabel.toLowerCase().includes(normalizedSizeQuery)) {
+                    continue;
+                }
+                combos.push({ key: `${plant.id}-${variant.id}`, plant, variant });
+            }
+        }
+        return combos;
+    }, [isSearchMode, filteredPlants, variantCache, sizeQuery]);
 
     const visiblePlants = useMemo(() => {
         return filteredPlants.slice(0, visibleCount);
     }, [filteredPlants, visibleCount]);
 
-    const effectiveResultsCount = isSearchMode ? filteredPlants.length : resultsCount;
-    const remainingCount = Math.max(0, filteredPlants.length - visiblePlants.length);
-    const canLoadMore = remainingCount > 0;
-    const canLoadLess =
-        filteredPlants.length > INITIAL_VISIBLE_COUNT &&
-        visibleCount > INITIAL_VISIBLE_COUNT;
+    const visibleCombos = useMemo(() => {
+        return searchModeCombos.slice(0, visibleCount);
+    }, [searchModeCombos, visibleCount]);
+
+    // In search mode with a text query: count combo cards (one per variant).
+    // In search mode with only filter chips (no text): use the API plant total.
+    // In category mode: use the API plant total directly.
+    const hasTextSearch = plantNameQuery.trim().length >= 2 || sizeQuery.trim().length >= 2;
+    const effectiveResultsCount = shouldShowSearchPlaceholder
+        ? 0
+        : isSearchMode
+            ? (hasTextSearch && searchModeCombos.length > 0 ? searchModeCombos.length : resultsCount)
+            : resultsCount;
+
+    // Remaining items that are loaded but not yet visible
+    const localRemaining = isSearchMode
+        ? Math.max(0, searchModeCombos.length - visibleCombos.length)
+        : Math.max(0, filteredPlants.length - visiblePlants.length);
+    // Items still on the server (plant count — loading more plants adds more combos)
+    const apiRemaining = Math.max(0, resultsCount - filteredPlants.length);
+    const remainingCount = localRemaining + apiRemaining;
+    // Filter-only mode (no text search): remaining = total plants − visible cards, consistent with the title count
+    const filterOnlyRemaining = Math.max(0, resultsCount - visibleCombos.length);
+
+    const canLoadMore = (
+        isSearchMode
+            ? (localRemaining > 0 || currentPage < totalPages)
+            : remainingCount > 0
+    ) && !shouldShowSearchPlaceholder;
+    const canLoadLess = isSearchMode
+        ? searchModeCombos.length > INITIAL_VISIBLE_COUNT && visibleCount > INITIAL_VISIBLE_COUNT
+        : filteredPlants.length > INITIAL_VISIBLE_COUNT && visibleCount > INITIAL_VISIBLE_COUNT;
 
     const handleLoadMore = () => {
-        setVisibleCount((prev) => Math.min(prev + LOAD_MORE_STEP, filteredPlants.length));
+        if (localRemaining > 0) {
+            setVisibleCount((prev) => prev + LOAD_MORE_STEP);
+        } else if (currentPage < totalPages) {
+            onLoadMoreFromApi();
+        }
     };
+
+    const sectionRef = useRef<HTMLElement | null>(null);
 
     const handleLoadLess = () => {
         setVisibleCount(INITIAL_VISIBLE_COUNT);
+        sectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
 
     return (
         <section
+            ref={sectionRef}
             className="rounded-[10px] border p-5"
             style={{
                 backgroundColor: COLORS.cardBg,
@@ -937,7 +967,7 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
                             <button
                                 type="button"
                                 onClick={onClearAllFilters}
-                                className="text-[14px] font-semibold underline"
+                                className="cursor-pointer text-[14px] font-semibold underline"
                                 style={{ color: COLORS.green }}
                             >
                                 Wis filters
@@ -972,55 +1002,68 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
                                 : "space-y-4"
                         }
                     >
-                        {visiblePlants.map((plant) =>
-                            isSearchMode ? (
+                        {isSearchMode
+                            ? visibleCombos.map((combo) =>
                                 viewMode === "grid" ? (
                                     <SearchModeGridCard
-                                        key={plant.id}
-                                        plant={plant}
+                                        key={combo.key}
+                                        plant={combo.plant}
+                                        sizeLabel={combo.variant.sizeLabel}
+                                        variantPrice={combo.variant.price}
+                                        variantInStock={combo.variant.availability === "in_stock"}
                                         onAddToPlantList={onAddToPlantList}
                                     />
                                 ) : (
                                     <SearchModeListCard
-                                        key={plant.id}
-                                        plant={plant}
+                                        key={combo.key}
+                                        plant={combo.plant}
+                                        sizeLabel={combo.variant.sizeLabel}
+                                        variantPrice={combo.variant.price}
+                                        variantInStock={combo.variant.availability === "in_stock"}
                                         onAddToPlantList={onAddToPlantList}
                                     />
                                 )
-                            ) : (
+                            )
+                            : visiblePlants.map((plant) => (
                                 <DefaultPlantCard
                                     key={plant.id}
                                     plant={plant}
                                     viewMode={viewMode}
                                     onAddToPlantList={onAddToPlantList}
                                 />
-                            )
-                        )}
+                            ))
+                        }
                     </div>
                 </div>
             ) : null}
 
-            {canLoadMore ? (
-                <div className="mt-6 flex justify-center">
-                    <button
-                        type="button"
-                        onClick={handleLoadMore}
-                        className="cursor-pointer text-[14px] font-medium underline"
-                        style={{ color: COLORS.green }}
-                    >
-                        Meer laden ({remainingCount})
-                    </button>
-                </div>
-            ) : canLoadLess ? (
-                <div className="mt-6 flex justify-center">
-                    <button
-                        type="button"
-                        onClick={handleLoadLess}
-                        className="cursor-pointer text-[14px] font-medium underline"
-                        style={{ color: COLORS.green }}
-                    >
-                        Minder laden
-                    </button>
+            {(canLoadMore || canLoadLess) ? (
+                <div className="mt-6 flex items-center justify-center gap-6">
+                    {canLoadLess ? (
+                        <button
+                            type="button"
+                            onClick={handleLoadLess}
+                            className="cursor-pointer text-[14px] font-medium underline"
+                            style={{ color: COLORS.muted }}
+                        >
+                            Minder laden
+                        </button>
+                    ) : null}
+                    {canLoadMore ? (
+                        <button
+                            type="button"
+                            onClick={handleLoadMore}
+                            className="cursor-pointer text-[14px] font-medium underline"
+                            style={{ color: COLORS.green }}
+                        >
+                            {isSearchMode
+                                ? hasTextSearch
+                                    ? localRemaining > 0 ? `Meer laden (${localRemaining})` : "Meer laden"
+                                    : filterOnlyRemaining > 0 ? `Meer laden (${filterOnlyRemaining})` : "Meer laden"
+                                : `Meer laden (${remainingCount})`
+                            }
+                        </button>
+                    ) : null}
                 </div>
             ) : null}
         </section>

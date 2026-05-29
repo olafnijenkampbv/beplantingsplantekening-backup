@@ -1,19 +1,81 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-    getDummyPlantSizeOptionsForPlant,
-    getDummyPlantSpecificationsForPlant,
-    type DummyPlantSpecificationRow,
-} from "@/features/editor/lib/plantSelectionDummyData";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 import {
     usePlantSelectionStore,
     type PlantListItem,
 } from "@/features/editor/state/plantSelectionStore";
+import {
+    usePlantVariantStore,
+    type ApiPlantVariant,
+} from "@/features/editor/state/plantVariantStore";
+import type { ApiPlant } from "@/lib/db/plantTypes";
+
+type DummyPlantSpecificationRow = {
+    label: string;
+    value: string;
+    iconSrc: string;
+};
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import ConfirmModal from "@/features/editor/components/ConfirmModal";
 import { goToPlantLinkingEditor } from "@/features/editor/lib/editorWorkflowNavigation";
+
+// ---------------------------------------------------------------------------
+// Helper: bouw plantspecificaties vanuit een ApiPlant
+// ---------------------------------------------------------------------------
+
+function buildSpecificationsFromApiPlant(plant: ApiPlant): {
+    leftColumn: DummyPlantSpecificationRow[];
+    rightColumn: DummyPlantSpecificationRow[];
+    toelichting: string;
+} {
+    const leftColumn: DummyPlantSpecificationRow[] = [];
+    const rightColumn: DummyPlantSpecificationRow[] = [];
+
+    if (plant.dutchName) {
+        leftColumn.push({ label: "Nederlandse naam", value: plant.dutchName, iconSrc: "/icons/nederlandse-naam.svg" });
+    }
+    if (plant.planthoeveelheidPerM2) {
+        leftColumn.push({ label: "Planthoeveelheid/m²", value: String(plant.planthoeveelheidPerM2), iconSrc: "/icons/planthoeveelheid-per-m2.svg" });
+    }
+    if (plant.volwassenHoogte) {
+        leftColumn.push({ label: "Volwassen hoogte", value: plant.volwassenHoogte, iconSrc: "/icons/volwassen-hoogte.svg" });
+    }
+    if (plant.kleuren.length > 0) {
+        leftColumn.push({ label: "Kleur bloem", value: plant.kleuren.join(", "), iconSrc: "/icons/kleur-bloem.svg" });
+    }
+    if (plant.kleurBlad.length > 0) {
+        leftColumn.push({ label: "Kleur blad", value: plant.kleurBlad.join(", "), iconSrc: "/icons/kleur-blad.svg" });
+    }
+    if (plant.bloeiperiode) {
+        rightColumn.push({ label: "Bloeiperiode", value: plant.bloeiperiode, iconSrc: "/icons/bloeiperiode.svg" });
+    }
+    rightColumn.push({ label: "Inheems", value: plant.inheems ? "Ja" : "Nee", iconSrc: "/icons/inheems.svg" });
+    if (plant.stikstofbehoefte) {
+        rightColumn.push({ label: "Stikstofbehoefte", value: plant.stikstofbehoefte, iconSrc: "/icons/stikstofbehoefte.svg" });
+    }
+    if (plant.standplaatsen.length > 0) {
+        rightColumn.push({ label: "Standplaats", value: plant.standplaatsen.join(", "), iconSrc: "/icons/standplaats.svg" });
+    }
+    if (plant.grondsoorten.length > 0) {
+        rightColumn.push({ label: "Grondsoort", value: plant.grondsoorten.join(", "), iconSrc: "/icons/grondsoort.svg" });
+    }
+
+    return { leftColumn, rightColumn, toelichting: plant.toelichting ?? "" };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: maatopties bouwen uit varianten
+// ---------------------------------------------------------------------------
+
+function buildSizeOptionsFromVariants(variants: ApiPlantVariant[]): string[] {
+    if (variants.length === 0) return ["Geen maat geselecteerd"];
+    return [
+        "Geen maat geselecteerd",
+        ...Array.from(new Set(variants.map((v) => v.sizeLabel))),
+    ];
+}
 
 const COLORS = {
     cardBg: "#FFFFFF",
@@ -93,15 +155,14 @@ function PlantSpecificationInfoRow(props: DummyPlantSpecificationRow) {
 function PlantSpecificationsPanel(props: {
     leftColumn: DummyPlantSpecificationRow[];
     rightColumn: DummyPlantSpecificationRow[];
+    toelichting?: string;
 }) {
-    const { leftColumn, rightColumn } = props;
+    const { leftColumn, rightColumn, toelichting } = props;
 
     return (
         <div
             className="rounded-[6px] border bg-white px-4 py-3"
-            style={{
-                borderColor: COLORS.borderSoft,
-            }}
+            style={{ borderColor: COLORS.borderSoft }}
         >
             <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)]">
                 <div>
@@ -109,34 +170,36 @@ function PlantSpecificationsPanel(props: {
                         <React.Fragment key={row.label}>
                             <PlantSpecificationInfoRow {...row} />
                             {index < leftColumn.length - 1 ? (
-                                <div
-                                    className="h-px w-full"
-                                    style={{ backgroundColor: COLORS.borderSoft }}
-                                />
+                                <div className="h-px w-full" style={{ backgroundColor: COLORS.borderSoft }} />
                             ) : null}
                         </React.Fragment>
                     ))}
                 </div>
 
-                <div
-                    className="hidden xl:block"
-                    style={{ backgroundColor: COLORS.borderSoft }}
-                />
+                <div className="hidden xl:block" style={{ backgroundColor: COLORS.borderSoft }} />
 
                 <div>
                     {rightColumn.map((row, index) => (
                         <React.Fragment key={row.label}>
                             <PlantSpecificationInfoRow {...row} />
                             {index < rightColumn.length - 1 ? (
-                                <div
-                                    className="h-px w-full"
-                                    style={{ backgroundColor: COLORS.borderSoft }}
-                                />
+                                <div className="h-px w-full" style={{ backgroundColor: COLORS.borderSoft }} />
                             ) : null}
                         </React.Fragment>
                     ))}
                 </div>
             </div>
+
+            {toelichting ? (
+                <>
+                    <div className="h-px w-full my-3" style={{ backgroundColor: COLORS.borderSoft }} />
+                    <PlantSpecificationInfoRow
+                        label="Toelichting"
+                        value={toelichting}
+                        iconSrc="/icons/toelichting.svg"
+                    />
+                </>
+            ) : null}
         </div>
     );
 }
@@ -309,6 +372,7 @@ export default function PlantSelectionListCard() {
     const items = usePlantSelectionStore((s) => s.plantListItems);
     const setPlantListItems = usePlantSelectionStore((s) => s.setPlantListItems);
     const notify = useAppNotify();
+    const { getVariants, fetchVariants } = usePlantVariantStore();
 
     const [isRemoveConfirmOpen, setIsRemoveConfirmOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
@@ -334,18 +398,18 @@ export default function PlantSelectionListCard() {
             if (!normalizedQuery) return true;
 
             return (
-                matchesSearchQuery(item.plant.name, normalizedQuery) ||
-                matchesSearchQuery(item.plant.latinName, normalizedQuery)
+                matchesSearchQuery(item.plant.botanicalName, normalizedQuery) ||
+                matchesSearchQuery(item.plant.dutchName, normalizedQuery)
             );
         });
 
         if (sortValue === "naam-a-z") {
             nextItems = [...nextItems].sort((a, b) =>
-                a.plant.name.localeCompare(b.plant.name)
+                a.plant.botanicalName.localeCompare(b.plant.botanicalName)
             );
         } else if (sortValue === "naam-z-a") {
             nextItems = [...nextItems].sort((a, b) =>
-                b.plant.name.localeCompare(a.plant.name)
+                b.plant.botanicalName.localeCompare(a.plant.botanicalName)
             );
         } else if (sortValue === "prijs-laag-hoog") {
             nextItems = [...nextItems].sort((a, b) =>
@@ -378,6 +442,12 @@ export default function PlantSelectionListCard() {
             const normalizedSize = item.size.trim().toLowerCase();
             return normalizedSize.length > 0 && normalizedSize !== "geen maat geselecteerd";
         });
+
+    useEffect(() => {
+        for (const item of items) {
+            fetchVariants(item.plant.id);
+        }
+    }, [items, fetchVariants]);
 
     useEffect(() => {
         if (canLinkPlantsToDrawing) {
@@ -512,7 +582,7 @@ export default function PlantSelectionListCard() {
         setIsRemoveConfirmOpen(false);
 
         if (selectedItems.length === 1) {
-            notify(APP_NOTIFICATIONS.plantRemovedFromPlantList(selectedItems[0].plant.name));
+            notify(APP_NOTIFICATIONS.plantRemovedFromPlantList(selectedItems[0].plant.botanicalName));
             return;
         }
 
@@ -537,7 +607,7 @@ export default function PlantSelectionListCard() {
         setPlantListItems([...clearedOriginalItems, ...duplicatedItems]);
 
         if (selectedItems.length === 1) {
-            notify(APP_NOTIFICATIONS.plantDuplicatedInPlantList(selectedItems[0].plant.name));
+            notify(APP_NOTIFICATIONS.plantDuplicatedInPlantList(selectedItems[0].plant.botanicalName));
             return;
         }
 
@@ -1049,7 +1119,7 @@ export default function PlantSelectionListCard() {
                                                 }}
                                             />
                                             <span>
-                                                Laat hier los om "{draggingItem.plant.name}" hierheen te verplaatsen
+                                                Laat hier los om "{draggingItem.plant.botanicalName}" hierheen te verplaatsen
                                             </span>
                                         </div>
                                     </div>
@@ -1069,8 +1139,13 @@ export default function PlantSelectionListCard() {
                                             {(() => {
                                                 const isSpecificationsOpen = openSpecificationItemIds.includes(item.id);
                                                 const specificationColumns =
-                                                    getDummyPlantSpecificationsForPlant(item.plant);
-                                                const sizeOptions = getDummyPlantSizeOptionsForPlant(item.plant);
+                                                    buildSpecificationsFromApiPlant(item.plant);
+                                                const variants = getVariants(item.plant.id);
+                                                const sizeOptions = buildSizeOptionsFromVariants(variants);
+                                                const selectedVariant =
+                                                    item.size && item.size !== "Geen maat geselecteerd"
+                                                        ? variants.find((v) => v.sizeLabel === item.size) ?? null
+                                                        : null;
 
                                                 return (
                                                     <>
@@ -1115,8 +1190,8 @@ export default function PlantSelectionListCard() {
                                                                         }}
                                                                     >
                                                                         <img
-                                                                            src={item.plant.imageSrc}
-                                                                            alt={item.plant.name}
+                                                                            src={item.plant.imageUrl}
+                                                                            alt={item.plant.botanicalName}
                                                                             className="block h-full w-full"
                                                                             style={{
                                                                                 objectFit: "cover",
@@ -1131,14 +1206,14 @@ export default function PlantSelectionListCard() {
                                                                         className="text-[15px] font-semibold leading-[1.35]"
                                                                         style={{ color: COLORS.text }}
                                                                     >
-                                                                        {item.plant.name}
+                                                                        {item.plant.botanicalName}
                                                                     </div>
 
                                                                     <div
                                                                         className="mt-1 text-[14px] leading-[1.35]"
                                                                         style={{ color: COLORS.text }}
                                                                     >
-                                                                        {item.plant.latinName}
+                                                                        {item.plant.dutchName}
                                                                     </div>
 
                                                                     <button
@@ -1172,43 +1247,52 @@ export default function PlantSelectionListCard() {
                                                                 </div>
 
                                                                 <div className="pt-2">
-                                                                    <div className="relative">
-                                                                        <select
-                                                                            value={item.size}
-                                                                            onChange={(event) =>
-                                                                                handleChangeSize(
-                                                                                    item.id,
-                                                                                    event.target.value
-                                                                                )
-                                                                            }
-                                                                            className="h-[44px] w-full appearance-none rounded-[4px] border bg-white pl-3 pr-10 text-[14px] outline-none"
-                                                                            style={{
-                                                                                borderColor: COLORS.borderSoft,
-                                                                                color: COLORS.text,
-                                                                                cursor: "pointer",
-                                                                            }}
+                                                                    {item.fixedSize ? (
+                                                                        <div
+                                                                            className="flex h-[44px] items-center text-[14px]"
+                                                                            style={{ color: COLORS.text }}
                                                                         >
-                                                                            {sizeOptions.map((option) => (
-                                                                                <option
-                                                                                    key={option}
-                                                                                    value={option}
-                                                                                >
-                                                                                    {option}
-                                                                                </option>
-                                                                            ))}
-                                                                        </select>
+                                                                            {item.size || "—"}
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="relative">
+                                                                            <select
+                                                                                value={item.size}
+                                                                                onChange={(event) =>
+                                                                                    handleChangeSize(
+                                                                                        item.id,
+                                                                                        event.target.value
+                                                                                    )
+                                                                                }
+                                                                                className="h-[44px] w-full appearance-none rounded-[4px] border bg-white pl-3 pr-10 text-[14px] outline-none"
+                                                                                style={{
+                                                                                    borderColor: COLORS.borderSoft,
+                                                                                    color: COLORS.text,
+                                                                                    cursor: "pointer",
+                                                                                }}
+                                                                            >
+                                                                                {sizeOptions.map((option, i) => (
+                                                                                    <option
+                                                                                        key={`${i}-${option}`}
+                                                                                        value={option}
+                                                                                    >
+                                                                                        {option}
+                                                                                    </option>
+                                                                                ))}
+                                                                            </select>
 
-                                                                        <img
-                                                                            src="/icons/chevron-down.svg"
-                                                                            alt=""
-                                                                            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"
-                                                                            style={{
-                                                                                width: 16,
-                                                                                height: 16,
-                                                                                display: "block",
-                                                                            }}
-                                                                        />
-                                                                    </div>
+                                                                            <img
+                                                                                src="/icons/chevron-down.svg"
+                                                                                alt=""
+                                                                                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"
+                                                                                style={{
+                                                                                    width: 16,
+                                                                                    height: 16,
+                                                                                    display: "block",
+                                                                                }}
+                                                                            />
+                                                                        </div>
+                                                                    )}
                                                                 </div>
 
                                                                 <div className="pt-2 self-stretch">
@@ -1224,7 +1308,9 @@ export default function PlantSelectionListCard() {
                                                                     className="pt-2 text-[13px] leading-[1.35]"
                                                                     style={{ color: "#FF0000" }}
                                                                 >
-                                                                    {formatPricePerPiece(item.plant.pricePerPiece)}
+                                                                    {selectedVariant
+                                                                        ? formatPricePerPiece(selectedVariant.price)
+                                                                        : null}
                                                                 </div>
 
                                                                 <div className="flex h-full items-center justify-center pt-2">
@@ -1241,7 +1327,7 @@ export default function PlantSelectionListCard() {
                                                                                 ? "grabbing"
                                                                                 : "grab",
                                                                         }}
-                                                                        aria-label={`Verplaats ${item.plant.name}`}
+                                                                        aria-label={`Verplaats ${item.plant.botanicalName}`}
                                                                     >
                                                                         <span
                                                                             className="flex h-full w-full items-center justify-center"
@@ -1286,6 +1372,7 @@ export default function PlantSelectionListCard() {
                                                                             <PlantSpecificationsPanel
                                                                                 leftColumn={specificationColumns.leftColumn}
                                                                                 rightColumn={specificationColumns.rightColumn}
+                                                                                toelichting={specificationColumns.toelichting}
                                                                             />
                                                                         </div>
                                                                     </div>
@@ -1324,7 +1411,7 @@ export default function PlantSelectionListCard() {
                                                                     />
                                                                     <span>
                                                                         Laat hier los om "
-                                                                        {draggingItem?.plant.name}" hierheen te
+                                                                        {draggingItem?.plant.botanicalName}" hierheen te
                                                                         verplaatsen
                                                                     </span>
                                                                 </div>

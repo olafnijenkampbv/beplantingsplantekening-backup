@@ -378,8 +378,8 @@ function ProductRows({
                     objectId,
                     object,
                     vakLabel: vakLabel || OBJECT_LIBRARY[object.type as ObjectType]?.label || object.type,
-                    latinName: item?.plant.name || r.latinName || r.plantId,
-                    dutchName: item?.plant.latinName || r.dutchName || "–",
+                    latinName: item?.plant.botanicalName || r.latinName || r.plantId,
+                    dutchName: item?.plant.dutchName || r.dutchName || "–",
                     maat: item?.size || "–",
                     plantafstand,
                     aantal: count,
@@ -579,11 +579,19 @@ export default function FinalisatieDrawingBlock() {
         (s: { distributionOverrides: Record<string, Record<string, number>> }) =>
             s.distributionOverrides
     );
-    const plants = useProjectStore((s: { plants: ProjectPlantLike[] }) => s.plants);
     const compassDirection = useProjectStore(
         (s: { compassDirection: string }) => s.compassDirection
     );
     const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
+
+    const plants = useMemo<ProjectPlantLike[]>(() => {
+        const seen = new Set<string>();
+        return plantListItems.flatMap((item) => {
+            if (seen.has(item.plant.id)) return [];
+            seen.add(item.plant.id);
+            return [{ id: item.plant.id, latin: item.plant.botanicalName, dutch: item.plant.dutchName, planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2 }];
+        });
+    }, [plantListItems]);
     const locationType = useRightStepMenuStore((s) => s.step1.locationType);
 
     // ── UI state ────────────────────────────────────────────────────────────

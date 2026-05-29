@@ -1,11 +1,37 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import {
-    DUMMY_PLANTS,
-    getDummyPlantSpecificationsForPlant,
-    type DummyPlantSpecificationRow,
-} from "@/features/editor/lib/plantSelectionDummyData";
+import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
+import type { ApiPlant } from "@/lib/db/plantTypes";
+
+type DummyPlantSpecificationRow = {
+    label: string;
+    value: string;
+    iconSrc: string;
+};
+
+function buildSpecsFromApiPlant(plant: ApiPlant): {
+    leftColumn: DummyPlantSpecificationRow[];
+    rightColumn: DummyPlantSpecificationRow[];
+    toelichting: string;
+} {
+    const left: DummyPlantSpecificationRow[] = [];
+    const right: DummyPlantSpecificationRow[] = [];
+
+    if (plant.dutchName) left.push({ label: "Nederlandse naam", value: plant.dutchName, iconSrc: "/icons/nederlandse-naam.svg" });
+    if (plant.planthoeveelheidPerM2) left.push({ label: "Planthoeveelheid/m²", value: String(plant.planthoeveelheidPerM2), iconSrc: "/icons/planthoeveelheid-per-m2.svg" });
+    if (plant.volwassenHoogte) left.push({ label: "Volwassen hoogte", value: plant.volwassenHoogte, iconSrc: "/icons/volwassen-hoogte.svg" });
+    if (plant.kleuren.length > 0) left.push({ label: "Kleur bloem", value: plant.kleuren.join(", "), iconSrc: "/icons/kleur-bloem.svg" });
+    if (plant.kleurBlad.length > 0) left.push({ label: "Kleur blad", value: plant.kleurBlad.join(", "), iconSrc: "/icons/kleur-blad.svg" });
+
+    if (plant.bloeiperiode) right.push({ label: "Bloeiperiode", value: plant.bloeiperiode, iconSrc: "/icons/bloeiperiode.svg" });
+    right.push({ label: "Inheems", value: plant.inheems ? "Ja" : "Nee", iconSrc: "/icons/inheems.svg" });
+    if (plant.stikstofbehoefte) right.push({ label: "Stikstofbehoefte", value: plant.stikstofbehoefte, iconSrc: "/icons/stikstofbehoefte.svg" });
+    if (plant.standplaatsen.length > 0) right.push({ label: "Standplaats", value: plant.standplaatsen.join(", "), iconSrc: "/icons/standplaats.svg" });
+    if (plant.grondsoorten.length > 0) right.push({ label: "Grondsoort", value: plant.grondsoorten.join(", "), iconSrc: "/icons/grondsoort.svg" });
+
+    return { leftColumn: left, rightColumn: right, toelichting: plant.toelichting ?? "" };
+}
 
 const COLORS = {
     orange: "#E94E1B",
@@ -64,34 +90,48 @@ function PlantSpecificationOverlayInfoRow(props: DummyPlantSpecificationRow) {
 function PlantSpecificationOverlayPanel(props: {
     leftColumn: DummyPlantSpecificationRow[];
     rightColumn: DummyPlantSpecificationRow[];
+    toelichting?: string;
 }) {
-    const { leftColumn, rightColumn } = props;
+    const { leftColumn, rightColumn, toelichting } = props;
 
     return (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)]">
-            <div>
-                {leftColumn.map((row, index) => (
-                    <React.Fragment key={row.label}>
-                        <PlantSpecificationOverlayInfoRow {...row} />
-                        {index < leftColumn.length - 1 ? (
-                            <div className="h-px w-full" style={{ backgroundColor: COLORS.border }} />
-                        ) : null}
-                    </React.Fragment>
-                ))}
+        <div className="flex flex-col gap-0">
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)]">
+                <div>
+                    {leftColumn.map((row, index) => (
+                        <React.Fragment key={row.label}>
+                            <PlantSpecificationOverlayInfoRow {...row} />
+                            {index < leftColumn.length - 1 ? (
+                                <div className="h-px w-full" style={{ backgroundColor: COLORS.border }} />
+                            ) : null}
+                        </React.Fragment>
+                    ))}
+                </div>
+
+                <div className="hidden xl:block" style={{ backgroundColor: COLORS.border }} />
+
+                <div>
+                    {rightColumn.map((row, index) => (
+                        <React.Fragment key={row.label}>
+                            <PlantSpecificationOverlayInfoRow {...row} />
+                            {index < rightColumn.length - 1 ? (
+                                <div className="h-px w-full" style={{ backgroundColor: COLORS.border }} />
+                            ) : null}
+                        </React.Fragment>
+                    ))}
+                </div>
             </div>
 
-            <div className="hidden xl:block" style={{ backgroundColor: COLORS.border }} />
-
-            <div>
-                {rightColumn.map((row, index) => (
-                    <React.Fragment key={row.label}>
-                        <PlantSpecificationOverlayInfoRow {...row} />
-                        {index < rightColumn.length - 1 ? (
-                            <div className="h-px w-full" style={{ backgroundColor: COLORS.border }} />
-                        ) : null}
-                    </React.Fragment>
-                ))}
-            </div>
+            {toelichting ? (
+                <>
+                    <div className="h-px w-full my-3" style={{ backgroundColor: COLORS.border }} />
+                    <PlantSpecificationOverlayInfoRow
+                        label="Toelichting"
+                        value={toelichting}
+                        iconSrc="/icons/toelichting.svg"
+                    />
+                </>
+            ) : null}
         </div>
     );
 }
@@ -112,14 +152,18 @@ export default function LinkedPlantSpecificationsOverlay(props: {
     const [shouldRender, setShouldRender] = useState(open);
     const [isVisible, setIsVisible] = useState(false);
 
-    const specificationData = useMemo(() => {
+    const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
+
+    const specificationData = useMemo((): {
+        leftColumn: DummyPlantSpecificationRow[];
+        rightColumn: DummyPlantSpecificationRow[];
+        toelichting: string;
+    } | null => {
         if (!plant) return null;
-
-        const dummyPlant = DUMMY_PLANTS.find((item) => item.id === plant.id) ?? null;
-        if (!dummyPlant) return null;
-
-        return getDummyPlantSpecificationsForPlant(dummyPlant);
-    }, [plant]);
+        const apiPlant = plantListItems.find((item) => item.plant.id === plant.id)?.plant;
+        if (!apiPlant) return { leftColumn: [], rightColumn: [], toelichting: "" };
+        return buildSpecsFromApiPlant(apiPlant);
+    }, [plant, plantListItems]);
 
     useEffect(() => {
         if (open) {
@@ -141,7 +185,7 @@ export default function LinkedPlantSpecificationsOverlay(props: {
         return () => window.clearTimeout(timeout);
     }, [open]);
 
-    if (!shouldRender || !plant || !specificationData) return null;
+    if (!shouldRender || !plant) return null;
 
     return (
         <div
@@ -240,8 +284,9 @@ export default function LinkedPlantSpecificationsOverlay(props: {
                     </div>
 
                     <PlantSpecificationOverlayPanel
-                        leftColumn={specificationData.leftColumn}
-                        rightColumn={specificationData.rightColumn}
+                        leftColumn={specificationData?.leftColumn ?? []}
+                        rightColumn={specificationData?.rightColumn ?? []}
+                        toelichting={specificationData?.toelichting}
                     />
                 </div>
             </div>

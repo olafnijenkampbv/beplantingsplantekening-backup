@@ -1,18 +1,18 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import RightStepMenuSummaryOverlay from "@/features/editor/components/editor/rightStepMenu/RightStepMenuSummaryOverlay";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import { goBackToEditor } from "@/features/editor/lib/editorWorkflowNavigation";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
 import {
-    DUMMY_PLANTS,
     EMPTY_ADVANCED_PLANT_SELECTION_FILTERS,
     GROUP_LABELS,
-    getDummyPlantSearchCardDataForPlant,
     type PlantSelectionAdvancedArrayFilterKey,
     type PlantSelectionAdvancedFilters,
 } from "@/features/editor/lib/plantSelectionDummyData";
+import { usePlantCatalogStore } from "@/features/editor/state/plantCatalogStore";
+import type { PlantAppGroup } from "@/lib/db/plantTypes";
 import PlantSelectionProgress from "@/features/editor/components/plantSelection/PlantSelectionProgress";
 import PlantProposalGroupsCard from "@/features/editor/components/plantSelection/PlantProposalGroupsCard";
 import PlantSelectionSummaryCard from "@/features/editor/components/plantSelection/PlantSelectionSummaryCard";
@@ -27,6 +27,29 @@ import {
     readRightStepSnapshotsByDrawingIdFromStorage,
     writePlantSelectionSnapshotsByDrawingIdToStorage,
 } from "@/features/editor/lib/appDrawingPersistence";
+
+// Maps step2 wizard grondsoort keys to the matching display value in
+// PLANT_SELECTION_GRONDSOORT_OPTIONS (which are the real DB column values).
+const STEP2_GRONDSOORT_TO_FILTER_OPTION: Record<string, string> = {
+    "zandgrond":             "Zandgrond",
+    "klei":                  "Klei",
+    "lichte-klei-zandleem":  "Lichte klei",
+    "humusrijk-bosgrond":    "Humusrijke grond",
+    "veengrond-nat":         "Veengrond",
+};
+
+
+// Maps step4.heightStyle values to a SQLite height range (cm).
+// Plants with max_height_cm = 0 (unknown) are always included as a safe fallback.
+function heightStyleToRange(style: string | null): {
+    minHeightCm: number | undefined;
+    maxHeightCm: number | undefined;
+} {
+    if (style === "laag-horizontaal")  return { minHeightCm: undefined, maxHeightCm: 150 };
+    if (style === "accent-op-hoogte")  return { minHeightCm: 60, maxHeightCm: undefined };
+    // "gelaagd-ruimtelijk" and null: no height filter
+    return { minHeightCm: undefined, maxHeightCm: undefined };
+}
 
 const COLORS = {
     pageBg: "#F7F6F4",
@@ -71,6 +94,17 @@ export default function PlantSelectionPage() {
     const addPlantToList = usePlantSelectionStore((s) => s.addPlantToList);
     const exportPlantSelectionSnapshot = usePlantSelectionStore((s) => s.exportSnapshot);
     const loadPlantSelectionSnapshot = usePlantSelectionStore((s) => s.loadSnapshot);
+
+    const catalogPlants = usePlantCatalogStore((s) => s.plants);
+    const catalogTotal = usePlantCatalogStore((s) => s.total);
+    const catalogPage = usePlantCatalogStore((s) => s.page);
+    const catalogTotalPages = usePlantCatalogStore((s) => s.totalPages);
+    const catalogIsLoading = usePlantCatalogStore((s) => s.isLoading);
+    const catalogError = usePlantCatalogStore((s) => s.error);
+    const setCatalogFilter = usePlantCatalogStore((s) => s.setFilter);
+    const setMultipleCatalogFilters = usePlantCatalogStore((s) => s.setMultipleFilters);
+    const setCatalogSearch = usePlantCatalogStore((s) => s.setSearch);
+    const loadMoreCatalogPlants = usePlantCatalogStore((s) => s.loadMorePlants);
 
     useEffect(() => {
         if (typeof window === "undefined") return;
@@ -147,16 +181,79 @@ export default function PlantSelectionPage() {
         exportPlantSelectionSnapshot,
     ]);
 
+    // Reset advanced filter state whenever the selected group changes.
+    // No catalog side-effects here — the combined effect below owns all fetches.
     useEffect(() => {
-        if (selectedGroup === "zoek-zelf") return;
+        if (!hasHydratedDrawingContext) return;
+        setAdvancedFilters(EMPTY_ADVANCED_PLANT_SELECTION_FILTERS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedGroup, hasHydratedDrawingContext]);
 
-        setAdvancedFilters((prev) => ({
-            ...prev,
-            plantgroepen: [],
-            standplaatsen: [],
-            grondsoorten: [],
-        }));
-    }, [selectedGroup]);
+    // Syncs ALL catalog filters at once, gated behind hasHydratedDrawingContext.
+    //
+    // Category tabs (bodembedekkers, vaste-planten, etc.): driven exclusively by
+    // the step 2–4 wizard answers. advancedFilters is intentionally ignored so
+    // that changes made in "Zoek zelf" never bleed into the category views.
+    //
+    // Zoek-zelf: driven by advancedFilters only (the user's manual selections).
+    // No height filter here — that's a step-4 concern for the category tabs.
+    useEffect(() => {
+        if (!hasHydratedDrawingContext) return;
+
+        const { minHeightCm, maxHeightCm } = heightStyleToRange(step4.heightStyle);
+
+        if (selectedGroup === "zoek-zelf") {
+            setMultipleCatalogFilters({
+                appGroup: undefined,
+                standplaatsen: advancedFilters.standplaatsen.map((s) => s.toLowerCase()),
+                grondsoorten: advancedFilters.grondsoorten.map((g) => g.toLowerCase()),
+                bloeiperiodes: advancedFilters.bloeiperiodes.map((b) => b.toLowerCase()),
+                kleuren: advancedFilters.kleuren,
+                categories: advancedFilters.plantgroepen,
+                inStockOnly: filters.opVoorraad,
+                inheems: filters.inheems ? true : undefined,
+                minHeightCm: undefined,
+                maxHeightCm: undefined,
+            });
+        } else {
+            // Build step-2 terms directly — never touch advancedFilters for categories
+            const standplaatsenTerms = step2.standplaatsen
+                .filter((s) => s !== "wisselend-onbekend")
+                .map((s) => s.toLowerCase());
+            const grondsoortTerms = step2.groundTypes
+                .map((g) => STEP2_GRONDSOORT_TO_FILTER_OPTION[g] ?? "")
+                .filter(Boolean)
+                .map((g) => g.toLowerCase());
+
+            setMultipleCatalogFilters({
+                q: "",  // always clear any text search on category tabs
+                appGroup: selectedGroup as PlantAppGroup,
+                standplaatsen: standplaatsenTerms,
+                grondsoorten: grondsoortTerms,
+                bloeiperiodes: advancedFilters.bloeiperiodes.map((b) => b.toLowerCase()),
+                kleuren: advancedFilters.kleuren,
+                categories: [],
+                inStockOnly: filters.opVoorraad,
+                inheems: filters.inheems ? true : undefined,
+                minHeightCm,
+                maxHeightCm,
+            });
+        }
+    }, [
+        hasHydratedDrawingContext,
+        selectedGroup,
+        step2.standplaatsen,
+        step2.groundTypes,
+        step4.heightStyle,
+        advancedFilters.standplaatsen,
+        advancedFilters.grondsoorten,
+        advancedFilters.bloeiperiodes,
+        advancedFilters.kleuren,
+        advancedFilters.plantgroepen,
+        filters.opVoorraad,
+        filters.inheems,
+        setMultipleCatalogFilters,
+    ]);
 
     const handleToggleAdvancedFilter = (
         key: PlantSelectionAdvancedArrayFilterKey,
@@ -194,115 +291,22 @@ export default function PlantSelectionPage() {
     };
 
     const handleClearAllFilters = () => {
-        if (filters.opVoorraad) {
-            toggleFilter("opVoorraad");
-        }
-
-        if (filters.inheems) {
-            toggleFilter("inheems");
-        }
-
+        if (filters.opVoorraad) toggleFilter("opVoorraad");
+        if (filters.inheems) toggleFilter("inheems");
+        // Wipe all zoek-zelf filters; the combined effect re-fires and fetches unfiltered.
         setAdvancedFilters(EMPTY_ADVANCED_PLANT_SELECTION_FILTERS);
     };
 
-    const visiblePlants = useMemo(() => {
-        let nextPlants =
-            selectedGroup === "zoek-zelf"
-                ? [...DUMMY_PLANTS]
-                : DUMMY_PLANTS.filter((plant) => plant.group === selectedGroup);
+    useEffect(() => {
+        const sort =
+            sortValue === "alfabetisch-a-z" ? "a-z" :
+            sortValue === "alfabetisch-z-a" ? "z-a" :
+            undefined;
+        setCatalogFilter("sort", sort);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sortValue]);
 
-        if (filters.opVoorraad) {
-            nextPlants = nextPlants.filter((plant) =>
-                plant.stockLabel.toLowerCase().includes("op voorraad")
-            );
-        }
-
-        if (filters.inheems) {
-            nextPlants = nextPlants.filter((plant) =>
-                getDummyPlantSearchCardDataForPlant(plant).isInheems
-            );
-        }
-
-        if (advancedFilters.plantgroepen.length > 0) {
-            nextPlants = nextPlants.filter((plant) => {
-                const cardData = getDummyPlantSearchCardDataForPlant(plant);
-                return cardData.plantGroupBadges.some((badge) =>
-                    advancedFilters.plantgroepen.includes(badge)
-                );
-            });
-        }
-
-        if (advancedFilters.kleuren.length > 0) {
-            nextPlants = nextPlants.filter((plant) => {
-                const cardData = getDummyPlantSearchCardDataForPlant(plant);
-                return cardData.kleuren.some((kleur) =>
-                    advancedFilters.kleuren.includes(kleur)
-                );
-            });
-        }
-
-        if (advancedFilters.standplaatsen.length > 0) {
-            nextPlants = nextPlants.filter((plant) => {
-                const cardData = getDummyPlantSearchCardDataForPlant(plant);
-                return cardData.standplaatsen.some((standplaats) =>
-                    advancedFilters.standplaatsen.includes(standplaats)
-                );
-            });
-        }
-
-        if (advancedFilters.grondsoorten.length > 0) {
-            nextPlants = nextPlants.filter((plant) => {
-                const cardData = getDummyPlantSearchCardDataForPlant(plant);
-                return cardData.grondsoorten.some((grondsoort) =>
-                    advancedFilters.grondsoorten.includes(grondsoort)
-                );
-            });
-        }
-
-        if (advancedFilters.bloeiperiodes.length > 0) {
-            nextPlants = nextPlants.filter((plant) => {
-                const cardData = getDummyPlantSearchCardDataForPlant(plant);
-                return cardData.bloeiperiodes.some((bloeiperiode) =>
-                    advancedFilters.bloeiperiodes.includes(bloeiperiode)
-                );
-            });
-        }
-
-        if (selectedGroup !== "zoek-zelf" && sortValue === "meest-geschikt") {
-            const badgePriority: Record<string, number> = {
-                "zeer geschikt": 0,
-                "geschikt": 1,
-                "goede aanvulling": 2,
-            };
-
-            nextPlants = [...nextPlants].sort((a, b) => {
-                const aPriority = badgePriority[a.badge?.toLowerCase() ?? ""] ?? 99;
-                const bPriority = badgePriority[b.badge?.toLowerCase() ?? ""] ?? 99;
-
-                if (aPriority !== bPriority) {
-                    return aPriority - bPriority;
-                }
-
-                return a.name.localeCompare(b.name);
-            });
-        }
-
-        if (sortValue === "alfabetisch-a-z") {
-            nextPlants = [...nextPlants].sort((a, b) => a.name.localeCompare(b.name));
-        }
-
-        if (sortValue === "alfabetisch-z-a") {
-            nextPlants = [...nextPlants].sort((a, b) => b.name.localeCompare(a.name));
-        }
-
-        return nextPlants;
-    }, [
-        advancedFilters,
-        filters.inheems,
-        filters.opVoorraad,
-        selectedGroup,
-        sortValue,
-    ]);
+    const visiblePlants = catalogPlants;
 
     useEffect(() => {
         const target = plantListSectionRef.current;
@@ -414,9 +418,20 @@ export default function PlantSelectionPage() {
                         </div>
 
                         <div className="space-y-6">
+                            {catalogError ? (
+                                <div
+                                    className="rounded-[8px] border px-4 py-3 text-[14px]"
+                                    style={{ borderColor: "#F4C8B8", backgroundColor: "#FFF7F4", color: "#E94E1B" }}
+                                >
+                                    Planten konden niet worden geladen: {catalogError}
+                                </div>
+                            ) : null}
                             <PlantProposalGrid
+                                key={selectedGroup}
                                 title={GROUP_LABELS[selectedGroup]}
-                                resultsCount={visiblePlants.length}
+                                resultsCount={catalogTotal}
+                                currentPage={catalogPage}
+                                totalPages={catalogTotalPages}
                                 plants={visiblePlants}
                                 viewMode={viewMode}
                                 sortValue={sortValue}
@@ -425,9 +440,11 @@ export default function PlantSelectionPage() {
                                 advancedFilters={advancedFilters}
                                 onChangeSort={setSortValue}
                                 onChangeViewMode={setViewMode}
-                                onAddToPlantList={addPlantToList}
+                                onAddToPlantList={(plant, size) => addPlantToList(plant, size, !!size)}
                                 onRemoveFilterChip={handleRemoveFilterChip}
                                 onClearAllFilters={handleClearAllFilters}
+                                onLoadMoreFromApi={loadMoreCatalogPlants}
+                                onSearchQueryChange={setCatalogSearch}
                             />
                         </div>
 

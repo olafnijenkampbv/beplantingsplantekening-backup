@@ -1,17 +1,18 @@
 import React, { useMemo } from "react";
 import { Group, Line, Rect, Text } from "react-konva";
-import { OBJECT_STYLES, ObjectType, PolyObject, useProjectStore } from "@/state/projectStore";
+import { OBJECT_STYLES, ObjectType, PolyObject, normalizeBulges, useProjectStore } from "@/state/projectStore";
 import { isBuildingObjectType } from "@/features/editor/components/editor/objectMenuConfig";
 import {
     formatMeters,
     formatSquareMeters,
-    getBoundingBoxDimensionsInMeters,
     getBoundingBoxFromPoints,
+    getMetersFromEditorUnits,
     getObjectAreaInSquareMeters,
     getSegmentLengthInMeters,
     isAreaMeasurableObject,
 } from "@/state/areaMetrics";
 import { isUnifiedBoundaryType } from "@/features/editor/lib/boundarySystem";
+import { arcSamples, densifyBulgedRing, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
 
 type PlantbedNumberLayout = {
     text: string;
@@ -152,6 +153,80 @@ function getPerpendicularOffset(
         x: (-dy / length) * distance,
         y: (dx / length) * distance,
     };
+}
+
+function flattenPoints(points: Array<{ x: number; y: number }>) {
+    const out: number[] = [];
+    for (const p of points) out.push(p.x, p.y);
+    return out;
+}
+
+function getArcLengthInEditorUnits(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    bulge: number
+) {
+    const mids = arcSamples(ax, ay, bx, by, bulge, 28);
+    const pts = [{ x: ax, y: ay }, ...mids.map(([x, y]) => ({ x, y })), { x: bx, y: by }];
+    let total = 0;
+    for (let i = 0; i < pts.length - 1; i += 1) {
+        total += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+    }
+    return total;
+}
+
+function getMeasurementBoundsPoints(points: number[], bulges?: number[]) {
+    const normalized = normalizeBulges(points, bulges);
+    const hasBulges = normalized.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+    if (!hasBulges) return points;
+    return densifyBulgedRing(points, normalized, 36);
+}
+
+function circumcenter(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number
+) {
+    const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    if (Math.abs(d) < 1e-7) return null;
+    const a2 = ax * ax + ay * ay;
+    const b2 = bx * bx + by * by;
+    const c2 = cx * cx + cy * cy;
+    const ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d;
+    const uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d;
+    return { x: ux, y: uy };
+}
+
+function getPolylinePointAtHalfLength(points: Array<{ x: number; y: number }>) {
+    if (points.length === 0) return { x: 0, y: 0 };
+    if (points.length === 1) return points[0];
+
+    let total = 0;
+    const segLens: number[] = [];
+    for (let i = 0; i < points.length - 1; i += 1) {
+        const len = Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+        segLens.push(len);
+        total += len;
+    }
+    const half = total / 2;
+    let acc = 0;
+    for (let i = 0; i < segLens.length; i += 1) {
+        const len = segLens[i];
+        if (acc + len >= half) {
+            const t = len <= 1e-9 ? 0 : (half - acc) / len;
+            return {
+                x: points[i].x + (points[i + 1].x - points[i].x) * t,
+                y: points[i].y + (points[i + 1].y - points[i].y) * t,
+            };
+        }
+        acc += len;
+    }
+    return points[points.length - 1];
 }
 
 function pointInPolygon(px: number, py: number, poly: number[]) {
@@ -830,7 +905,6 @@ function SegmentDimensionLine({
     offsetY,
     stageScale,
     text,
-    rotation = 0,
 }: {
     ax: number;
     ay: number;
@@ -840,7 +914,6 @@ function SegmentDimensionLine({
     offsetY: number;
     stageScale: number;
     text: string;
-    rotation?: number;
 }) {
     const clampedStageScale = Math.max(stageScale, 1);
     const visualScale = 1 / clampedStageScale;
@@ -937,17 +1010,158 @@ function SegmentDimensionLine({
     );
 }
 
-function OuterSegmentDimensions({
+function ArcSegmentDimensionLine({
     points,
     stageScale,
+    text,
 }: {
-    points: number[];
+    points: Array<{ x: number; y: number }>;
+    stageScale: number;
+    text: string;
+}) {
+    if (points.length < 2) return null;
+    const clampedStageScale = Math.max(stageScale, 1);
+    const strokeWidth = 1 / clampedStageScale;
+    const tickSize = 6;
+
+    const first = points[0];
+    const second = points[1];
+    const last = points[points.length - 1];
+    const prev = points[points.length - 2];
+
+    const t1x = second.x - first.x;
+    const t1y = second.y - first.y;
+    const t1Len = Math.hypot(t1x, t1y) || 1;
+    const n1x = -t1y / t1Len;
+    const n1y = t1x / t1Len;
+
+    const t2x = last.x - prev.x;
+    const t2y = last.y - prev.y;
+    const t2Len = Math.hypot(t2x, t2y) || 1;
+    const n2x = -t2y / t2Len;
+    const n2y = t2x / t2Len;
+
+    const fontSize = MEASUREMENT_LABEL_LAYOUT.segmentTextFontSize;
+    const textWidth = estimateTextWidth(text, fontSize);
+    const textGap = MEASUREMENT_LABEL_LAYOUT.segmentTextGap;
+    const gapLength = textWidth + textGap * 2;
+
+    const segLens: number[] = [];
+    let totalLen = 0;
+    for (let i = 0; i < points.length - 1; i += 1) {
+        const len = Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+        segLens.push(len);
+        totalLen += len;
+    }
+
+    const half = totalLen / 2;
+    const gapHalf = Math.min(gapLength / 2, Math.max(0, totalLen / 2 - 2));
+    const cutA = Math.max(0, half - gapHalf);
+    const cutB = Math.min(totalLen, half + gapHalf);
+
+    const pointAtDistance = (d: number) => {
+        if (d <= 0) return points[0];
+        if (d >= totalLen) return points[points.length - 1];
+        let acc = 0;
+        for (let i = 0; i < segLens.length; i += 1) {
+            const len = segLens[i];
+            if (acc + len >= d) {
+                const t = len <= 1e-9 ? 0 : (d - acc) / len;
+                return {
+                    x: points[i].x + (points[i + 1].x - points[i].x) * t,
+                    y: points[i].y + (points[i + 1].y - points[i].y) * t,
+                };
+            }
+            acc += len;
+        }
+        return points[points.length - 1];
+    };
+
+    const cutPointA = pointAtDistance(cutA);
+    const cutPointB = pointAtDistance(cutB);
+
+    const firstArc: Array<{ x: number; y: number }> = [points[0]];
+    const secondArc: Array<{ x: number; y: number }> = [cutPointB];
+
+    let acc = 0;
+    for (let i = 0; i < points.length - 1; i += 1) {
+        const nextAcc = acc + segLens[i];
+        const pNext = points[i + 1];
+        if (nextAcc < cutA) {
+            firstArc.push(pNext);
+        } else if (acc < cutA && nextAcc >= cutA) {
+            firstArc.push(cutPointA);
+        }
+
+        if (acc <= cutB && nextAcc > cutB) {
+            secondArc.push(pNext);
+        } else if (acc > cutB) {
+            secondArc.push(pNext);
+        }
+        acc = nextAcc;
+    }
+
+    if (secondArc[secondArc.length - 1] !== last) {
+        secondArc.push(last);
+    }
+
+    return (
+        <>
+            <Line
+                points={flattenPoints(firstArc)}
+                stroke="#000000"
+                strokeWidth={strokeWidth}
+                listening={false}
+                perfectDrawEnabled={false}
+            />
+            <Line
+                points={flattenPoints(secondArc)}
+                stroke="#000000"
+                strokeWidth={strokeWidth}
+                listening={false}
+                perfectDrawEnabled={false}
+            />
+            <Line
+                points={[
+                    first.x - n1x * tickSize,
+                    first.y - n1y * tickSize,
+                    first.x + n1x * tickSize,
+                    first.y + n1y * tickSize,
+                ]}
+                stroke="#000000"
+                strokeWidth={strokeWidth}
+                listening={false}
+                perfectDrawEnabled={false}
+            />
+            <Line
+                points={[
+                    last.x - n2x * tickSize,
+                    last.y - n2y * tickSize,
+                    last.x + n2x * tickSize,
+                    last.y + n2y * tickSize,
+                ]}
+                stroke="#000000"
+                strokeWidth={strokeWidth}
+                listening={false}
+                perfectDrawEnabled={false}
+            />
+        </>
+    );
+}
+
+function OuterSegmentDimensions({
+    object,
+    stageScale,
+}: {
+    object: Pick<PolyObject, "points" | "bulges">;
     stageScale: number;
 }) {
+    const points = object.points;
     if (!points || points.length < 6) return null;
 
     const pointCount = points.length / 2;
     const offsetDistance = MEASUREMENT_LABEL_LAYOUT.segmentDimensionOffset;
+    const bulges = normalizeBulges(points, object.bulges);
 
     return (
         <>
@@ -961,7 +1175,11 @@ function OuterSegmentDimensions({
                 const length = Math.hypot(bx - ax, by - ay);
                 if (length <= 1e-6) return null;
 
-                const labelText = formatMeters(getSegmentLengthInMeters(ax, ay, bx, by));
+                const bulge = bulges[index] ?? 0;
+                const isArc = Math.abs(bulge) > STRAIGHT_THRESHOLD;
+                const labelText = isArc
+                    ? formatMeters(getMetersFromEditorUnits(getArcLengthInEditorUnits(ax, ay, bx, by, bulge)))
+                    : formatMeters(getSegmentLengthInMeters(ax, ay, bx, by));
                 const midpoint = getSegmentMidpoint(ax, ay, bx, by);
                 const chosenOffset = chooseOuterDimensionSide(
                     ax,
@@ -979,24 +1197,93 @@ function OuterSegmentDimensions({
 
                 return (
                     <React.Fragment key={`outer-segment-dimension-${index}`}>
-                        <SegmentDimensionLine
-                            ax={ax}
-                            ay={ay}
-                            bx={bx}
-                            by={by}
-                            offsetX={chosenOffset.x}
-                            offsetY={chosenOffset.y}
-                            stageScale={stageScale}
-                            text={labelText}
-                            rotation={isVertical ? -90 : 0}
-                        />
-                        <PlainDimensionText
-                            x={offsetMidX}
-                            y={offsetMidY}
-                            text={labelText}
-                            stageScale={stageScale}
-                            rotation={isVertical ? -90 : 0}
-                        />
+                        {isArc ? (
+                            (() => {
+                                const baseArcPts = [
+                                    { x: ax, y: ay },
+                                    ...arcSamples(ax, ay, bx, by, bulge, 28).map(([x, y]) => ({ x, y })),
+                                    { x: bx, y: by },
+                                ];
+
+                                const apexSample = arcSamples(ax, ay, bx, by, bulge, 2)[0];
+                                const apex = apexSample
+                                    ? { x: apexSample[0], y: apexSample[1] }
+                                    : getSegmentMidpoint(ax, ay, bx, by);
+                                const ccRaw = circumcenter(ax, ay, apex.x, apex.y, bx, by);
+                                const cc =
+                                    ccRaw &&
+                                    Number.isFinite(ccRaw.x) &&
+                                    Number.isFinite(ccRaw.y)
+                                        ? ccRaw
+                                        : null;
+
+                                const offsetMagnitude = Math.hypot(chosenOffset.x, chosenOffset.y);
+                                let arcPts = baseArcPts;
+
+                                if (cc && offsetMagnitude > 0.001) {
+                                    const mid = getPolylinePointAtHalfLength(baseArcPts);
+                                    const rmx = mid.x - cc.x;
+                                    const rmy = mid.y - cc.y;
+                                    const rmlen = Math.hypot(rmx, rmy) || 1;
+                                    const radialAtMid = { x: rmx / rmlen, y: rmy / rmlen };
+                                    const dir = (radialAtMid.x * chosenOffset.x + radialAtMid.y * chosenOffset.y) >= 0 ? 1 : -1;
+
+                                    arcPts = baseArcPts.map((p) => {
+                                        const rx = p.x - cc.x;
+                                        const ry = p.y - cc.y;
+                                        const rlen = Math.hypot(rx, ry) || 1;
+                                        return {
+                                            x: p.x + (rx / rlen) * offsetMagnitude * dir,
+                                            y: p.y + (ry / rlen) * offsetMagnitude * dir,
+                                        };
+                                    });
+                                } else {
+                                    arcPts = baseArcPts.map((p) => ({
+                                        x: p.x + chosenOffset.x,
+                                        y: p.y + chosenOffset.y,
+                                    }));
+                                }
+
+                                const labelPt = getPolylinePointAtHalfLength(arcPts);
+
+                                return (
+                                    <>
+                                        <ArcSegmentDimensionLine
+                                            points={arcPts}
+                                            stageScale={stageScale}
+                                            text={labelText}
+                                        />
+                                        <PlainDimensionText
+                                            x={labelPt.x}
+                                            y={labelPt.y}
+                                            text={labelText}
+                                            stageScale={stageScale}
+                                            rotation={0}
+                                        />
+                                    </>
+                                );
+                            })()
+                        ) : (
+                            <SegmentDimensionLine
+                                ax={ax}
+                                ay={ay}
+                                bx={bx}
+                                by={by}
+                                offsetX={chosenOffset.x}
+                                offsetY={chosenOffset.y}
+                                stageScale={stageScale}
+                                text={labelText}
+                            />
+                        )}
+                        {!isArc && (
+                            <PlainDimensionText
+                                x={offsetMidX}
+                                y={offsetMidY}
+                                text={labelText}
+                                stageScale={stageScale}
+                                rotation={isVertical ? -90 : 0}
+                            />
+                        )}
                     </React.Fragment>
                 );
             })}
@@ -1096,8 +1383,10 @@ function SelectedObjectDimensions({
     if (!isAreaMeasurableObject(object)) return null;
     if (!object.points || object.points.length < 6) return null;
 
-    const bbox = getBoundingBoxFromPoints(object.points);
-    const { widthMeters, heightMeters } = getBoundingBoxDimensionsInMeters(object.points);
+    const measurementBoundsPoints = getMeasurementBoundsPoints(object.points, object.bulges);
+    const bbox = getBoundingBoxFromPoints(measurementBoundsPoints);
+    const widthMeters = getMetersFromEditorUnits(bbox.w);
+    const heightMeters = getMetersFromEditorUnits(bbox.h);
 
     if (bbox.w <= 0 || bbox.h <= 0) return null;
 
@@ -1118,7 +1407,7 @@ function SelectedObjectDimensions({
         <>
             {shouldRenderDetailedDimensions && (
                 <>
-                    <OuterSegmentDimensions points={object.points} stageScale={stageScale} />
+                    <OuterSegmentDimensions object={object} stageScale={stageScale} />
                     <HoleDimensions holes={object.holes ?? []} stageScale={stageScale} />
                 </>
             )}

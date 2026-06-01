@@ -399,13 +399,17 @@ function normalizeSingleObjectToPieces(obj: PolyObject): PolyObject[] {
     if ((prepared.holes?.length ?? 0) > 0) {
         const holeNormalized = normalizeObjectFromOuterMinusHoles(prepared);
         if (holeNormalized && holeNormalized.length > 0) {
-            return holeNormalized;
+            return holeNormalized.map((piece) => ({
+                ...piece,
+                bulges: remapBulgesToRing(prepared.points, prepared.bulges, piece.points),
+            }));
         }
 
         return [{
             ...obj,
             points: cleanupPoints(prepared.points),
             holes: undefined,
+            bulges: remapBulgesToRing(prepared.points, prepared.bulges, cleanupPoints(prepared.points)),
         }];
     }
 
@@ -416,11 +420,19 @@ function normalizeSingleObjectToPieces(obj: PolyObject): PolyObject[] {
     };
 
     if ((selfNormalized.holes?.length ?? 0) > 0) {
-        return [selfNormalized];
+        return [{
+            ...selfNormalized,
+            bulges: remapBulgesToRing(prepared.points, prepared.bulges, selfNormalized.points),
+        }];
     }
 
     const pieces = unionPolygonPieces([selfNormalized.points]);
-    if (!pieces || pieces.length === 0) return [selfNormalized];
+    if (!pieces || pieces.length === 0) {
+        return [{
+            ...selfNormalized,
+            bulges: remapBulgesToRing(prepared.points, prepared.bulges, selfNormalized.points),
+        }];
+    }
 
     return pieces
         .filter((piece) => piece.outer.length >= 6)
@@ -429,6 +441,7 @@ function normalizeSingleObjectToPieces(obj: PolyObject): PolyObject[] {
             id: idx === 0 ? selfNormalized.id : makeId(),
             points: piece.outer,
             holes: sanitizeHoles(piece.holes),
+            bulges: remapBulgesToRing(prepared.points, prepared.bulges, piece.outer),
         }));
 }
 
@@ -582,6 +595,7 @@ import {
     OBJECT_STYLES,
     TYPE_Z_INDEX,
     getObjectGeometryKind,
+    AREA_MEASURABLE_OBJECT_TYPES,
     type ObjectType,
     type TreebedVariant,
     type GeometryKind,
@@ -610,6 +624,15 @@ export type PolyObject = {
 
     // ✅ Holes (counter-clockwise). Alleen gebruikt bij polygonen met “gaten” (bv water in gras)
     holes?: number[][];
+
+    /**
+     * ✅ BOGEN — één signed bulge-waarde per segment (vertex i → vertex i+1).
+     * Lengte = points.length / 2. Afwezig / undefined = alles recht (backwards compatible).
+     * bulge=0 → rechte lijn · |bulge|=0.414 → kwartcirkel · |bulge|=1 → halve cirkel
+     * Alleen gebruikt bij gesloten polygoon-vlakken (plantvak, gras, water, etc.).
+     * Niet op fence/gate/treebed/boundary-types.
+     */
+    bulges?: number[];
 
     // Alleen relevant voor plantbed (Plantvak)
     plantbedNo?: number;
@@ -686,6 +709,78 @@ function isPolylineObject(o: PolyObject) {
     // backward compatible: als geometry ontbreekt, leid af uit type
     const g = o.geometry ?? getGeometryForType(o.type);
     return g === "polyline";
+}
+
+/**
+ * ✅ BOGEN — zorg dat bulges-array exact `n` elementen heeft (n = aantal vertices).
+ * Ontbrekende slots worden 0. Overtollige slots worden afgekapt.
+ */
+export function normalizeBulges(points: number[], bulges?: number[]): number[] {
+    const n = Math.floor(points.length / 2);
+    if (!bulges || bulges.length === 0) return new Array(n).fill(0);
+    if (bulges.length === n) return bulges;
+    const out = new Array(n).fill(0);
+    for (let i = 0; i < Math.min(n, bulges.length); i++) out[i] = bulges[i];
+    return out;
+}
+
+function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | undefined, targetPoints: number[]): number[] | undefined {
+    if (!sourceBulges || sourcePoints.length < 6 || targetPoints.length < 6) return undefined;
+
+    const srcCount = Math.floor(sourcePoints.length / 2);
+    const dstCount = Math.floor(targetPoints.length / 2);
+    if (srcCount !== dstCount) return undefined;
+
+    const srcBulges = normalizeBulges(sourcePoints, sourceBulges);
+    const out = new Array(dstCount).fill(0);
+    const eps = 1e-4;
+
+    const samePoint = (ax: number, ay: number, bx: number, by: number) =>
+        Math.abs(ax - bx) <= eps && Math.abs(ay - by) <= eps;
+
+    for (let i = 0; i < dstCount; i++) {
+        const ax = targetPoints[i * 2];
+        const ay = targetPoints[i * 2 + 1];
+        const bi = (i + 1) % dstCount;
+        const bx = targetPoints[bi * 2];
+        const by = targetPoints[bi * 2 + 1];
+
+        let matched = false;
+        for (let j = 0; j < srcCount; j++) {
+            const cx = sourcePoints[j * 2];
+            const cy = sourcePoints[j * 2 + 1];
+            const dj = (j + 1) % srcCount;
+            const dx = sourcePoints[dj * 2];
+            const dy = sourcePoints[dj * 2 + 1];
+
+            if (samePoint(ax, ay, cx, cy) && samePoint(bx, by, dx, dy)) {
+                out[i] = srcBulges[j] ?? 0;
+                matched = true;
+                break;
+            }
+
+            if (samePoint(ax, ay, dx, dy) && samePoint(bx, by, cx, cy)) {
+                out[i] = -(srcBulges[j] ?? 0);
+                matched = true;
+                break;
+            }
+        }
+
+        if (!matched) return undefined;
+    }
+
+    return out;
+}
+
+/**
+ * ✅ BOGEN — true als dit object boog-handles mag hebben.
+ * Alleen gesloten polygoon-vlakken; niet fence/gate/treebed/boundaries.
+ */
+export function objectSupportsBulges(o: PolyObject): boolean {
+    if (isPolylineObject(o)) return false;
+    if (isUnifiedBoundaryType(o.type)) return false;
+    if (o.type === "treebed") return false;
+    return AREA_MEASURABLE_OBJECT_TYPES.includes(o.type);
 }
 
 function cleanupPolylineCommitPoints(points: number[], eps = 1e-6) {
@@ -1539,6 +1634,12 @@ type ProjectState = {
     updateObjectStyle: (id: string, style: PolyObjectStyle) => void;
     resetObjectStyle: (id: string) => void;
     setObjectsWithHistory: (nextObjects: PolyObject[], nextSelectionId?: string | null) => void;
+
+    /**
+     * ✅ BOGEN — zet de bulge van één segment en commit via history (undo/redo).
+     * segmentIndex: index i → segment van vertex i naar vertex (i+1)%n.
+     */
+    setSegmentBulge: (objectId: string, segmentIndex: number, bulge: number) => void;
 
     confirmModal:
     | null
@@ -4729,6 +4830,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
                     plantbedNo: existing.plantbedNo,
                     customStyle: existing.customStyle,
+                    bulges: existing.bulges,
                 });
 
                 const movedPlantbeds: PolyObject[] = movedSeedPlantbeds.flatMap((seed, seedIdx) => {
@@ -4812,6 +4914,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 holes: toHoles !== undefined ? toHoles.map((h) => [...h]) : undefined,
 
                 plantbedNo: existing.plantbedNo,
+                customStyle: existing.customStyle,
+                bulges: existing.bulges,
             });
 
             const movedObjectsRaw: PolyObject[] = movedSeedObjects.flatMap((seed, seedIdx) => {
@@ -5013,6 +5117,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     updateObjectPoints: (id, toPoints) => {
         get().moveObjectAndMerge(id, toPoints);
+    },
+
+    setSegmentBulge: (objectId, segmentIndex, bulge) => {
+        const state = get();
+        const obj = state.objects.find((o) => o.id === objectId);
+        if (!obj) return;
+        const normalized = normalizeBulges(obj.points, obj.bulges);
+        if (segmentIndex < 0 || segmentIndex >= normalized.length) return;
+        const next = [...normalized];
+        next[segmentIndex] = Math.max(-3, Math.min(3, bulge));
+        const updatedObj: PolyObject = { ...obj, bulges: next };
+        state.setObjectsWithHistory(
+            state.objects.map((o) => o.id === objectId ? updatedObj : o)
+        );
     },
 
     commitBoundarySegmentsEdit: (objectId, beforeObject, afterBoundarySegments) =>

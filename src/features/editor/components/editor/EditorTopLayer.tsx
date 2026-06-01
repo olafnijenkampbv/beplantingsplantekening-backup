@@ -1,5 +1,5 @@
 import React from "react";
-import { Layer, Line, Rect, Group, Circle, Text } from "react-konva";
+import { Layer, Line, Rect, Group, Circle, Text, Shape } from "react-konva";
 import { useDrawPreviewStore } from "@/features/editor/state/drawPreviewStore";
 import {
     useSelectionDragStore,
@@ -7,8 +7,10 @@ import {
 } from "@/features/editor/state/selectionDragStore";
 import { useMeasureStore } from "@/features/editor/state/measureStore";
 import { useLiveEditStore } from "@/features/editor/state/liveEditStore";
+import { useBulgeDragStore } from "@/features/editor/state/bulgeDragStore";
 import { Html } from "react-konva-utils";
-import { PolyObject, ObjectType, OBJECT_STYLES } from "@/state/projectStore";
+import { useProjectStore, PolyObject, ObjectType, OBJECT_STYLES, objectSupportsBulges, normalizeBulges } from "@/state/projectStore";
+import { apexPoint, traceBulgedPath, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
 import MeasurementOverlay from "@/features/editor/components/MeasurementOverlay";
 import MeasureToolOverlay from "@/features/editor/components/editor/MeasureToolOverlay";
 import TypeLabelCard, {
@@ -87,6 +89,538 @@ function getObjectRenderStyle(object: PolyObject) {
         ...OBJECT_STYLES[object.type],
         ...(object.customStyle ?? {}),
     };
+}
+
+function renderNumberAreaLabel(
+    object: PolyObject,
+    label: any,
+    points: number[],
+    keyPrefix: string,
+    viewVisibility: { showPlantNumbers?: boolean; showAreaLabels?: boolean }
+): React.ReactNode {
+    const showPlantNumber =
+        (viewVisibility as { showPlantNumbers?: boolean }).showPlantNumbers !== false;
+    const showAreaLabel =
+        (viewVisibility as { showAreaLabels?: boolean }).showAreaLabels !== false;
+
+    if (!showPlantNumber && !showAreaLabel) return null;
+
+    if (object.type === "treebed") {
+        const objectStyle = getObjectRenderStyle(object);
+        const labelColor = objectStyle.stroke;
+        const treebedVisual = getTreebedVisual(points, object.treebedVariant);
+
+        const numberTextWidth = showPlantNumber
+            ? estimateTextWidth(label.text, label.fontSize)
+            : 0;
+
+        const areaTextWidth = showAreaLabel
+            ? estimateTextWidth(label.areaText, label.areaFontSize)
+            : 0;
+
+        const safeTrunkRadius = Math.max(treebedVisual.trunkRadius ?? 10, 10);
+        const safeGap = Math.max(8, safeTrunkRadius * 0.7);
+
+        if (object.treebedVariant === "espalier") {
+            const p = points;
+
+            const edgeA =
+                p.length >= 8
+                    ? { x: p[2] - p[0], y: p[3] - p[1] }
+                    : { x: 1, y: 0 };
+
+            const edgeB =
+                p.length >= 8
+                    ? { x: p[4] - p[2], y: p[5] - p[3] }
+                    : { x: 0, y: 1 };
+
+            const lenA = Math.hypot(edgeA.x, edgeA.y);
+            const lenB = Math.hypot(edgeB.x, edgeB.y);
+
+            const labelAxis = lenA >= lenB ? edgeA : edgeB;
+            const labelAxisLength = Math.hypot(labelAxis.x, labelAxis.y) || 1;
+
+            let ux = labelAxis.x / labelAxisLength;
+            let uy = labelAxis.y / labelAxisLength;
+
+            if (ux < 0 || (Math.abs(ux) < 1e-6 && uy < 0)) {
+                ux *= -1;
+                uy *= -1;
+            }
+
+            const rotationDeg = Math.atan2(uy, ux) * (180 / Math.PI);
+
+            const numberDistance =
+                safeTrunkRadius + safeGap + numberTextWidth / 2;
+
+            const areaDistance =
+                safeTrunkRadius + safeGap + areaTextWidth / 2;
+
+            return (
+                <React.Fragment key={`${keyPrefix}-treebed-${object.id}`}>
+                    {showPlantNumber && (
+                        <Group
+                            x={treebedVisual.cx - ux * numberDistance}
+                            y={treebedVisual.cy - uy * numberDistance}
+                            rotation={rotationDeg}
+                            listening={false}
+                        >
+                            <Text
+                                x={-numberTextWidth / 2}
+                                y={-label.fontSize / 2}
+                                width={numberTextWidth}
+                                align="center"
+                                wrap="none"
+                                text={label.text}
+                                fontSize={label.fontSize}
+                                fontStyle="bold"
+                                fill={labelColor}
+                                listening={false}
+                                perfectDrawEnabled={false}
+                            />
+                        </Group>
+                    )}
+
+                    {showAreaLabel && (
+                        <Group
+                            x={treebedVisual.cx + ux * areaDistance}
+                            y={treebedVisual.cy + uy * areaDistance}
+                            rotation={rotationDeg}
+                            listening={false}
+                        >
+                            <Text
+                                x={-areaTextWidth / 2}
+                                y={-label.areaFontSize / 2}
+                                width={areaTextWidth}
+                                align="center"
+                                wrap="none"
+                                text={label.areaText}
+                                fontSize={label.areaFontSize}
+                                fontStyle="700"
+                                fill={labelColor}
+                                listening={false}
+                                perfectDrawEnabled={false}
+                            />
+                        </Group>
+                    )}
+                </React.Fragment>
+            );
+        }
+
+        const numberY =
+            treebedVisual.cy - safeTrunkRadius - safeGap - label.fontSize;
+
+        const areaY =
+            treebedVisual.cy + safeTrunkRadius + safeGap;
+
+        return (
+            <React.Fragment key={`${keyPrefix}-treebed-${object.id}`}>
+                {showPlantNumber && (
+                    <Text
+                        x={treebedVisual.cx - numberTextWidth / 2}
+                        y={numberY}
+                        width={numberTextWidth}
+                        align="center"
+                        wrap="none"
+                        text={label.text}
+                        fontSize={label.fontSize}
+                        fontStyle="bold"
+                        fill={labelColor}
+                        listening={false}
+                        perfectDrawEnabled={false}
+                    />
+                )}
+
+                {showAreaLabel && (
+                    <Text
+                        x={treebedVisual.cx - areaTextWidth / 2}
+                        y={areaY}
+                        width={areaTextWidth}
+                        align="center"
+                        wrap="none"
+                        text={label.areaText}
+                        fontSize={label.areaFontSize}
+                        fontStyle="700"
+                        fill={labelColor}
+                        listening={false}
+                        perfectDrawEnabled={false}
+                    />
+                )}
+            </React.Fragment>
+        );
+    }
+
+    const objectStyle = getObjectRenderStyle(object);
+    const labelColor =
+        object.type === "plantbed"
+            ? getReadablePlantbedLabelColor(objectStyle.fill)
+            : objectStyle.stroke;
+
+    const bbox = bboxFromPoints(points);
+
+    const numberTextWidth = showPlantNumber
+        ? Math.max(estimateTextWidth(label.text, label.fontSize), label.fontSize * 1.4)
+        : 0;
+
+    const areaTextWidth = showAreaLabel
+        ? Math.max(estimateTextWidth(label.areaText, label.areaFontSize), label.areaFontSize * 4)
+        : 0;
+
+    const verticalGap = 4;
+    const inlineGap = 6;
+
+    const stackedBlockHeight =
+        showPlantNumber && showAreaLabel
+            ? label.fontSize + verticalGap + label.areaFontSize
+            : showPlantNumber
+                ? label.fontSize
+                : label.areaFontSize;
+
+    const inlineBlockWidth =
+        showPlantNumber && showAreaLabel
+            ? numberTextWidth + inlineGap + areaTextWidth
+            : showPlantNumber
+                ? numberTextWidth
+                : areaTextWidth;
+
+    const inlineBlockHeight =
+        showPlantNumber && showAreaLabel
+            ? Math.max(label.fontSize, label.areaFontSize)
+            : showPlantNumber
+                ? label.fontSize
+                : label.areaFontSize;
+
+    const horizontalBlockWidth = Math.max(
+        showPlantNumber ? label.width : 0,
+        areaTextWidth
+    );
+
+    const shouldRotateLabel =
+        bbox.h > bbox.w &&
+        bbox.w < horizontalBlockWidth + 12;
+
+    const numberCenterX = label.x + label.width / 2;
+    const numberCenterY = label.y + label.fontSize / 2;
+
+    const areaCenterX =
+        label.areaRotation === 0
+            ? label.areaX + areaTextWidth / 2
+            : label.areaX;
+
+    const areaCenterY =
+        label.areaRotation === 0
+            ? label.areaY + label.areaFontSize / 2
+            : label.areaY;
+
+    const centerX =
+        showPlantNumber && showAreaLabel
+            ? (numberCenterX + areaCenterX) / 2
+            : showPlantNumber
+                ? numberCenterX
+                : areaCenterX;
+
+    const centerY =
+        showPlantNumber && showAreaLabel
+            ? (numberCenterY + areaCenterY) / 2
+            : showPlantNumber
+                ? numberCenterY
+                : areaCenterY;
+
+    if (shouldRotateLabel) {
+        const canUseVerticalStacked = bbox.w >= stackedBlockHeight + 8;
+        const canUseVerticalInline =
+            bbox.w >= inlineBlockHeight + 8 &&
+            bbox.h >= inlineBlockWidth + 8;
+
+        if (canUseVerticalInline && (!canUseVerticalStacked || bbox.w < stackedBlockHeight + 8)) {
+            return (
+                <Group
+                    key={`${keyPrefix}-vertical-inline-${object.id}`}
+                    x={centerX}
+                    y={centerY}
+                    rotation={-90}
+                    listening={false}
+                >
+                    {showPlantNumber && (
+                        <Text
+                            x={-inlineBlockWidth / 2}
+                            y={-inlineBlockHeight / 2}
+                            text={label.text}
+                            fontSize={label.fontSize}
+                            fontStyle="bold"
+                            fill={labelColor}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                        />
+                    )}
+
+                    {showAreaLabel && (
+                        <Text
+                            x={
+                                showPlantNumber
+                                    ? -inlineBlockWidth / 2 + numberTextWidth + inlineGap
+                                    : -inlineBlockWidth / 2
+                            }
+                            y={-inlineBlockHeight / 2}
+                            text={label.areaText}
+                            fontSize={label.areaFontSize}
+                            fontStyle="700"
+                            fill={labelColor}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                        />
+                    )}
+                </Group>
+            );
+        }
+
+        if (canUseVerticalStacked) {
+            return (
+                <Group
+                    key={`${keyPrefix}-vertical-${object.id}`}
+                    x={centerX}
+                    y={centerY}
+                    rotation={-90}
+                    listening={false}
+                >
+                    {showPlantNumber && (
+                        <Text
+                            x={-numberTextWidth / 2}
+                            y={-stackedBlockHeight / 2}
+                            text={label.text}
+                            fontSize={label.fontSize}
+                            fontStyle="bold"
+                            fill={labelColor}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                        />
+                    )}
+
+                    {showAreaLabel && (
+                        <Text
+                            x={-areaTextWidth / 2}
+                            y={
+                                showPlantNumber
+                                    ? -stackedBlockHeight / 2 + label.fontSize + verticalGap
+                                    : -stackedBlockHeight / 2
+                            }
+                            text={label.areaText}
+                            fontSize={label.areaFontSize}
+                            fontStyle="700"
+                            fill={labelColor}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                        />
+                    )}
+                </Group>
+            );
+        }
+
+        return null;
+    }
+
+    const canUseHorizontalStacked = bbox.h >= stackedBlockHeight + 8;
+    const canUseHorizontalInline =
+        bbox.h >= inlineBlockHeight + 8 &&
+        bbox.w >= inlineBlockWidth + 8;
+
+    if (!canUseHorizontalStacked && canUseHorizontalInline) {
+        return (
+            <Group
+                key={`${keyPrefix}-inline-${object.id}`}
+                x={centerX}
+                y={centerY}
+                listening={false}
+            >
+                {showPlantNumber && (
+                    <Text
+                        x={-inlineBlockWidth / 2}
+                        y={-inlineBlockHeight / 2}
+                        text={label.text}
+                        fontSize={label.fontSize}
+                        fontStyle="bold"
+                        fill={labelColor}
+                        listening={false}
+                        perfectDrawEnabled={false}
+                    />
+                )}
+
+                {showAreaLabel && (
+                    <Text
+                        x={
+                            showPlantNumber
+                                ? -inlineBlockWidth / 2 + numberTextWidth + inlineGap
+                                : -inlineBlockWidth / 2
+                        }
+                        y={-inlineBlockHeight / 2}
+                        text={label.areaText}
+                        fontSize={label.areaFontSize}
+                        fontStyle="700"
+                        fill={labelColor}
+                        listening={false}
+                        perfectDrawEnabled={false}
+                    />
+                )}
+            </Group>
+        );
+    }
+
+    if (!canUseHorizontalStacked && !canUseHorizontalInline) {
+        return null;
+    }
+
+    return (
+        <React.Fragment key={`${keyPrefix}-${object.id}`}>
+            {showPlantNumber && (
+                <Text
+                    x={label.x}
+                    y={
+                        showAreaLabel
+                            ? label.y
+                            : label.y + label.areaFontSize / 2
+                    }
+                    width={label.width}
+                    align="center"
+                    wrap="none"
+                    text={label.text}
+                    fontSize={label.fontSize}
+                    fontStyle="bold"
+                    fill={labelColor}
+                    listening={false}
+                    perfectDrawEnabled={false}
+                />
+            )}
+
+            {showAreaLabel && label.areaRotation === 0 ? (
+                <Text
+                    x={label.areaX}
+                    y={label.areaY}
+                    width={areaTextWidth}
+                    align="center"
+                    wrap="none"
+                    text={label.areaText}
+                    fontSize={label.areaFontSize}
+                    fontStyle="700"
+                    fill={labelColor}
+                    listening={false}
+                    perfectDrawEnabled={false}
+                />
+            ) : showAreaLabel ? (
+                <Group
+                    x={label.areaX}
+                    y={label.areaY}
+                    rotation={label.areaRotation}
+                    listening={false}
+                >
+                    <Text
+                        x={-areaTextWidth / 2}
+                        y={-label.areaFontSize / 2}
+                        text={label.areaText}
+                        fontSize={label.areaFontSize}
+                        fontStyle="700"
+                        fill={labelColor}
+                        listening={false}
+                        perfectDrawEnabled={false}
+                    />
+                </Group>
+            ) : null}
+        </React.Fragment>
+    );
+}
+
+/**
+ * ✅ BOGEN — Isolated HTML overlay that shows the live bulge value label + snap ring
+ * during a bulge handle drag. Only this component re-renders on drag frames.
+ * Must be placed as a sibling of the Konva Stage (not inside the canvas).
+ */
+function BulgeDragSection({ stageContainerRef }: { stageContainerRef: React.RefObject<HTMLDivElement | null> }) {
+    const isActive = useBulgeDragStore((s) => s.isActive);
+    const screenX = useBulgeDragStore((s) => s.screenX);
+    const screenY = useBulgeDragStore((s) => s.screenY);
+    const workingBulge = useBulgeDragStore((s) => s.workingBulge);
+    const snapName = useBulgeDragStore((s) => s.snapName);
+
+    if (!isActive) return null;
+
+    const snapped = !!snapName;
+    const labelText = snapped
+        ? snapName!
+        : `bulge ${workingBulge >= 0 ? "" : "−"}${Math.abs(workingBulge).toFixed(2)}`;
+
+    // Get stage container bounds to position absolutely within it
+    const container = stageContainerRef?.current;
+    if (!container) return null;
+
+    return (
+        <>
+            {/* Value label */}
+            <div
+                style={{
+                    position: "absolute",
+                    left: screenX,
+                    top: screenY,
+                    transform: "translate(-50%, -140%)",
+                    background: snapped ? "#EEF3FF" : "#ffffff",
+                    border: `1px solid ${snapped ? "#cfdcfb" : "#E3E2E2"}`,
+                    borderRadius: 5,
+                    padding: "3px 7px",
+                    font: "700 11px/1 'DM Sans', sans-serif",
+                    color: "#4488FF",
+                    whiteSpace: "nowrap",
+                    pointerEvents: "none",
+                    zIndex: 9,
+                    boxShadow: "0 1px 3px rgba(0,0,0,.08)",
+                }}
+            >
+                {labelText}
+            </div>
+            {/* Snap ring */}
+            {snapped && (
+                <div
+                    style={{
+                        position: "absolute",
+                        left: screenX,
+                        top: screenY,
+                        width: 30,
+                        height: 30,
+                        borderRadius: "50%",
+                        transform: "translate(-50%, -50%)",
+                        border: "2px dashed #4488FF",
+                        opacity: 0.6,
+                        pointerEvents: "none",
+                        zIndex: 6,
+                    }}
+                />
+            )}
+        </>
+    );
+}
+
+// Isolated component: re-renders only when liveEditStore changes during vertex/edge editing.
+// Renders the plantbed number + area label for the selected object at its live position.
+function LivePlantbedLabelSection({
+    selected,
+    viewVisibility,
+    isLiveEditActive,
+}: {
+    selected: any[];
+    viewVisibility: any;
+    isLiveEditActive: boolean;
+}) {
+    const livePrimary = useLiveEditStore((s) => s.livePrimary);
+    const liveLayouts = useLiveEditStore((s) => s.liveLayouts);
+    if (!isLiveEditActive) return null;
+
+    if (!livePrimary || !liveLayouts) return null;
+
+    const obj = selected.find((o: any) => o.id === livePrimary.id);
+    if (!obj) return null;
+    if (obj.type !== "plantbed" && obj.type !== "hedge") return null;
+
+    const label = liveLayouts.get(livePrimary.id);
+    if (!label) return null;
+
+    return <>{renderNumberAreaLabel(livePrimary, label, livePrimary.points, "live-plantbed-label", viewVisibility)}</>;
 }
 
 // Isolated component: subscribes to drawPreviewStore so only THIS component re-renders
@@ -391,6 +925,7 @@ function LiveMeasurementSection({
     activeDrawType,
     plantbedNumberLayouts,
     isSelectionDragging,
+    isLiveEditActive,
 }: {
     selected: any[];
     selectedObjectId: string | null;
@@ -398,13 +933,14 @@ function LiveMeasurementSection({
     activeDrawType: any;
     plantbedNumberLayouts: Map<string, any>;
     isSelectionDragging: boolean;
+    isLiveEditActive: boolean;
 }) {
     const livePrimary = useLiveEditStore((s) => s.livePrimary);
     const liveLayouts = useLiveEditStore((s) => s.liveLayouts);
 
     const primaryMeasurementObject =
-        livePrimary ?? (selected.length === 1 ? selected[0] : null);
-    const effectiveLayouts = liveLayouts ?? plantbedNumberLayouts;
+        (isLiveEditActive ? livePrimary : null) ?? (selected.length === 1 ? selected[0] : null);
+    const effectiveLayouts = (isLiveEditActive ? liveLayouts : null) ?? plantbedNumberLayouts;
 
     return (
         <MeasurementOverlay
@@ -475,9 +1011,16 @@ function EditorTopLayerInner(props: any) {
         isVertexDraggingRef,
         activeVertexIndexRef,
         selectedLineRefs,
+        selectedHedgeStrokeRefs,
+        selectedPolyWithHolesRefs,
         vertexHandleRefs,
         vertexEditRef,
         edgeResizeRef,
+        isBulgeDraggingRef: isBulgeDraggingRefProp,
+        isBulgeDragging: isBulgeDraggingProp,
+        setIsBulgeDragging: setIsBulgeDraggingProp,
+        bulgeEditRef: bulgeEditRefProp,
+        bulgeHandleRefs: bulgeHandleRefsProp,
         pendingPlantbedClickRef,
         plantbedClickMovedRef,
         startTreebedRotate,
@@ -506,11 +1049,6 @@ function EditorTopLayerInner(props: any) {
     const unselectedNonPlantbedsTyped = unselectedNonPlantbeds as PolyObject[];
     const objectsTyped = objects as PolyObject[];
     const selectedTyped = selected as PolyObject[];
-
-    const getObjectRenderStyle = (object: PolyObject) => ({
-        ...OBJECT_STYLES[object.type],
-        ...(object.customStyle ?? {}),
-    });
 
     const renderTilesPatternSafe = renderTilesPatternProp ?? renderTilesPattern;
     const createTreebedPointsFromCenterDragSafe =
@@ -772,446 +1310,30 @@ function EditorTopLayerInner(props: any) {
     const isVertexHandleHoveredRef = React.useRef(false);
     const [isSelectionDragging, setIsSelectionDragging] = React.useState(false);
 
+    // ── Boog/Bulge drag refs ──────────────────────────────────────────────────
+    // These refs are shared with HelloEditor via props (same pattern as isVertexDraggingRef etc.)
+    const _localIsBulgeDraggingRef = React.useRef(false);
+    const _localBulgeEditRef = React.useRef<{
+        objectId: string;
+        segmentIndex: number;
+        x1: number; y1: number;
+        x2: number; y2: number;
+        workingBulge: number;
+        snapName: string | null;
+    } | null>(null);
+    const _localBulgeHandleRefs = React.useRef<Record<string, Record<number, any>>>({});
+    const isBulgeDraggingRef: React.MutableRefObject<boolean> = isBulgeDraggingRefProp ?? _localIsBulgeDraggingRef;
+    const bulgeEditRef: React.MutableRefObject<any> = bulgeEditRefProp ?? _localBulgeEditRef;
+    const bulgeHandleRefs: React.MutableRefObject<Record<string, Record<number, any>>> = bulgeHandleRefsProp ?? _localBulgeHandleRefs;
+    const [_localIsBulgeDragging, _localSetIsBulgeDragging] = React.useState(false);
+    const isBulgeDragging: boolean = isBulgeDraggingProp ?? _localIsBulgeDragging;
+    const setIsBulgeDragging: (v: boolean) => void = setIsBulgeDraggingProp ?? _localSetIsBulgeDragging;
+    // ─────────────────────────────────────────────────────────────────────────
+
     // RAF throttle for alignment guides during object drag — prevents a React re-render on every
     // mousemove. Guides only need to update at display frame rate (60fps), not per event.
     const alignmentGuidesRafRef = React.useRef<number | null>(null);
     const pendingAlignmentGuidesRef = React.useRef<any[]>([]);
-
-    const renderNumberAreaLabel = (
-        object: PolyObject,
-        label: any,
-        points: number[],
-        keyPrefix: string
-    ) => {
-        const showPlantNumber =
-            (viewVisibility as { showPlantNumbers?: boolean }).showPlantNumbers !== false;
-        const showAreaLabel =
-            (viewVisibility as { showAreaLabels?: boolean }).showAreaLabels !== false;
-
-        if (!showPlantNumber && !showAreaLabel) return null;
-
-        if (object.type === "treebed") {
-            const objectStyle = getObjectRenderStyle(object);
-            const labelColor = objectStyle.stroke;
-            const treebedVisual = getTreebedVisual(points, object.treebedVariant);
-
-            const numberTextWidth = showPlantNumber
-                ? estimateTextWidth(label.text, label.fontSize)
-                : 0;
-
-            const areaTextWidth = showAreaLabel
-                ? estimateTextWidth(label.areaText, label.areaFontSize)
-                : 0;
-
-            const safeTrunkRadius = Math.max(treebedVisual.trunkRadius ?? 10, 10);
-            const safeGap = Math.max(8, safeTrunkRadius * 0.7);
-
-            if (object.treebedVariant === "espalier") {
-                const p = points;
-
-                const edgeA =
-                    p.length >= 8
-                        ? { x: p[2] - p[0], y: p[3] - p[1] }
-                        : { x: 1, y: 0 };
-
-                const edgeB =
-                    p.length >= 8
-                        ? { x: p[4] - p[2], y: p[5] - p[3] }
-                        : { x: 0, y: 1 };
-
-                const lenA = Math.hypot(edgeA.x, edgeA.y);
-                const lenB = Math.hypot(edgeB.x, edgeB.y);
-
-                const labelAxis = lenA >= lenB ? edgeA : edgeB;
-                const labelAxisLength = Math.hypot(labelAxis.x, labelAxis.y) || 1;
-
-                let ux = labelAxis.x / labelAxisLength;
-                let uy = labelAxis.y / labelAxisLength;
-
-                if (ux < 0 || (Math.abs(ux) < 1e-6 && uy < 0)) {
-                    ux *= -1;
-                    uy *= -1;
-                }
-
-                const rotationDeg = Math.atan2(uy, ux) * (180 / Math.PI);
-
-                const numberDistance =
-                    safeTrunkRadius + safeGap + numberTextWidth / 2;
-
-                const areaDistance =
-                    safeTrunkRadius + safeGap + areaTextWidth / 2;
-
-                return (
-                    <React.Fragment key={`${keyPrefix}-treebed-${object.id}`}>
-                        {showPlantNumber && (
-                            <Group
-                                x={treebedVisual.cx - ux * numberDistance}
-                                y={treebedVisual.cy - uy * numberDistance}
-                                rotation={rotationDeg}
-                                listening={false}
-                            >
-                                <Text
-                                    x={-numberTextWidth / 2}
-                                    y={-label.fontSize / 2}
-                                    width={numberTextWidth}
-                                    align="center"
-                                    wrap="none"
-                                    text={label.text}
-                                    fontSize={label.fontSize}
-                                    fontStyle="bold"
-                                    fill={labelColor}
-                                    listening={false}
-                                    perfectDrawEnabled={false}
-                                />
-                            </Group>
-                        )}
-
-                        {showAreaLabel && (
-                            <Group
-                                x={treebedVisual.cx + ux * areaDistance}
-                                y={treebedVisual.cy + uy * areaDistance}
-                                rotation={rotationDeg}
-                                listening={false}
-                            >
-                                <Text
-                                    x={-areaTextWidth / 2}
-                                    y={-label.areaFontSize / 2}
-                                    width={areaTextWidth}
-                                    align="center"
-                                    wrap="none"
-                                    text={label.areaText}
-                                    fontSize={label.areaFontSize}
-                                    fontStyle="700"
-                                    fill={labelColor}
-                                    listening={false}
-                                    perfectDrawEnabled={false}
-                                />
-                            </Group>
-                        )}
-                    </React.Fragment>
-                );
-            }
-
-            const numberY =
-                treebedVisual.cy - safeTrunkRadius - safeGap - label.fontSize;
-
-            const areaY =
-                treebedVisual.cy + safeTrunkRadius + safeGap;
-
-            return (
-                <React.Fragment key={`${keyPrefix}-treebed-${object.id}`}>
-                    {showPlantNumber && (
-                        <Text
-                            x={treebedVisual.cx - numberTextWidth / 2}
-                            y={numberY}
-                            width={numberTextWidth}
-                            align="center"
-                            wrap="none"
-                            text={label.text}
-                            fontSize={label.fontSize}
-                            fontStyle="bold"
-                            fill={labelColor}
-                            listening={false}
-                            perfectDrawEnabled={false}
-                        />
-                    )}
-
-                    {showAreaLabel && (
-                        <Text
-                            x={treebedVisual.cx - areaTextWidth / 2}
-                            y={areaY}
-                            width={areaTextWidth}
-                            align="center"
-                            wrap="none"
-                            text={label.areaText}
-                            fontSize={label.areaFontSize}
-                            fontStyle="700"
-                            fill={labelColor}
-                            listening={false}
-                            perfectDrawEnabled={false}
-                        />
-                    )}
-                </React.Fragment>
-            );
-        }
-
-        const objectStyle = getObjectRenderStyle(object);
-        const labelColor =
-            object.type === "plantbed"
-                ? getReadablePlantbedLabelColor(objectStyle.fill)
-                : objectStyle.stroke;
-
-        const bbox = bboxFromPoints(points);
-
-        const numberTextWidth = showPlantNumber
-            ? Math.max(estimateTextWidth(label.text, label.fontSize), label.fontSize * 1.4)
-            : 0;
-
-        const areaTextWidth = showAreaLabel
-            ? Math.max(estimateTextWidth(label.areaText, label.areaFontSize), label.areaFontSize * 4)
-            : 0;
-
-        const verticalGap = 4;
-        const inlineGap = 6;
-
-        const stackedBlockHeight =
-            showPlantNumber && showAreaLabel
-                ? label.fontSize + verticalGap + label.areaFontSize
-                : showPlantNumber
-                    ? label.fontSize
-                    : label.areaFontSize;
-
-        const inlineBlockWidth =
-            showPlantNumber && showAreaLabel
-                ? numberTextWidth + inlineGap + areaTextWidth
-                : showPlantNumber
-                    ? numberTextWidth
-                    : areaTextWidth;
-
-        const inlineBlockHeight =
-            showPlantNumber && showAreaLabel
-                ? Math.max(label.fontSize, label.areaFontSize)
-                : showPlantNumber
-                    ? label.fontSize
-                    : label.areaFontSize;
-
-        const horizontalBlockWidth = Math.max(
-            showPlantNumber ? label.width : 0,
-            areaTextWidth
-        );
-
-        const shouldRotateLabel =
-            bbox.h > bbox.w &&
-            bbox.w < horizontalBlockWidth + 12;
-
-        const numberCenterX = label.x + label.width / 2;
-        const numberCenterY = label.y + label.fontSize / 2;
-
-        const areaCenterX =
-            label.areaRotation === 0
-                ? label.areaX + areaTextWidth / 2
-                : label.areaX;
-
-        const areaCenterY =
-            label.areaRotation === 0
-                ? label.areaY + label.areaFontSize / 2
-                : label.areaY;
-
-        const centerX =
-            showPlantNumber && showAreaLabel
-                ? (numberCenterX + areaCenterX) / 2
-                : showPlantNumber
-                    ? numberCenterX
-                    : areaCenterX;
-
-        const centerY =
-            showPlantNumber && showAreaLabel
-                ? (numberCenterY + areaCenterY) / 2
-                : showPlantNumber
-                    ? numberCenterY
-                    : areaCenterY;
-
-        if (shouldRotateLabel) {
-            const canUseVerticalStacked = bbox.w >= stackedBlockHeight + 8;
-            const canUseVerticalInline =
-                bbox.w >= inlineBlockHeight + 8 &&
-                bbox.h >= inlineBlockWidth + 8;
-
-            if (canUseVerticalInline && (!canUseVerticalStacked || bbox.w < stackedBlockHeight + 8)) {
-                return (
-                    <Group
-                        key={`${keyPrefix}-vertical-inline-${object.id}`}
-                        x={centerX}
-                        y={centerY}
-                        rotation={-90}
-                        listening={false}
-                    >
-                        {showPlantNumber && (
-                            <Text
-                                x={-inlineBlockWidth / 2}
-                                y={-inlineBlockHeight / 2}
-                                text={label.text}
-                                fontSize={label.fontSize}
-                                fontStyle="bold"
-                                fill={labelColor}
-                                listening={false}
-                                perfectDrawEnabled={false}
-                            />
-                        )}
-
-                        {showAreaLabel && (
-                            <Text
-                                x={
-                                    showPlantNumber
-                                        ? -inlineBlockWidth / 2 + numberTextWidth + inlineGap
-                                        : -inlineBlockWidth / 2
-                                }
-                                y={-inlineBlockHeight / 2}
-                                text={label.areaText}
-                                fontSize={label.areaFontSize}
-                                fontStyle="700"
-                                fill={labelColor}
-                                listening={false}
-                                perfectDrawEnabled={false}
-                            />
-                        )}
-                    </Group>
-                );
-            }
-
-            if (canUseVerticalStacked) {
-                return (
-                    <Group
-                        key={`${keyPrefix}-vertical-${object.id}`}
-                        x={centerX}
-                        y={centerY}
-                        rotation={-90}
-                        listening={false}
-                    >
-                        {showPlantNumber && (
-                            <Text
-                                x={-numberTextWidth / 2}
-                                y={-stackedBlockHeight / 2}
-                                text={label.text}
-                                fontSize={label.fontSize}
-                                fontStyle="bold"
-                                fill={labelColor}
-                                listening={false}
-                                perfectDrawEnabled={false}
-                            />
-                        )}
-
-                        {showAreaLabel && (
-                            <Text
-                                x={-areaTextWidth / 2}
-                                y={
-                                    showPlantNumber
-                                        ? -stackedBlockHeight / 2 + label.fontSize + verticalGap
-                                        : -stackedBlockHeight / 2
-                                }
-                                text={label.areaText}
-                                fontSize={label.areaFontSize}
-                                fontStyle="700"
-                                fill={labelColor}
-                                listening={false}
-                                perfectDrawEnabled={false}
-                            />
-                        )}
-                    </Group>
-                );
-            }
-
-            return null;
-        }
-
-        const canUseHorizontalStacked = bbox.h >= stackedBlockHeight + 8;
-        const canUseHorizontalInline =
-            bbox.h >= inlineBlockHeight + 8 &&
-            bbox.w >= inlineBlockWidth + 8;
-
-        if (!canUseHorizontalStacked && canUseHorizontalInline) {
-            return (
-                <Group
-                    key={`${keyPrefix}-inline-${object.id}`}
-                    x={centerX}
-                    y={centerY}
-                    listening={false}
-                >
-                    {showPlantNumber && (
-                        <Text
-                            x={-inlineBlockWidth / 2}
-                            y={-inlineBlockHeight / 2}
-                            text={label.text}
-                            fontSize={label.fontSize}
-                            fontStyle="bold"
-                            fill={labelColor}
-                            listening={false}
-                            perfectDrawEnabled={false}
-                        />
-                    )}
-
-                    {showAreaLabel && (
-                        <Text
-                            x={
-                                showPlantNumber
-                                    ? -inlineBlockWidth / 2 + numberTextWidth + inlineGap
-                                    : -inlineBlockWidth / 2
-                            }
-                            y={-inlineBlockHeight / 2}
-                            text={label.areaText}
-                            fontSize={label.areaFontSize}
-                            fontStyle="700"
-                            fill={labelColor}
-                            listening={false}
-                            perfectDrawEnabled={false}
-                        />
-                    )}
-                </Group>
-            );
-        }
-
-        if (!canUseHorizontalStacked && !canUseHorizontalInline) {
-            return null;
-        }
-
-        return (
-            <React.Fragment key={`${keyPrefix}-${object.id}`}>
-                {showPlantNumber && (
-                    <Text
-                        x={label.x}
-                        y={
-                            showAreaLabel
-                                ? label.y
-                                : label.y + label.areaFontSize / 2
-                        }
-                        width={label.width}
-                        align="center"
-                        wrap="none"
-                        text={label.text}
-                        fontSize={label.fontSize}
-                        fontStyle="bold"
-                        fill={labelColor}
-                        listening={false}
-                        perfectDrawEnabled={false}
-                    />
-                )}
-
-                {showAreaLabel && label.areaRotation === 0 ? (
-                    <Text
-                        x={label.areaX}
-                        y={label.areaY}
-                        width={areaTextWidth}
-                        align="center"
-                        wrap="none"
-                        text={label.areaText}
-                        fontSize={label.areaFontSize}
-                        fontStyle="700"
-                        fill={labelColor}
-                        listening={false}
-                        perfectDrawEnabled={false}
-                    />
-                ) : showAreaLabel ? (
-                    <Group
-                        x={label.areaX}
-                        y={label.areaY}
-                        rotation={label.areaRotation}
-                        listening={false}
-                    >
-                        <Text
-                            x={-areaTextWidth / 2}
-                            y={-label.areaFontSize / 2}
-                            text={label.areaText}
-                            fontSize={label.areaFontSize}
-                            fontStyle="700"
-                            fill={labelColor}
-                            listening={false}
-                            perfectDrawEnabled={false}
-                        />
-                    </Group>
-                ) : null}
-            </React.Fragment>
-        );
-    };
 
     return (
         <>
@@ -1436,7 +1558,8 @@ function EditorTopLayerInner(props: any) {
                                         obj,
                                         label,
                                         liveTreebedPoints,
-                                        "treebed-number-area"
+                                        "treebed-number-area",
+                                        viewVisibility
                                     );
                                 })()}
                             </React.Fragment>
@@ -1453,7 +1576,8 @@ function EditorTopLayerInner(props: any) {
                             obj,
                             label,
                             obj.points,
-                            "hedge-number-area"
+                            "hedge-number-area",
+                            viewVisibility
                         );
                     })}
 
@@ -1505,9 +1629,18 @@ function EditorTopLayerInner(props: any) {
 
                 {/* Selected */}
                 {selected.length > 0 && (
-                    <Group
+                    (() => {
+                        const isLiveEditActive =
+                            isVertexDragging ||
+                            isEdgeResizing ||
+                            isBulgeDragging ||
+                            !!treebedResizePreview ||
+                            !!treebedRotatePreview;
+
+                        return (
+                            <Group
                         listening={activeTool === "select"}
-                        draggable={activeTool === "select" && !isVertexDragging && !isEdgeResizing && !isPanning}
+                        draggable={activeTool === "select" && !isVertexDragging && !isEdgeResizing && !isBulgeDragging && !isPanning}
                         onMouseDown={(evt) => {
                             if (activeTool !== "select") return;
 
@@ -1526,6 +1659,7 @@ function EditorTopLayerInner(props: any) {
                             if (
                                 isVertexDraggingRef.current ||
                                 isEdgeResizingRef.current ||
+                                isBulgeDraggingRef.current ||
                                 treebedResizeRef.current ||
                                 treebedRotateRef.current
                             ) {
@@ -1562,6 +1696,7 @@ function EditorTopLayerInner(props: any) {
                             if (
                                 isVertexDraggingRef.current ||
                                 isEdgeResizingRef.current ||
+                                isBulgeDraggingRef.current ||
                                 treebedResizeRef.current ||
                                 treebedRotateRef.current
                             ) {
@@ -1622,6 +1757,7 @@ function EditorTopLayerInner(props: any) {
                             if (
                                 isVertexDraggingRef.current ||
                                 isEdgeResizingRef.current ||
+                                isBulgeDraggingRef.current ||
                                 treebedResizeRef.current ||
                                 treebedRotateRef.current
                             ) {
@@ -2145,6 +2281,22 @@ function EditorTopLayerInner(props: any) {
                                             : isEdgeEditingThisPolygon
                                                 ? (edgeResizeRef.current!.workingHoles ?? obj.holes ?? [])
                                                 : (obj.holes ?? []);
+                                        const isLiveEditingThisPolygon =
+                                            isVertexEditingThisPolygon ||
+                                            isEdgeEditingThisPolygon ||
+                                            (isBulgeDraggingRef.current && bulgeEditRef.current?.objectId === obj.id);
+                                        const liveBulges = (() => {
+                                            const next = normalizeBulges(livePolygonPoints, obj.bulges);
+                                            if (
+                                                isBulgeDraggingRef.current &&
+                                                bulgeEditRef.current?.objectId === obj.id &&
+                                                typeof bulgeEditRef.current.segmentIndex === "number" &&
+                                                typeof bulgeEditRef.current.workingBulge === "number"
+                                            ) {
+                                                next[bulgeEditRef.current.segmentIndex] = bulgeEditRef.current.workingBulge;
+                                            }
+                                            return next;
+                                        })();
 
                                         const selectedPatternImage = isBuildingType(obj.type)
                                             ? getBuildingPatternCanvas(obj.type)
@@ -2250,17 +2402,51 @@ function EditorTopLayerInner(props: any) {
                                         const renderSelectionContour = (
                                             ringPoints: number[],
                                             key: string,
-                                            strokeWidth: number
-                                        ) =>
-                                            obj.type === "hedge" ? (
-                                                <DynamicStrokeShape
-                                                    key={key}
-                                                    points={ringPoints}
-                                                    stroke={COLORS.orange}
-                                                    strokeWidth={strokeWidth}
-                                                    seedKey={`hedge-stroke:${obj.id}:selected:${key}`}
-                                                />
-                                            ) : (
+                                            strokeWidth: number,
+                                            refKey?: string,
+                                            ringBulges?: number[]
+                                        ) => {
+                                            const hasBulges = ringBulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+
+                                            if (obj.type === "hedge") {
+                                                return (
+                                                    <DynamicStrokeShape
+                                                        key={key}
+                                                        ref={refKey && selectedHedgeStrokeRefs ? (node) => {
+                                                            if (!node) return;
+                                                            selectedHedgeStrokeRefs.current[refKey] = node;
+                                                        } : undefined}
+                                                        points={ringPoints}
+                                                        stroke={COLORS.orange}
+                                                        strokeWidth={strokeWidth}
+                                                        seedKey={`hedge-stroke:${obj.id}:selected:${key}`}
+                                                    />
+                                                );
+                                            }
+
+                                            if (hasBulges && ringBulges) {
+                                                // ✅ BOGEN — arc-bewuste selectierand via sceneFunc
+                                                const captureBulges = ringBulges;
+                                                return (
+                                                    <Shape
+                                                        key={key}
+                                                        listening={false}
+                                                        perfectDrawEnabled={false}
+                                                        stroke={COLORS.orange}
+                                                        strokeWidth={strokeWidth}
+                                                        fillEnabled={false}
+                                                        sceneFunc={(ctx, shape) => {
+                                                            if (!ringPoints || ringPoints.length < 6) return;
+                                                            ctx.beginPath();
+                                                            traceBulgedPath(ctx, ringPoints, captureBulges, true);
+                                                            ctx.closePath();
+                                                            ctx.strokeShape(shape);
+                                                        }}
+                                                    />
+                                                );
+                                            }
+
+                                            return (
                                                 <Line
                                                     key={key}
                                                     points={ringPoints}
@@ -2275,18 +2461,26 @@ function EditorTopLayerInner(props: any) {
                                                     opacity={1}
                                                 />
                                             );
+                                        };
 
                                         return (
                                             <React.Fragment key={`sel-hole-poly-${obj.id}`}>
                                                 <PolygonWithHoles
+                                                    ref={(node) => {
+                                                        if (!node) return;
+                                                        if (selectedPolyWithHolesRefs) {
+                                                            selectedPolyWithHolesRefs.current[obj.id] = node;
+                                                        }
+                                                    }}
                                                     points={livePolygonPoints}
                                                     holes={livePolygonHoles}
+                                                    bulges={liveBulges}
                                                     fill={selectedPatternImage ? undefined : getObjectRenderStyle(obj).fill}
                                                     fillPriority={selectedPatternImage ? "pattern" : "color"}
                                                     fillPatternImage={selectedPatternImage as unknown as HTMLImageElement | undefined}
                                                     fillPatternRepeat={selectedPatternImage ? "repeat" : undefined}
-                                                    stroke={undefined}
-                                                    strokeWidth={0}
+                                                    stroke={COLORS.orange}
+                                                    strokeWidth={obj.id === selectedObjectId ? 4 : 3}
                                                     opacity={1}
                                                     draggable={false}
                                                     listening
@@ -2323,19 +2517,24 @@ function EditorTopLayerInner(props: any) {
                                                     livePolygonHoles
                                                 )}
 
-                                                {renderSelectionContour(
-                                                    livePolygonPoints,
-                                                    `${obj.id}-outer-contour`,
-                                                    obj.id === selectedObjectId ? 4 : 3
-                                                )}
-
-                                                {livePolygonHoles.map((holePts: number[], holeIndex: number) =>
+                                                {!isLiveEditingThisPolygon &&
                                                     renderSelectionContour(
-                                                        holePts,
-                                                        `${obj.id}-hole-contour-${holeIndex}`,
-                                                        obj.id === selectedObjectId ? 4 : 3
-                                                    )
-                                                )}
+                                                        livePolygonPoints,
+                                                        `${obj.id}-outer-contour`,
+                                                        obj.id === selectedObjectId ? 4 : 3,
+                                                        obj.id,
+                                                        liveBulges
+                                                    )}
+
+                                                {!isLiveEditingThisPolygon &&
+                                                    livePolygonHoles.map((holePts: number[], holeIndex: number) =>
+                                                        renderSelectionContour(
+                                                            holePts,
+                                                            `${obj.id}-hole-contour-${holeIndex}`,
+                                                            obj.id === selectedObjectId ? 4 : 3,
+                                                            `${obj.id}:h${holeIndex}`
+                                                        )
+                                                    )}
 
                                                 {renderResizeEdgeHits(livePolygonPoints, null)}
                                                 {livePolygonHoles.map((holePts: number[], holeIndex: number) => renderResizeEdgeHits(holePts, holeIndex))}
@@ -2420,26 +2619,41 @@ function EditorTopLayerInner(props: any) {
                                             ? getBuildingPatternCanvas(obj.type)
                                             : undefined;
 
+                                        // ✅ BOGEN — arc-bewust renderen als het object bogen heeft
+                                        const liveBulges = (() => {
+                                            const next = normalizeBulges(livePolygonPoints, obj.bulges);
+                                            if (
+                                                isBulgeDraggingRef.current &&
+                                                bulgeEditRef.current?.objectId === obj.id &&
+                                                typeof bulgeEditRef.current.segmentIndex === "number" &&
+                                                typeof bulgeEditRef.current.workingBulge === "number"
+                                            ) {
+                                                next[bulgeEditRef.current.segmentIndex] = bulgeEditRef.current.workingBulge;
+                                            }
+                                            return next;
+                                        })();
+                                        const noHolesStrokeW = obj.id === selectedObjectId ? 4 : 3;
+
                                         return (
                                             <React.Fragment key={`sel-poly-${obj.id}`}>
                                                 <>
-                                                    <Line
+                                                    <PolygonWithHoles
                                                         ref={(node) => {
                                                             if (!node) return;
-                                                            selectedLineRefs.current[obj.id] = node;
+                                                            if (selectedPolyWithHolesRefs) {
+                                                                selectedPolyWithHolesRefs.current[obj.id] = node;
+                                                            }
                                                         }}
                                                         points={livePolygonPoints}
-                                                        closed
+                                                        holes={[]}
+                                                        bulges={liveBulges}
                                                         fill={selectedPatternImage ? undefined : getObjectRenderStyle(obj).fill}
-                                                        fillEnabled
                                                         fillPriority={selectedPatternImage ? "pattern" : "color"}
                                                         fillPatternImage={selectedPatternImage as unknown as HTMLImageElement | undefined}
                                                         fillPatternRepeat={selectedPatternImage ? "repeat" : undefined}
                                                         stroke={obj.type === "hedge" ? undefined : COLORS.orange}
                                                         strokeEnabled={obj.type !== "hedge"}
-                                                        strokeWidth={obj.id === selectedObjectId ? 4 : 3}
-                                                        lineCap="butt"
-                                                        lineJoin="miter"
+                                                        strokeWidth={noHolesStrokeW}
                                                         opacity={1}
                                                         draggable={false}
                                                         onMouseEnter={() => {
@@ -2466,9 +2680,15 @@ function EditorTopLayerInner(props: any) {
 
                                                     {obj.type === "hedge" ? (
                                                         <DynamicStrokeShape
+                                                            ref={(node) => {
+                                                                if (!node) return;
+                                                                if (selectedHedgeStrokeRefs) {
+                                                                    selectedHedgeStrokeRefs.current[obj.id] = node;
+                                                                }
+                                                            }}
                                                             points={livePolygonPoints}
                                                             stroke={COLORS.orange}
-                                                            strokeWidth={obj.id === selectedObjectId ? 4 : 3}
+                                                            strokeWidth={noHolesStrokeW}
                                                             seedKey={`hedge-stroke:${obj.id}:selected`}
                                                         />
                                                     ) : null}
@@ -2601,6 +2821,7 @@ function EditorTopLayerInner(props: any) {
                                     const isLiveEditingThisPlantbed =
                                         isVertexEditingThisPlantbed ||
                                         isEdgeEditingThisPlantbed ||
+                                        (isBulgeDraggingRef.current && bulgeEditRef.current?.objectId === obj.id) ||
                                         isTreebedResizeEditingThisPlantbed ||
                                         isTreebedRotateEditingThisPlantbed;
 
@@ -2620,12 +2841,26 @@ function EditorTopLayerInner(props: any) {
                                             ? (edgeResizeRef.current?.workingHoles ?? obj.holes ?? [])
                                             : (obj.holes ?? []);
 
+                                    const liveBulges = (() => {
+                                        const next = normalizeBulges(livePoints, obj.bulges);
+                                        if (
+                                            isBulgeDraggingRef.current &&
+                                            bulgeEditRef.current?.objectId === obj.id &&
+                                            typeof bulgeEditRef.current.segmentIndex === "number" &&
+                                            typeof bulgeEditRef.current.workingBulge === "number"
+                                        ) {
+                                            next[bulgeEditRef.current.segmentIndex] = bulgeEditRef.current.workingBulge;
+                                        }
+                                        return next;
+                                    })();
+
                                     const no = (obj as any).plantbedNo ?? 0;
                                     const areaText = formatSquareMeters(
                                         getObjectAreaInSquareMeters({
                                             ...obj,
                                             points: livePoints,
                                             holes: liveHoles,
+                                            bulges: liveBulges,
                                         })
                                     );
 
@@ -2639,20 +2874,22 @@ function EditorTopLayerInner(props: any) {
                                         )
                                         : plantbedNumberLayouts.get(obj.id);
 
-                                    if (!label) return null;
+                                    if (!label || isLiveEditingThisPlantbed) return null;
 
                                     return renderNumberAreaLabel(
                                         obj,
                                         label,
                                         livePoints,
-                                        "plantbed-number-area"
+                                        "plantbed-number-area",
+                                        viewVisibility
                                     );
                                 })()}
 
                                 {activeTool === "select" && isUnifiedBoundaryType(obj.type) && selected.length === 1 && (() => {
                                     const liveBoundaryObject = getLiveBoundaryObject(obj);
                                     const boundaryHandles = getBoundaryEditableHandles(liveBoundaryObject);
-                                    const handleRadius = 6;
+                                    const handleRadius = 7 / stageScale;
+                                    const handleStrokeWidth = 2 / stageScale;
 
                                     if (!vertexHandleRefs.current[obj.id]) {
                                         vertexHandleRefs.current[obj.id] = {};
@@ -2668,7 +2905,7 @@ function EditorTopLayerInner(props: any) {
                                                     radius={handleRadius}
                                                     fill="#ffffff"
                                                     stroke={COLORS.orange}
-                                                    strokeWidth={2}
+                                                    strokeWidth={handleStrokeWidth}
                                                     opacity={1}
                                                     perfectDrawEnabled={false}
                                                     shadowForStrokeEnabled={false}
@@ -2828,6 +3065,101 @@ function EditorTopLayerInner(props: any) {
                                     );
                                 })()}
 
+                                {/* ── Boog/Bulge handles (BELOW vertex handles) ───────────────────── */}
+                                {activeTool === "select" &&
+                                    selected.length === 1 &&
+                                    objectSupportsBulges(obj) &&
+                                    (() => {
+                                        const livePts = (() => {
+                                            if (isVertexDraggingRef.current && vertexEditRef.current?.objectId === obj.id && Array.isArray(vertexEditRef.current?.workingPoints) && vertexEditRef.current!.workingPoints.length >= 6) {
+                                                return vertexEditRef.current!.workingPoints;
+                                            }
+                                            if (isEdgeResizingRef.current && edgeResizeRef.current?.objectId === obj.id && Array.isArray(edgeResizeRef.current?.workingPoints) && edgeResizeRef.current!.workingPoints.length >= 6) {
+                                                return edgeResizeRef.current!.workingPoints;
+                                            }
+                                            return obj.points;
+                                        })();
+
+                                        const bulges = normalizeBulges(livePts, obj.bulges);
+                                        const n = livePts.length / 2;
+                                        if (!bulgeHandleRefs.current[obj.id]) bulgeHandleRefs.current[obj.id] = {};
+
+                                        return (
+                                            <React.Fragment key={`${obj.id}-bulge-handles`}>
+                                                {Array.from({ length: n }).map((_, segIdx) => {
+                                                    const x1 = livePts[segIdx * 2];
+                                                    const y1 = livePts[segIdx * 2 + 1];
+                                                    const nextIdx = (segIdx + 1) % n;
+                                                    const x2 = livePts[nextIdx * 2];
+                                                    const y2 = livePts[nextIdx * 2 + 1];
+
+                                                    const [hx, hy] = apexPoint(x1, y1, x2, y2, bulges[segIdx] ?? 0);
+
+                                                    return (
+                                                        <Circle
+                                                            key={`${obj.id}-bh-${segIdx}`}
+                                                            x={hx}
+                                                            y={hy}
+                                                            radius={7 / stageScale}
+                                                            fill="white"
+                                                            stroke="#4488FF"
+                                                            strokeWidth={2 / stageScale}
+                                                            opacity={1}
+                                                            perfectDrawEnabled={false}
+                                                            ref={(node) => {
+                                                                if (!node) return;
+                                                                bulgeHandleRefs.current[obj.id][segIdx] = node;
+                                                            }}
+                                                            onMouseDown={(evt) => {
+                                                                if (evt?.evt?.button === 1 || isPanning) {
+                                                                    evt.cancelBubble = true;
+                                                                    return;
+                                                                }
+                                                                evt.cancelBubble = true;
+                                                                evt.evt?.preventDefault?.();
+
+                                                                suppressPlantbedFocusRef.current = true;
+                                                                pendingPlantbedClickRef.current = null;
+                                                                plantbedClickMovedRef.current = false;
+
+                                                                isBulgeDraggingRef.current = true;
+                                                                setIsBulgeDragging(true);
+
+                                                                bulgeEditRef.current = {
+                                                                    objectId: obj.id,
+                                                                    segmentIndex: segIdx,
+                                                                    x1, y1, x2, y2,
+                                                                    workingBulge: bulges[segIdx] ?? 0,
+                                                                    snapName: null,
+                                                                };
+
+                                                                const st = stageRef.current;
+                                                                if (st) st.container().style.cursor = "grabbing";
+                                                            }}
+                                                            onDblClick={(evt) => {
+                                                                evt.cancelBubble = true;
+                                                                // Double-click resets bulge to 0
+                                                                useProjectStore.getState().setSegmentBulge(obj.id, segIdx, 0);
+                                                            }}
+                                                            onMouseEnter={(evt) => {
+                                                                evt.cancelBubble = true;
+                                                                const st = stageRef.current;
+                                                                if (st) st.container().style.cursor = "grab";
+                                                            }}
+                                                            onMouseLeave={(evt) => {
+                                                                evt.cancelBubble = true;
+                                                                const st = stageRef.current;
+                                                                if (st && !isBulgeDraggingRef.current) st.container().style.cursor = "default";
+                                                            }}
+                                                        />
+                                                    );
+                                                })}
+                                            </React.Fragment>
+                                        );
+                                    })()}
+
+                                {/* Active bulge label/overlay is rendered via HelloEditor BulgeDragOverlay */}
+
                                 {activeTool === "select" && obj.type !== "treebed" && !isUnifiedBoundaryType(obj.type) && (() => {
                                     const isVertexEditingThisPolygon =
                                         isVertexDraggingRef.current &&
@@ -2853,7 +3185,8 @@ function EditorTopLayerInner(props: any) {
                                             ? (edgeResizeRef.current!.workingHoles ?? obj.holes ?? [])
                                             : (obj.holes ?? []);
 
-                                    const handleRadius = 6;
+                                    const handleRadius = 7 / stageScale;
+                                    const handleStrokeWidth = 2 / stageScale;
 
                                     if (!vertexHandleRefs.current[obj.id]) vertexHandleRefs.current[obj.id] = {};
 
@@ -2903,7 +3236,7 @@ function EditorTopLayerInner(props: any) {
                                                     radius={handleRadius}
                                                     fill="#ffffff"
                                                     stroke={COLORS.orange}
-                                                    strokeWidth={2}
+                                                    strokeWidth={handleStrokeWidth}
                                                     opacity={1}
                                                     perfectDrawEnabled={false}
                                                     ref={(node) => {
@@ -3008,7 +3341,7 @@ function EditorTopLayerInner(props: any) {
                                                         radius={handleRadius}
                                                         fill="#ffffff"
                                                         stroke={COLORS.orange}
-                                                        strokeWidth={2}
+                                                        strokeWidth={handleStrokeWidth}
                                                         opacity={1}
                                                         perfectDrawEnabled={false}
                                                         ref={(node) => {
@@ -3115,7 +3448,10 @@ function EditorTopLayerInner(props: any) {
                             selected.length > 0 &&
                             !isBoxSelecting &&
                             !shouldHideHeavySceneDecorations &&
-                            !shouldHideSelectionLabelsForPerformance && (
+                            !shouldHideSelectionLabelsForPerformance &&
+                            !isVertexDraggingRef.current &&
+                            !isEdgeResizingRef.current &&
+                            !isBulgeDraggingRef.current && (
                                 <>
                                     {(() => {
                                         const LABEL_GAP_PX = 32;
@@ -3719,17 +4055,27 @@ function EditorTopLayerInner(props: any) {
                                     })()}
                                 </>
                             )}
-                        {selected.length > 0 && (
-                            <LiveMeasurementSection
-                                selected={selected}
-                                selectedObjectId={selectedObjectId}
-                                stageScale={stageScale}
-                                activeDrawType={activeDrawType}
-                                plantbedNumberLayouts={plantbedNumberLayouts}
-                                isSelectionDragging={isSelectionDragging}
-                            />
-                        )}
-                    </Group>
+                            {selected.length > 0 && (
+                                <LiveMeasurementSection
+                                    selected={selected}
+                                    selectedObjectId={selectedObjectId}
+                                    stageScale={stageScale}
+                                    activeDrawType={activeDrawType}
+                                    plantbedNumberLayouts={plantbedNumberLayouts}
+                                    isSelectionDragging={isSelectionDragging}
+                                    isLiveEditActive={isLiveEditActive}
+                                />
+                            )}
+                            {selected.length > 0 && (
+                                <LivePlantbedLabelSection
+                                    selected={selected}
+                                    viewVisibility={viewVisibility}
+                                    isLiveEditActive={isLiveEditActive}
+                                />
+                            )}
+                        </Group>
+                    );
+                    })()
                 )}
 
                 {!shouldHideHeavySceneDecorations && (

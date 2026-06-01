@@ -1,11 +1,12 @@
 import React from "react";
-import { Layer, Line } from "react-konva";
+import { Layer, Line, Shape } from "react-konva";
 import { PolyObject, OBJECT_STYLES, ObjectType } from "@/state/projectStore";
 import { isUnifiedBoundaryType, getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
 import {
     PolygonWithHoles,
 } from "@/features/editor/lib/editorCanvasPrimitives";
 import { DynamicStrokeShape } from "@/features/editor/lib/treebedGeometry";
+import { traceBulgedPath, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
 
 type BaseStrokeLayerProps = {
     unselectedNonPlantbeds: PolyObject[];
@@ -81,6 +82,7 @@ export default React.memo(function BaseStrokeLayer({
                             key={`stroke-${obj.id}`}
                             points={obj.points}
                             holes={obj.holes}
+                            bulges={obj.bulges}
                             fill={undefined}
                             stroke={getObjectRenderStyle(obj).stroke}
                             strokeWidth={2}
@@ -111,6 +113,25 @@ export default React.memo(function BaseStrokeLayer({
                     return null;
                 }
 
+                // ✅ BOGEN — gebruik PolygonWithHoles als het object bogen heeft
+                const hasBulges = obj.bulges?.some((b) => Math.abs(b) > 0.004);
+                if (hasBulges) {
+                    return (
+                        <PolygonWithHoles
+                            key={`stroke-${obj.id}`}
+                            points={obj.points}
+                            holes={[]}
+                            bulges={obj.bulges}
+                            fill={undefined}
+                            stroke={getObjectRenderStyle(obj).stroke}
+                            strokeWidth={2}
+                            opacity={1}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                        />
+                    );
+                }
+
                 return (
                     <Line
                         key={`stroke-${obj.id}`}
@@ -128,29 +149,80 @@ export default React.memo(function BaseStrokeLayer({
                 );
             })}
 
-            {/* Erase PASS: snij alleen strokes weg bij plantbed-rand (fills zitten in andere layer => geen gap) */}
-            {unselectedPlantbeds.map((pb) => (
-                <Line
-                    key={`pb-erase-${pb.id}`}
-                    points={pb.points}
-                    closed
-                    fillEnabled={false}
-                    stroke="black"
-                    strokeWidth={3}
-                    lineCap="butt"
-                    lineJoin="miter"
-                    listening={false}
-                    perfectDrawEnabled={false}
-                    globalCompositeOperation="destination-out"
-                    opacity={1}
-                />
-            ))}
+            {/* Erase PASS: snij strokes weg bij plantbed-rand — arc-bewust */}
+            {unselectedPlantbeds.map((pb) => {
+                const hasBulges = pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                if (hasBulges && pb.bulges) {
+                    const capturePts = pb.points;
+                    const captureBulges = pb.bulges;
+                    return (
+                        <Shape
+                            key={`pb-erase-${pb.id}`}
+                            listening={false}
+                            perfectDrawEnabled={false}
+                            opacity={1}
+                            sceneFunc={(ctx) => {
+                                if (!capturePts || capturePts.length < 6) return;
+                                ctx.beginPath();
+                                traceBulgedPath(ctx as any, capturePts, captureBulges, true);
+                                ctx.closePath();
+                                (ctx as any).globalCompositeOperation = "destination-out";
+                                (ctx as any).strokeStyle = "black";
+                                (ctx as any).lineWidth = 3;
+                                (ctx as any).stroke();
+                                (ctx as any).globalCompositeOperation = "source-over";
+                            }}
+                        />
+                    );
+                }
+                return (
+                    <Line
+                        key={`pb-erase-${pb.id}`}
+                        points={pb.points}
+                        closed
+                        fillEnabled={false}
+                        stroke="black"
+                        strokeWidth={3}
+                        lineCap="butt"
+                        lineJoin="miter"
+                        listening={false}
+                        perfectDrawEnabled={false}
+                        globalCompositeOperation={"destination-out" as any}
+                        opacity={1}
+                    />
+                );
+            })}
 
-            {/* Plantbed dashed outline bovenop */}
+            {/* Plantbed dashed outline bovenop — arc-bewust */}
             {unselectedPlantbeds
                 .filter((pb) => dragOverPlantbedId !== pb.id)
-                .flatMap((pb) =>
-                    getPlantbedOutlineSegments([pb]).map((seg, index) => (
+                .map((pb) => {
+                    const hasBulges = pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                    if (hasBulges && pb.bulges) {
+                        const capturePts = pb.points;
+                        const captureBulges = pb.bulges;
+                        const strokeColor = getObjectRenderStyle(pb).stroke;
+                        return (
+                            <Shape
+                                key={`pb-dash-${pb.id}`}
+                                listening={false}
+                                perfectDrawEnabled={false}
+                                opacity={1}
+                                sceneFunc={(ctx) => {
+                                    if (!capturePts || capturePts.length < 6) return;
+                                    ctx.beginPath();
+                                    traceBulgedPath(ctx as any, capturePts, captureBulges, true);
+                                    ctx.closePath();
+                                    (ctx as any).strokeStyle = strokeColor;
+                                    (ctx as any).lineWidth = 2;
+                                    (ctx as any).setLineDash([6, 4]);
+                                    (ctx as any).stroke();
+                                    (ctx as any).setLineDash([]);
+                                }}
+                            />
+                        );
+                    }
+                    return getPlantbedOutlineSegments([pb]).map((seg, index) => (
                         <Line
                             key={`pb-dash-seg-${pb.id}-${index}`}
                             points={seg}
@@ -166,8 +238,8 @@ export default React.memo(function BaseStrokeLayer({
                             perfectDrawEnabled={false}
                             opacity={1}
                         />
-                    ))
-                )}
+                    ));
+                })}
 
             {null}
         </Layer>

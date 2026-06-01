@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Stage, Layer, Line, Rect, Group, Shape, Circle, Text } from "react-konva";
 import { Html } from "react-konva-utils";
 import { nanoid } from "nanoid";
-import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX, ViewVisibilityKey, CompassDirection } from "@/state/projectStore";
+import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX, ViewVisibilityKey, CompassDirection, objectSupportsBulges, normalizeBulges } from "@/state/projectStore";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import EditorToolbar from "@/features/editor/components/EditorToolbar";
 import EstimatedPlantingPriceBadge from "@/features/editor/components/editor/EstimatedPlantingPriceBadge";
@@ -47,6 +47,8 @@ import {
     inferBoundaryRenderSide,
     isUnifiedBoundaryType,
 } from "@/features/editor/lib/boundarySystem";
+import { bulgeFromDraggedApex, snapBulge, apexPoint } from "@/features/editor/lib/bulgeMath";
+import { useBulgeDragStore, setBulgeDragLive, clearBulgeDrag } from "@/features/editor/state/bulgeDragStore";
 import {
     inferPolylineRenderSide as inferBoundaryPolylineRenderSide,
     getOneSidedPolylineRenderPoints as getBoundaryOneSidedPolylineRenderPoints,
@@ -1635,6 +1637,70 @@ function getNextSelectionIdsForToggle(
 // Crosshair lines are updated imperatively via Konva refs — no React state, no re-renders.
 const CROSSHAIR_HALF = 100_000; // world-space px — always covers the canvas
 
+/**
+ * ✅ BOGEN — Isolated HTML overlay for live bulge drag label + snap ring.
+ * Positioned absolutely inside the canvas-wrap (position:relative) container.
+ * Only this component re-renders on drag frames via useBulgeDragStore.
+ */
+function BulgeDragOverlay() {
+    const isActive = useBulgeDragStore((s) => s.isActive);
+    const screenX = useBulgeDragStore((s) => s.screenX);
+    const screenY = useBulgeDragStore((s) => s.screenY);
+    const workingBulge = useBulgeDragStore((s) => s.workingBulge);
+    const snapName = useBulgeDragStore((s) => s.snapName);
+
+    if (!isActive) return null;
+
+    const snapped = !!snapName;
+    const labelText = snapped
+        ? snapName!
+        : `bulge ${workingBulge >= 0 ? "" : "−"}${Math.abs(workingBulge).toFixed(2)}`;
+
+    return (
+        <>
+            {/* Value label — positioned above the active handle */}
+            <div
+                style={{
+                    position: "absolute",
+                    left: screenX,
+                    top: screenY,
+                    transform: "translate(-50%, -175%)",
+                    background: snapped ? "#EEF3FF" : "#ffffff",
+                    border: `1px solid ${snapped ? "#cfdcfb" : "#E3E2E2"}`,
+                    borderRadius: 5,
+                    padding: "3px 7px",
+                    font: "700 11px/1 'DM Sans', system-ui, sans-serif",
+                    color: "#4488FF",
+                    whiteSpace: "nowrap",
+                    pointerEvents: "none",
+                    zIndex: 900,
+                    boxShadow: "0 1px 3px rgba(0,0,0,.08)",
+                }}
+            >
+                {labelText}
+            </div>
+            {/* Snap ring */}
+            {snapped && (
+                <div
+                    style={{
+                        position: "absolute",
+                        left: screenX,
+                        top: screenY,
+                        width: 30,
+                        height: 30,
+                        borderRadius: "50%",
+                        transform: "translate(-50%, -50%)",
+                        border: "2px dashed #4488FF",
+                        opacity: 0.6,
+                        pointerEvents: "none",
+                        zIndex: 899,
+                    }}
+                />
+            )}
+        </>
+    );
+}
+
 
 export default function HelloEditor() {
     const notify = useAppNotify();
@@ -2633,6 +2699,9 @@ export default function HelloEditor() {
 
     const selectedObjectIdRef = useRef<string | null>(null);
     useEffect(() => void (selectedObjectIdRef.current = selectedObjectId), [selectedObjectId]);
+    useEffect(() => {
+        clearLiveEditMeasurement();
+    }, [selectedObjectId, selectedObjectIds, clearLiveEditMeasurement]);
 
     // Box select
     const [isBoxSelecting, setIsBoxSelecting] = useState(false);
@@ -3105,6 +3174,7 @@ export default function HelloEditor() {
     // RAF refs for throttling live measurement store updates during vertex/edge editing.
     const vertexDragRafRef = useRef<number | null>(null);
     const edgeLiveMeasureRafRef = useRef<number | null>(null);
+    const bulgeLiveMeasureRafRef = useRef<number | null>(null);
 
     // Computes the live primary object and layout, then pushes to liveEditStore.
     // Runs inside RAF callbacks — reads everything from refs to avoid stale closures.
@@ -3155,6 +3225,18 @@ export default function HelloEditor() {
                 points: [...edgeResizeRef.current.workingPoints],
                 holes: (edgeResizeRef.current.workingHoles ?? baseObject.holes ?? []).map((h: number[]) => [...h]),
             };
+        } else if (
+            isBulgeDraggingRef.current &&
+            bulgeEditRef.current?.objectId === baseObject.id &&
+            typeof bulgeEditRef.current.segmentIndex === "number" &&
+            typeof bulgeEditRef.current.workingBulge === "number"
+        ) {
+            const liveBulges = normalizeBulges(baseObject.points, baseObject.bulges);
+            liveBulges[bulgeEditRef.current.segmentIndex] = bulgeEditRef.current.workingBulge;
+            livePrimary = {
+                ...baseObject,
+                bulges: liveBulges,
+            };
         }
 
         // Mirror livePlantbedNumberLayouts logic
@@ -3176,6 +3258,7 @@ export default function HelloEditor() {
         const isInteractiveEdit =
             isVertexDraggingRef.current ||
             isEdgeResizingRef.current ||
+            isBulgeDraggingRef.current ||
             treebedRotatePreviewRef.current !== null ||
             treebedResizePreviewRef.current !== null;
         const committedLayout = plantbedNumberLayouts.get(livePrimary.id);
@@ -3274,12 +3357,21 @@ export default function HelloEditor() {
         workingHoles?: number[][];
     } | null>(null);
 
+
     // Edge-resize live measurement — uses liveEditStore (same pattern as vertex drag).
     // Only LiveMeasurementSection re-renders; no HelloEditor re-render.
     const requestEdgeResizeRerender = useCallback(() => {
         if (edgeLiveMeasureRafRef.current) return;
         edgeLiveMeasureRafRef.current = requestAnimationFrame(() => {
             edgeLiveMeasureRafRef.current = null;
+            computeAndPublishLiveMeasurement();
+        });
+    }, [computeAndPublishLiveMeasurement]);
+
+    const requestBulgeDragRerender = useCallback(() => {
+        if (bulgeLiveMeasureRafRef.current) return;
+        bulgeLiveMeasureRafRef.current = requestAnimationFrame(() => {
+            bulgeLiveMeasureRafRef.current = null;
             computeAndPublishLiveMeasurement();
         });
     }, [computeAndPublishLiveMeasurement]);
@@ -3297,6 +3389,7 @@ export default function HelloEditor() {
 
     // Same deduplication guard for vertex drag.
     const lastVertexDragWorldRef = useRef<{ x: number; y: number } | null>(null);
+
 
     const livePrimaryMeasurementObject = useMemo<PolyObject | null>(() => {
         if (!selectedObjectId) return null;
@@ -3365,8 +3458,24 @@ export default function HelloEditor() {
     // livePlantbedNumberLayouts useMemo removed — live layout data now flows through liveEditStore
     // via computeAndPublishLiveMeasurement → LiveMeasurementSection in EditorTopLayer.
     const selectedLineRefs = useRef<Record<string, any>>({});
+    const selectedHedgeStrokeRefs = useRef<Record<string, any>>({});
+    const selectedPolyWithHolesRefs = useRef<Record<string, any>>({});
     const vertexHandleRefs = useRef<Record<string, Record<string, any>>>({});
     const activeVertexIndexRef = useRef<number | null>(null);
+
+    // ── Boog/Bulge drag refs ──────────────────────────────────────────────────
+    const [isBulgeDragging, setIsBulgeDragging] = useState(false);
+    const isBulgeDraggingRef = useRef(false);
+    const bulgeEditRef = useRef<{
+        objectId: string;
+        segmentIndex: number;
+        x1: number; y1: number;
+        x2: number; y2: number;
+        workingBulge: number;
+        snapName: string | null;
+    } | null>(null);
+    const bulgeHandleRefs = useRef<Record<string, Record<number, any>>>({});
+    // ─────────────────────────────────────────────────────────────────────────
 
     const NOTICE_FADE_MS = 250;
 
@@ -3891,6 +4000,11 @@ export default function HelloEditor() {
             if (edgeLiveMeasureRafRef.current) {
                 cancelAnimationFrame(edgeLiveMeasureRafRef.current);
                 edgeLiveMeasureRafRef.current = null;
+            }
+
+            if (bulgeLiveMeasureRafRef.current) {
+                cancelAnimationFrame(bulgeLiveMeasureRafRef.current);
+                bulgeLiveMeasureRafRef.current = null;
             }
 
             if (fenceHintRaf1Ref.current) {
@@ -4602,6 +4716,58 @@ export default function HelloEditor() {
                 return;
             }
 
+            if (isBulgeDraggingRef.current && activeTool === "select") {
+                const edit = bulgeEditRef.current;
+                const world = getPointerWorldPos(stage);
+                if (!edit || !world) return;
+
+                const rawBulge = bulgeFromDraggedApex(edit.x1, edit.y1, edit.x2, edit.y2, world.x, world.y);
+                const snapped = snapBulge(rawBulge);
+                edit.workingBulge = snapped.value;
+                edit.snapName = snapped.name;
+
+                // Apex position in world coords
+                const [hx, hy] = apexPoint(edit.x1, edit.y1, edit.x2, edit.y2, edit.workingBulge);
+
+                // ✅ FIX 1A: Update polygon shape imperatively (fill + contour follow the arc live)
+                const obj = (objectsRef.current as PolyObject[]).find((o: PolyObject) => o.id === edit.objectId);
+                if (obj) {
+                    const workingBulges = normalizeBulges(obj.points, obj.bulges);
+                    workingBulges[edit.segmentIndex] = edit.workingBulge;
+                    selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(
+                        obj.points,
+                        obj.holes ?? [],
+                        workingBulges
+                    );
+                }
+
+                // ✅ FIX 1B: Update HTML overlay (label + snap ring) via store
+                const screenPt = stage.getAbsoluteTransform().point({ x: hx, y: hy });
+                const screenX = screenPt.x;
+                const screenY = screenPt.y;
+                setBulgeDragLive({
+                    screenX,
+                    screenY,
+                    workingBulge: edit.workingBulge,
+                    snapName: edit.snapName,
+                    chordX1: edit.x1, chordY1: edit.y1,
+                    chordX2: edit.x2, chordY2: edit.y2,
+                    stageScale: stageScaleRef.current,
+                });
+
+                // Also move the active Konva handle (blue filled circle during drag)
+                const h = bulgeHandleRefs.current[edit.objectId]?.[edit.segmentIndex];
+                if (h) {
+                    h.position({ x: hx, y: hy });
+                    const layer = h.getLayer?.();
+                    if (layer) layer.batchDraw();
+                }
+
+                requestBulgeDragRerender();
+
+                return;
+            }
+
             if (
                 evt.shiftKey &&
                 activeTool === "draw" &&
@@ -4683,9 +4849,16 @@ export default function HelloEditor() {
                     if (hha) hha.position({ x: ring[aIdx], y: ring[aIdx + 1] });
                     if (hhb) hhb.position({ x: ring[bIdx], y: ring[bIdx + 1] });
 
-                    const line = selectedLineRefs.current[edit.objectId];
-                    const layer = line?.getLayer?.();
-                    if (layer) layer.batchDraw();
+                    // Update holes-branch fill and hole contour stroke live.
+                    // setPointsAndHoles / setPoints each call batchDraw internally.
+                    const workingHoles = edit.workingHoles ?? [];
+                    const liveBulges = normalizeBulges(edit.workingPoints, editedObj?.bulges);
+                    selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(
+                        edit.workingPoints,
+                        workingHoles,
+                        liveBulges
+                    );
+                    selectedHedgeStrokeRefs.current[`${edit.objectId}:h${edit.holeIndex}`]?.setPoints(ring);
 
                     return;
                 }
@@ -4716,6 +4889,20 @@ export default function HelloEditor() {
                 if (ha) ha.position({ x: nextPoints[aIdx], y: nextPoints[aIdx + 1] });
                 if (hb) hb.position({ x: nextPoints[bIdx], y: nextPoints[bIdx + 1] });
 
+                // Keep bulge handles in sync during live outer edge resize.
+                const liveBulgesForHandles = normalizeBulges(nextPoints, editedObj?.bulges);
+                const liveBulgeHandles = bulgeHandleRefs.current[edit.objectId] ?? {};
+                for (let segIdx = 0; segIdx < pointCount; segIdx++) {
+                    const x1 = nextPoints[segIdx * 2];
+                    const y1 = nextPoints[segIdx * 2 + 1];
+                    const nextIdx = (segIdx + 1) % pointCount;
+                    const x2 = nextPoints[nextIdx * 2];
+                    const y2 = nextPoints[nextIdx * 2 + 1];
+                    const [bhx, bhy] = apexPoint(x1, y1, x2, y2, liveBulgesForHandles[segIdx] ?? 0);
+                    const bh = liveBulgeHandles[segIdx];
+                    if (bh) bh.position({ x: bhx, y: bhy });
+                }
+
                 const line = selectedLineRefs.current[edit.objectId];
                 if (line) {
                     const liveRenderPoints =
@@ -4727,6 +4914,14 @@ export default function HelloEditor() {
                     const layer = line.getLayer?.();
                     if (layer) layer.batchDraw();
                 }
+
+                // Update holes-branch fill (PolygonWithHoles) live.
+                const workingHoles = edit.workingHoles ?? (editedObj?.holes ?? []);
+                const liveBulges = normalizeBulges(nextPoints, editedObj?.bulges);
+                selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(nextPoints, workingHoles, liveBulges);
+
+                // Update outer hedge stroke (both holes and no-holes branch).
+                selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(nextPoints);
 
                 return;
             }
@@ -4779,6 +4974,23 @@ export default function HelloEditor() {
                     line.points(edit.workingPoints);
                 }
 
+                // Update hedge shapes imperatively so they follow the vertex drag live.
+                const vWorkingHoles = edit.workingHoles ?? (editedObj?.holes ?? []);
+                const liveBulges = normalizeBulges(edit.workingPoints, editedObj?.bulges);
+                selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(
+                    edit.workingPoints,
+                    vWorkingHoles,
+                    liveBulges
+                );
+                if (edit.holeIndex === null) {
+                    selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(edit.workingPoints);
+                } else {
+                    const hPts = vWorkingHoles[edit.holeIndex];
+                    if (hPts) {
+                        selectedHedgeStrokeRefs.current[`${edit.objectId}:h${edit.holeIndex}`]?.setPoints(hPts);
+                    }
+                }
+
                 // ✅ pak de handle van het juiste object
                 const handleIdx = vi / 2;
                 const handleKey =
@@ -4787,6 +4999,22 @@ export default function HelloEditor() {
                 const h = vertexHandleRefs.current[edit.objectId]?.[handleKey];
                 if (h) {
                     h.position({ x: cx, y: cy });
+                }
+
+                // Keep bulge handles in sync during live outer vertex drag.
+                if (edit.holeIndex === null) {
+                    const pointCount = edit.workingPoints.length / 2;
+                    const liveBulgeHandles = bulgeHandleRefs.current[edit.objectId] ?? {};
+                    for (let segIdx = 0; segIdx < pointCount; segIdx++) {
+                        const x1 = edit.workingPoints[segIdx * 2];
+                        const y1 = edit.workingPoints[segIdx * 2 + 1];
+                        const nextIdx = (segIdx + 1) % pointCount;
+                        const x2 = edit.workingPoints[nextIdx * 2];
+                        const y2 = edit.workingPoints[nextIdx * 2 + 1];
+                        const [bhx, bhy] = apexPoint(x1, y1, x2, y2, liveBulges[segIdx] ?? 0);
+                        const bh = liveBulgeHandles[segIdx];
+                        if (bh) bh.position({ x: bhx, y: bhy });
+                    }
                 }
 
                 // ✅ Tijdens vertex-drag altijd een throttled React rerender forceren,
@@ -4900,7 +5128,7 @@ export default function HelloEditor() {
                 }
             }
         },
-        [activeTool, isBoxSelecting, isPanning, commitPreview]
+        [activeTool, isBoxSelecting, isPanning, commitPreview, requestBulgeDragRerender]
     );
 
     const handleMouseUp = useCallback(
@@ -4909,6 +5137,26 @@ export default function HelloEditor() {
 
             if (treebedRotateRef.current && evt.button === 0) {
                 finishTreebedRotate();
+                return;
+            }
+
+            if (isBulgeDraggingRef.current && evt.button === 0) {
+                const edit = bulgeEditRef.current;
+                isBulgeDraggingRef.current = false;
+                bulgeEditRef.current = null;
+                setIsBulgeDragging(false);
+                clearBulgeDrag(); // ✅ Hide HTML overlay
+                clearLiveEditMeasurement();
+
+                if (edit) {
+                    useProjectStore.getState().setSegmentBulge(edit.objectId, edit.segmentIndex, edit.workingBulge);
+                }
+
+                requestAnimationFrame(() => {
+                    suppressPlantbedFocusRef.current = false;
+                    const st = stageRef.current;
+                    if (st) st.container().style.cursor = 'default';
+                });
                 return;
             }
 
@@ -6327,6 +6575,9 @@ export default function HelloEditor() {
                         className="h-full w-full relative"
                         style={{ background: COLORS.greenLight }}
                     >
+                        {/* ✅ BOGEN — HTML overlay for live bulge drag label + snap ring */}
+                        <BulgeDragOverlay />
+
                         <div className="absolute inset-0 overflow-hidden">
                             <Stage
                                 ref={stageRef}
@@ -6579,9 +6830,16 @@ export default function HelloEditor() {
                                                 isVertexDraggingRef={isVertexDraggingRef}
                                                 activeVertexIndexRef={activeVertexIndexRef}
                                                 selectedLineRefs={selectedLineRefs}
+                                                selectedHedgeStrokeRefs={selectedHedgeStrokeRefs}
+                                                selectedPolyWithHolesRefs={selectedPolyWithHolesRefs}
                                                 vertexHandleRefs={vertexHandleRefs}
                                                 vertexEditRef={vertexEditRef}
                                                 edgeResizeRef={edgeResizeRef}
+                                                isBulgeDraggingRef={isBulgeDraggingRef}
+                                                isBulgeDragging={isBulgeDragging}
+                                                setIsBulgeDragging={setIsBulgeDragging}
+                                                bulgeEditRef={bulgeEditRef}
+                                                bulgeHandleRefs={bulgeHandleRefs}
                                                 pendingPlantbedClickRef={pendingPlantbedClickRef}
                                                 plantbedClickMovedRef={plantbedClickMovedRef}
                                                 startTreebedRotate={startTreebedRotate}

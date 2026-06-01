@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef, useImperativeHandle, useEffect } from "react";
 import { Circle, Shape } from "react-konva";
 import type { PolyObject, TreebedVariant } from "@/state/projectStore";
 import { clamp, bboxFromPoints, snapToGrid } from "@/features/editor/lib/editorCanvasMath";
@@ -131,27 +131,37 @@ function getDynamicStrokeSamplePoints(
     return sampled;
 }
 
-export function DynamicStrokeShape({
-    points,
-    stroke,
-    strokeWidth,
-    seedKey,
-    closed = true,
-    listening = false,
-    dash,
-    dashEnabled,
-    opacity,
-}: {
-    points: number[];
-    stroke: string;
-    strokeWidth: number;
-    seedKey: string;
-    closed?: boolean;
-    listening?: boolean;
-    dash?: number[];
-    dashEnabled?: boolean;
-    opacity?: number;
-}) {
+export type DynamicStrokeShapeHandle = {
+    setPoints: (newPoints: number[]) => void;
+};
+
+export const DynamicStrokeShape = React.forwardRef<
+    DynamicStrokeShapeHandle,
+    {
+        points: number[];
+        stroke: string;
+        strokeWidth: number;
+        seedKey: string;
+        closed?: boolean;
+        listening?: boolean;
+        dash?: number[];
+        dashEnabled?: boolean;
+        opacity?: number;
+    }
+>(function DynamicStrokeShape(
+    {
+        points,
+        stroke,
+        strokeWidth,
+        seedKey,
+        closed = true,
+        listening = false,
+        dash,
+        dashEnabled,
+        opacity,
+    },
+    ref
+) {
     // Cache the sampled points: only recompute when this object's points actually change.
     // getDynamicStrokeSamplePoints is expensive (3 nested loops + noise math per edge segment).
     // Zustand maintains referential stability per object, so `points` only gets a new reference
@@ -161,8 +171,24 @@ export function DynamicStrokeShape({
         [points, seedKey, closed]
     );
 
+    // Mutable ref so sceneFunc always reads the latest sampled points without closure staleness.
+    const sampledRef = useRef<DynamicStrokePoint[]>(sampled);
+    const shapeRef = useRef<any>(null);
+
+    useEffect(() => {
+        sampledRef.current = sampled;
+    }, [sampled]);
+
+    useImperativeHandle(ref, () => ({
+        setPoints(newPoints: number[]) {
+            sampledRef.current = getDynamicStrokeSamplePoints(newPoints, seedKey, closed);
+            shapeRef.current?.getLayer()?.batchDraw();
+        },
+    }));
+
     return (
         <Shape
+            ref={shapeRef}
             listening={listening}
             perfectDrawEnabled={false}
             stroke={stroke}
@@ -173,13 +199,14 @@ export function DynamicStrokeShape({
             dashEnabled={dashEnabled}
             opacity={opacity}
             sceneFunc={(ctx, shape) => {
-                if (sampled.length < 2) return;
+                const s = sampledRef.current;
+                if (s.length < 2) return;
 
                 ctx.beginPath();
 
                 if (closed) {
-                    const last = sampled[sampled.length - 1];
-                    const first = sampled[0];
+                    const last = s[s.length - 1];
+                    const first = s[0];
                     const startMid = {
                         x: (last.x + first.x) / 2,
                         y: (last.y + first.y) / 2,
@@ -187,9 +214,9 @@ export function DynamicStrokeShape({
 
                     ctx.moveTo(startMid.x, startMid.y);
 
-                    for (let i = 0; i < sampled.length; i += 1) {
-                        const current = sampled[i];
-                        const next = sampled[(i + 1) % sampled.length];
+                    for (let i = 0; i < s.length; i += 1) {
+                        const current = s[i];
+                        const next = s[(i + 1) % s.length];
                         const mid = {
                             x: (current.x + next.x) / 2,
                             y: (current.y + next.y) / 2,
@@ -200,14 +227,14 @@ export function DynamicStrokeShape({
 
                     ctx.closePath();
                 } else {
-                    ctx.moveTo(sampled[0].x, sampled[0].y);
+                    ctx.moveTo(s[0].x, s[0].y);
 
-                    if (sampled.length === 2) {
-                        ctx.lineTo(sampled[1].x, sampled[1].y);
+                    if (s.length === 2) {
+                        ctx.lineTo(s[1].x, s[1].y);
                     } else {
-                        for (let i = 1; i < sampled.length - 1; i += 1) {
-                            const current = sampled[i];
-                            const next = sampled[i + 1];
+                        for (let i = 1; i < s.length - 1; i += 1) {
+                            const current = s[i];
+                            const next = s[i + 1];
                             const mid = {
                                 x: (current.x + next.x) / 2,
                                 y: (current.y + next.y) / 2,
@@ -216,8 +243,8 @@ export function DynamicStrokeShape({
                             ctx.quadraticCurveTo(current.x, current.y, mid.x, mid.y);
                         }
 
-                        const penultimate = sampled[sampled.length - 2];
-                        const last = sampled[sampled.length - 1];
+                        const penultimate = s[s.length - 2];
+                        const last = s[s.length - 1];
                         ctx.quadraticCurveTo(penultimate.x, penultimate.y, last.x, last.y);
                     }
                 }
@@ -226,7 +253,7 @@ export function DynamicStrokeShape({
             }}
         />
     );
-}
+});
 
 export function rotatePointQuarterTurnClockwise(
     x: number,

@@ -1,6 +1,7 @@
 import type { ObjectType, PolyObject } from "./projectStore";
 import { AREA_MEASURABLE_OBJECT_TYPES } from "@/features/editor/components/editor/objectMenuConfig";
 import { getBoundaryBandShape, isUnifiedBoundaryType } from "@/features/editor/lib/boundarySystem";
+import { bulgedPolygonArea } from "@/features/editor/lib/bulgeMath";
 
 export const EDITOR_METRIC_SCALE = {
     editorUnitsPerGridStep: 15,
@@ -69,7 +70,7 @@ export function getPolygonAreaAbs(points: number[]): number {
     return Math.abs(getPolygonSignedArea(points));
 }
 
-export function getObjectAreaInEditorUnits(object: Pick<PolyObject, "type" | "points" | "holes">): number {
+export function getObjectAreaInEditorUnits(object: Pick<PolyObject, "type" | "points" | "holes" | "bulges">): number {
     if (!isAreaMeasurableObject(object)) return 0;
     if (!object.points || object.points.length < 4) return 0;
 
@@ -86,13 +87,19 @@ export function getObjectAreaInEditorUnits(object: Pick<PolyObject, "type" | "po
 
     if (object.points.length < 6) return 0;
 
-    const outerArea = getPolygonAreaAbs(object.points);
+    // ✅ BOGEN — boog-bewuste oppervlakteberekening
+    const hasBulges = object.bulges?.some((b) => Math.abs(b) > 0.004);
+    const outerArea = hasBulges
+        ? bulgedPolygonArea(object.points, object.bulges!)
+        : getPolygonAreaAbs(object.points);
+
+    // Holes blijven recht in v1
     const holesArea = (object.holes ?? []).reduce((sum, hole) => sum + getPolygonAreaAbs(hole), 0);
 
     return Math.max(0, outerArea - holesArea);
 }
 
-export function getObjectAreaInSquareMeters(object: Pick<PolyObject, "type" | "points" | "holes">): number {
+export function getObjectAreaInSquareMeters(object: Pick<PolyObject, "type" | "points" | "holes" | "bulges">): number {
     return getSquareMetersFromEditorArea(getObjectAreaInEditorUnits(object));
 }
 

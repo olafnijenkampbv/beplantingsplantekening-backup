@@ -1,5 +1,6 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useEffect, useImperativeHandle } from "react";
 import { Shape } from "react-konva";
+import { traceBulgedPath } from "@/features/editor/lib/bulgeMath";
 import {
     PolyObject,
     ObjectType,
@@ -30,31 +31,41 @@ const COLORS = {
 const FENCE_GATE_STROKE_WIDTH = 14;
 const GRID_SIZE = EDITOR_GRID_SIZE;
 
-export function PolygonWithHoles(props: {
-    points: number[];
-    holes?: number[][];
-    fill?: string;
-    stroke?: string;
-    strokeWidth?: number;
-    opacity?: number;
-    listening?: boolean;
-    perfectDrawEnabled?: boolean;
-    dash?: number[];
-    dashEnabled?: boolean;
-    lineCap?: CanvasLineCap;
-    lineJoin?: CanvasLineJoin;
-    draggable?: boolean;
-    fillPriority?: "color" | "pattern" | "linear-gradient" | "radial-gradient";
-    fillPatternImage?: HTMLImageElement;
-    fillPatternRepeat?: "repeat" | "repeat-x" | "repeat-y" | "no-repeat";
-    onMouseEnter?: (e: any) => void;
-    onMouseLeave?: (e: any) => void;
-    onMouseDown?: (e: any) => void;
-    onClick?: (e: any) => void;
-}) {
+export type PolygonWithHolesHandle = {
+    setPointsAndHoles: (newPoints: number[], newHoles: number[][], newBulges?: number[]) => void;
+};
+
+export const PolygonWithHoles = React.forwardRef<
+    PolygonWithHolesHandle,
+    {
+        points: number[];
+        holes?: number[][];
+        /** ✅ BOGEN — één bulge per segment. Afwezig = alles recht. */
+        bulges?: number[];
+        fill?: string;
+        stroke?: string;
+        strokeWidth?: number;
+        opacity?: number;
+        listening?: boolean;
+        perfectDrawEnabled?: boolean;
+        dash?: number[];
+        dashEnabled?: boolean;
+        lineCap?: CanvasLineCap;
+        lineJoin?: CanvasLineJoin;
+        draggable?: boolean;
+        fillPriority?: "color" | "pattern" | "linear-gradient" | "radial-gradient";
+        fillPatternImage?: HTMLImageElement;
+        fillPatternRepeat?: "repeat" | "repeat-x" | "repeat-y" | "no-repeat";
+        onMouseEnter?: (e: any) => void;
+        onMouseLeave?: (e: any) => void;
+        onMouseDown?: (e: any) => void;
+        onClick?: (e: any) => void;
+    }
+>(function PolygonWithHoles(props, ref) {
     const {
         points,
         holes = [],
+        bulges,
         fill,
         stroke,
         strokeWidth = 2,
@@ -75,8 +86,27 @@ export function PolygonWithHoles(props: {
         onClick,
     } = props;
 
+    const shapeRef = useRef<any>(null);
+    const pointsRef = useRef<number[]>(points);
+    const holesRef = useRef<number[][]>(holes);
+    const bulgesRef = useRef<number[] | undefined>(bulges);
+
+    useEffect(() => { pointsRef.current = points; }, [points]);
+    useEffect(() => { holesRef.current = holes; }, [holes]);
+    useEffect(() => { bulgesRef.current = bulges; }, [bulges]);
+
+    useImperativeHandle(ref, () => ({
+        setPointsAndHoles(newPoints: number[], newHoles: number[][], newBulges?: number[]) {
+            pointsRef.current = newPoints;
+            holesRef.current = newHoles;
+            bulgesRef.current = newBulges;
+            shapeRef.current?.getLayer()?.batchDraw();
+        },
+    }));
+
     return (
         <Shape
+            ref={shapeRef}
             fill={fill}
             stroke={stroke}
             strokeWidth={strokeWidth}
@@ -97,19 +127,27 @@ export function PolygonWithHoles(props: {
             onMouseDown={onMouseDown}
             onClick={onClick}
             sceneFunc={(ctx, shape) => {
-                if (!points || points.length < 6) return;
+                const pts = pointsRef.current;
+                const hls = holesRef.current;
+                const bls = bulgesRef.current;
+                if (!pts || pts.length < 6) return;
 
                 ctx.beginPath();
 
-                // outer
-                ctx.moveTo(points[0], points[1]);
-                for (let i = 2; i < points.length; i += 2) {
-                    ctx.lineTo(points[i], points[i + 1]);
+                // outer ring — boog-bewust als bulges aanwezig
+                const hasBulges = bls?.some((b) => Math.abs(b) > 0.004);
+                if (hasBulges && bls) {
+                    traceBulgedPath(ctx, pts, bls, true);
+                } else {
+                    ctx.moveTo(pts[0], pts[1]);
+                    for (let i = 2; i < pts.length; i += 2) {
+                        ctx.lineTo(pts[i], pts[i + 1]);
+                    }
                 }
                 ctx.closePath();
 
-                // holes
-                for (const h of holes) {
+                // holes blijven recht (v1)
+                for (const h of hls) {
                     if (!h || h.length < 6) continue;
                     ctx.moveTo(h[0], h[1]);
                     for (let i = 2; i < h.length; i += 2) {
@@ -122,7 +160,7 @@ export function PolygonWithHoles(props: {
             }}
         />
     );
-}
+});
 
 export function GridShape(props: {
     canvasW: number;

@@ -228,6 +228,7 @@ export default React.memo(function BaseFillLayer({
                                 {...common}
                                 points={obj.points}
                                 holes={obj.holes}
+                                bulges={obj.bulges}
                                 fill={patternImage ? undefined : objectStyle.fill}
                                 fillPriority={patternImage ? "pattern" : "color"}
                                 fillPatternImage={patternImage as unknown as HTMLImageElement | undefined}
@@ -271,17 +272,32 @@ export default React.memo(function BaseFillLayer({
                     );
                 }
 
+                // ✅ BOGEN — gebruik PolygonWithHoles als het object bogen heeft
+                const hasBulges = obj.bulges?.some((b) => Math.abs(b) > 0.004);
                 return (
                     <React.Fragment key={`fill-${obj.id}`}>
-                        <Line
-                            {...common}
-                            points={obj.points}
-                            closed
-                            fill={objectStyle.fill}
-                            fillEnabled
-                            fillPriority="color"
-                            strokeEnabled={false}
-                        />
+                        {hasBulges ? (
+                            <PolygonWithHoles
+                                {...common}
+                                points={obj.points}
+                                holes={[]}
+                                bulges={obj.bulges}
+                                fill={objectStyle.fill}
+                                fillPriority="color"
+                                stroke={undefined}
+                                strokeWidth={0}
+                            />
+                        ) : (
+                            <Line
+                                {...common}
+                                points={obj.points}
+                                closed
+                                fill={objectStyle.fill}
+                                fillEnabled
+                                fillPriority="color"
+                                strokeEnabled={false}
+                            />
+                        )}
                         {renderObjectPattern(obj, `fill-pattern-${obj.id}`, stageScale)}
                     </React.Fragment>
                 );
@@ -356,13 +372,16 @@ export default React.memo(function BaseFillLayer({
                     },
                 };
 
+                // ✅ BOGEN — gebruik PolygonWithHoles als het plantbed bogen heeft
+                const pbHasBulges = pb.bulges?.some((b) => Math.abs(b) > 0.004);
                 return (
                     <React.Fragment key={`pb-fill-${pb.id}`}>
-                        {hasHoles ? (
+                        {hasHoles || pbHasBulges ? (
                             <PolygonWithHoles
                                 {...plantbedCommon}
                                 points={pb.points}
-                                holes={pb.holes}
+                                holes={pb.holes ?? []}
+                                bulges={pb.bulges}
                                 fill={getObjectRenderStyle(pb).fill}
                                 stroke={undefined}
                                 strokeWidth={0}

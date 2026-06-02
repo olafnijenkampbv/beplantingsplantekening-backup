@@ -1,9 +1,10 @@
 import { Shape } from "react-konva";
 import type { PolyObject } from "@/state/projectStore";
-import { OBJECT_STYLES } from "@/state/projectStore";
+import { OBJECT_STYLES, normalizeBulges } from "@/state/projectStore";
 import { EDITOR_GRID_SIZE } from "@/features/editor/constants/editorGeometry";
 import { bboxFromPoints } from "@/features/editor/lib/editorCanvasMath";
 import { formatSquareMeters, getObjectAreaInSquareMeters } from "@/state/areaMetrics";
+import { densifyBulgedRing, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
 
 const GRID_SIZE = EDITOR_GRID_SIZE;
 
@@ -333,12 +334,17 @@ export function renderTilesPattern(
     keyPrefix: string,
     stageScale: number,
     pointsOverride?: number[],
-    holesOverride?: number[][]
+    holesOverride?: number[][],
+    bulgesOverride?: number[]
 ) {
     if (stageScale < TILES_PATTERN_HIDE_SCALE) return null;
 
-    const renderPoints = pointsOverride ?? obj.points;
+    const basePoints = pointsOverride ?? obj.points;
     const renderHoles = holesOverride ?? obj.holes ?? [];
+    const bulges = normalizeBulges(basePoints, bulgesOverride ?? obj.bulges);
+    const renderPoints = bulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
+        ? densifyBulgedRing(basePoints, bulges, 48)
+        : basePoints;
     const spacing =
         stageScale < TILES_PATTERN_COMPACT_SCALE
             ? GRID_SIZE * 4
@@ -459,10 +465,11 @@ export function renderObjectPattern(
     keyPrefix: string,
     stageScale: number,
     pointsOverride?: number[],
-    holesOverride?: number[][]
+    holesOverride?: number[][],
+    bulgesOverride?: number[]
 ) {
     if (obj.type === "tiles") {
-        return renderTilesPattern(obj, keyPrefix, stageScale, pointsOverride, holesOverride);
+        return renderTilesPattern(obj, keyPrefix, stageScale, pointsOverride, holesOverride, bulgesOverride);
     }
 
     if (obj.type === "parking") {

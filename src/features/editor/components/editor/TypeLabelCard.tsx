@@ -201,7 +201,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
         showPlantLinkInfo &&
         interactive &&
         selectedObject !== null &&
-        (currentType === "plantbed" || currentType === "hedge") &&
+        (currentType === "plantbed" || currentType === "hedge" || currentType === "treebed") &&
         linkedPlantIdsForAdvice.length > 0;
 
     const currentStyle = {

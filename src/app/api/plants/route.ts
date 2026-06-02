@@ -31,6 +31,7 @@ import type { PlantQueryParams, PlantAppGroup } from "@/lib/db/plantTypes";
 const VALID_APP_GROUPS = new Set<PlantAppGroup>([
     "bodembedekkers",
     "vaste-planten",
+    "hagen",
     "heesters-struiken",
     "bomen",
     "overig",

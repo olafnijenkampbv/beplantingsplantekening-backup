@@ -12,6 +12,7 @@ import type {
 import type { ApiPlant } from "@/lib/db/plantTypes";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 import { usePlantVariantStore, type ApiPlantVariant } from "@/features/editor/state/plantVariantStore";
+import { scorePlant, getLabelForScore, type ScoringInput, type SuitabilityLabel } from "@/features/editor/lib/plantScoring";
 
 const COLORS = {
     cardBg: "#FFFFFF",
@@ -29,6 +30,7 @@ const LOAD_MORE_STEP = 6;
 
 const GREEN_ICON_FILTER =
     "brightness(0) saturate(100%) invert(36%) sepia(13%) saturate(707%) hue-rotate(56deg) brightness(92%) contrast(86%)";
+
 
 function formatVariantPrice(price: number): string {
     if (!price || price <= 0) return "";
@@ -77,6 +79,44 @@ function AvailabilityBadge(props: { stockLabel: string }) {
 }
 
 
+
+const SUITABILITY_CONFIG: Record<SuitabilityLabel, { text: string; icon: string; green: boolean }> = {
+    "zeer-geschikt":    { text: "Zeer geschikt",    icon: "/icons/dubble-check.svg", green: true },
+    "geschikt":         { text: "Geschikt",          icon: "/icons/check-icon.svg",   green: true },
+    "goede-aanvulling": { text: "Goede aanvulling",  icon: "/icons/plus.svg",         green: false },
+};
+
+function SuitabilityBadge({ label }: { label: SuitabilityLabel }) {
+    const { text, icon, green } = SUITABILITY_CONFIG[label];
+    return (
+        <span
+            className="inline-flex items-center gap-[5px] rounded-full px-3 py-[6px] text-[11px] font-semibold whitespace-nowrap"
+            style={{
+                backgroundColor: green ? "#DEFFDE" : "#FDFFC6",
+                color: green ? "#008000" : "#807300",
+            }}
+        >
+            {green ? (
+                // dubble-check.svg en check-icon.svg hebben al een groene cirkel + witte check ingebakken
+                <img src={icon} alt="" style={{ width: 13, height: 13, display: "block", flexShrink: 0 }} />
+            ) : (
+                // plus.svg heeft witte strokes: brightness(0) maakt ze zwart, filter kleurt naar #807300
+                <img
+                    src={icon}
+                    alt=""
+                    style={{
+                        width: 13,
+                        height: 13,
+                        display: "block",
+                        flexShrink: 0,
+                        filter: "brightness(0) saturate(100%) invert(37%) sepia(100%) saturate(450%) hue-rotate(16deg) brightness(60%)",
+                    }}
+                />
+            )}
+            {text}
+        </span>
+    );
+}
 
 function SearchFilterChip(props: {
     label: string;
@@ -149,17 +189,19 @@ function SearchModeGridCard(props: {
                 className="relative overflow-hidden bg-[#F1F1EE]"
                 style={{ aspectRatio: "1 / 0.82" }}
             >
-                {plant.imageUrl ? (
-                    <img
-                        src={plant.imageUrl}
-                        alt={plant.botanicalName}
-                        className="block h-full w-full"
-                        style={{
-                            objectFit: "cover",
-                            objectPosition: "center",
-                        }}
-                    />
-                ) : null}
+                <img
+                    src={plant.imageUrl || "/images/logo.png"}
+                    alt={plant.botanicalName}
+                    className="block h-full w-full"
+                    style={plant.imageUrl ? {
+                        objectFit: "cover",
+                        objectPosition: "center",
+                    } : {
+                        objectFit: "contain",
+                        objectPosition: "center",
+                        padding: "20%",
+                    }}
+                />
 
                 <div className="absolute right-2 top-2">
                     <AvailabilityBadge stockLabel={stockLabel} />
@@ -271,17 +313,19 @@ function SearchModeListCard(props: {
                     height: 168,
                 }}
             >
-                {plant.imageUrl ? (
-                    <img
-                        src={plant.imageUrl}
-                        alt={plant.botanicalName}
-                        className="block h-full w-full"
-                        style={{
-                            objectFit: "cover",
-                            objectPosition: "center",
-                        }}
-                    />
-                ) : null}
+                <img
+                    src={plant.imageUrl || "/images/logo.png"}
+                    alt={plant.botanicalName}
+                    className="block h-full w-full"
+                    style={plant.imageUrl ? {
+                        objectFit: "cover",
+                        objectPosition: "center",
+                    } : {
+                        objectFit: "contain",
+                        objectPosition: "center",
+                        padding: "20%",
+                    }}
+                />
             </div>
 
             <div className="flex min-w-0 flex-1 items-stretch justify-between gap-6">
@@ -359,9 +403,10 @@ function SearchModeListCard(props: {
 function DefaultPlantCard(props: {
     plant: ApiPlant;
     viewMode: ViewMode;
+    suitabilityLabel: SuitabilityLabel | null;
     onAddToPlantList: (plant: ApiPlant) => void;
 }) {
-    const { plant, viewMode, onAddToPlantList } = props;
+    const { plant, viewMode, suitabilityLabel, onAddToPlantList } = props;
     const notify = useAppNotify();
     const [isAdded, setIsAdded] = useState(false);
     const [isCartHovered, setIsCartHovered] = useState(false);
@@ -389,19 +434,23 @@ function DefaultPlantCard(props: {
                 }}
             >
                 <div
-                    className="shrink-0 overflow-hidden rounded-[6px] bg-[#F1F1EE]"
+                    className="relative shrink-0 overflow-hidden rounded-[6px] bg-[#F1F1EE]"
                     style={{
                         width: 140,
                         height: 140,
                     }}
                 >
                     <img
-                        src={plant.imageUrl}
+                        src={plant.imageUrl || "/images/logo.png"}
                         alt={plant.botanicalName}
                         className="block h-full w-full"
-                        style={{
+                        style={plant.imageUrl ? {
                             objectFit: "cover",
                             objectPosition: "center",
+                        } : {
+                            objectFit: "contain",
+                            objectPosition: "center",
+                            padding: "20%",
                         }}
                     />
                 </div>
@@ -430,7 +479,10 @@ function DefaultPlantCard(props: {
                         </div>
                     </div>
 
-                    <div className="flex shrink-0 items-end">
+                    <div className="flex shrink-0 flex-col items-end justify-center gap-3">
+                        {suitabilityLabel ? (
+                            <SuitabilityBadge label={suitabilityLabel} />
+                        ) : null}
                         <button
                             type="button"
                             className="flex cursor-pointer items-center gap-2 rounded-[6px] px-4"
@@ -475,21 +527,28 @@ function DefaultPlantCard(props: {
             }}
         >
             <div
-                className="overflow-hidden bg-[#F1F1EE]"
+                className="relative overflow-hidden bg-[#F1F1EE]"
                 style={{
                     aspectRatio: "1 / 0.82",
                 }}
             >
-                {plant.imageUrl ? (
-                    <img
-                        src={plant.imageUrl}
-                        alt={plant.botanicalName}
-                        className="block h-full w-full"
-                        style={{
-                            objectFit: "cover",
-                            objectPosition: "center",
-                        }}
-                    />
+                <img
+                    src={plant.imageUrl || "/images/logo.png"}
+                    alt={plant.botanicalName}
+                    className="block h-full w-full"
+                    style={plant.imageUrl ? {
+                        objectFit: "cover",
+                        objectPosition: "center",
+                    } : {
+                        objectFit: "contain",
+                        objectPosition: "center",
+                        padding: "20%",
+                    }}
+                />
+                {suitabilityLabel ? (
+                    <div className="absolute right-2 top-2">
+                        <SuitabilityBadge label={suitabilityLabel} />
+                    </div>
                 ) : null}
             </div>
 
@@ -552,6 +611,7 @@ type PlantProposalGridProps = {
     selectedGroup: PlantGroupKey;
     filters: PlantSelectionFiltersState;
     advancedFilters: PlantSelectionAdvancedFilters;
+    scoringInput: ScoringInput;
     onChangeSort: (value: string) => void;
     onChangeViewMode: (mode: ViewMode) => void;
     onAddToPlantList: (plant: ApiPlant, size?: string) => void;
@@ -577,6 +637,7 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
         selectedGroup,
         filters,
         advancedFilters,
+        scoringInput,
         onChangeSort,
         onChangeViewMode,
         onAddToPlantList,
@@ -666,24 +727,58 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
         sizeQuery.trim().length < 2 &&
         !hasActiveFilterChips;
 
+    // Score every plant once — only in proposal (non-search) mode.
+    const scoringResults = useMemo(() => {
+        if (isSearchMode) return null;
+        const scores = new Map<string, number | null>();
+        const labels = new Map<string, SuitabilityLabel | null>();
+        for (const plant of plants) {
+            const score = scorePlant(plant, scoringInput);
+            scores.set(plant.id, score);
+            labels.set(plant.id, getLabelForScore(score));
+        }
+        return { scores, labels };
+    }, [isSearchMode, plants, scoringInput]);
+
     const filteredPlants = useMemo(() => {
-        if (!isSearchMode) return plants;
+        if (isSearchMode) {
+            const normalizedPlantNameQuery = plantNameQuery.trim();
+            const normalizedSizeQuery = sizeQuery.trim();
+            const hasEnoughPlantNameInput = normalizedPlantNameQuery.length >= 2;
+            const hasEnoughSizeInput = normalizedSizeQuery.length >= 2;
 
-        const normalizedPlantNameQuery = plantNameQuery.trim();
-        const normalizedSizeQuery = sizeQuery.trim();
-        const hasEnoughPlantNameInput = normalizedPlantNameQuery.length >= 2;
-        const hasEnoughSizeInput = normalizedSizeQuery.length >= 2;
+            if (!hasEnoughPlantNameInput && !hasEnoughSizeInput && !hasActiveFilterChips) {
+                return [];
+            }
 
-        if (!hasEnoughPlantNameInput && !hasEnoughSizeInput && !hasActiveFilterChips) {
-            return [];
+            return plants.filter((plant) =>
+                !normalizedPlantNameQuery ||
+                matchesSearchQuery(plant.botanicalName, normalizedPlantNameQuery) ||
+                matchesSearchQuery(plant.dutchName, normalizedPlantNameQuery)
+            );
         }
 
-        return plants.filter((plant) =>
-            !normalizedPlantNameQuery ||
-            matchesSearchQuery(plant.botanicalName, normalizedPlantNameQuery) ||
-            matchesSearchQuery(plant.dutchName, normalizedPlantNameQuery)
-        );
-    }, [hasActiveFilterChips, isSearchMode, plantNameQuery, plants, sizeQuery]);
+        // Proposal mode: remove plants below the score threshold.
+        if (!scoringResults) return plants;
+
+        let result = plants.filter((plant) => scoringResults.labels.get(plant.id) !== null);
+
+        if (sortValue === "meest-geschikt") {
+            result = [...result].sort((a, b) => {
+                const scoreA = scoringResults.scores.get(a.id) ?? 100;
+                const scoreB = scoringResults.scores.get(b.id) ?? 100;
+                return scoreB - scoreA;
+            });
+        } else if (sortValue === "minst-geschikt") {
+            result = [...result].sort((a, b) => {
+                const scoreA = scoringResults.scores.get(a.id) ?? 100;
+                const scoreB = scoringResults.scores.get(b.id) ?? 100;
+                return scoreA - scoreB;
+            });
+        }
+
+        return result;
+    }, [hasActiveFilterChips, isSearchMode, plantNameQuery, plants, sizeQuery, scoringResults, sortValue]);
 
     // In search mode: one entry per plant×variant combination so each size gets its own card.
     const searchModeCombos = useMemo(() => {
@@ -815,7 +910,10 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
                             >
                                 <option value="">Geen sortering</option>
                                 {isSearchMode ? null : (
-                                    <option value="meest-geschikt">Meest geschikt</option>
+                                    <>
+                                        <option value="meest-geschikt">Meest geschikt</option>
+                                        <option value="minst-geschikt">Minst geschikt</option>
+                                    </>
                                 )}
                                 <option value="alfabetisch-a-z">Naam (A-Z)</option>
                                 <option value="alfabetisch-z-a">Naam (Z-A)</option>
@@ -1029,6 +1127,7 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
                                     key={plant.id}
                                     plant={plant}
                                     viewMode={viewMode}
+                                    suitabilityLabel={scoringResults?.labels.get(plant.id) ?? null}
                                     onAddToPlantList={onAddToPlantList}
                                 />
                             ))

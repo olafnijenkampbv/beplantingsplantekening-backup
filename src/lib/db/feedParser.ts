@@ -177,11 +177,19 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
 
         if (!productId || !trefnaam) continue;
 
+        // --- Categories ---
+        const allCategories = str(item["plant_groepen"]);
+
+        // Tuinmaterialen worden herkend via plant_groepen (ook als secundaire categorie)
+        const isTuinmateriaal = allCategories.split(",").some(
+            (c) => c.trim().toLowerCase() === "tuinmaterialen"
+        );
+
         // --- Parse plant characteristics ---
         const kenmerken = parseKenmerken(str(item["kenmerken"]));
 
-        // Skip non-plant products (e.g. Tuinmaterialen have no Nederlandse_naam)
-        if (!kenmerken.Nederlandse_naam) continue;
+        // Skip non-plant products that are not explicitly tuinmaterialen
+        if (!kenmerken.Nederlandse_naam && !isTuinmateriaal) continue;
 
         // --- Availability ---
         const availability: "in_stock" | "out_of_stock" =
@@ -189,8 +197,8 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
                 ? "in_stock"
                 : "out_of_stock";
 
-        // --- Categories ---
-        const allCategories = str(item["plant_groepen"]);
+        // Tuinmaterialen gebruiken g:title als naam (geen Nederlandse_naam in kenmerken)
+        const title = str(item["g:title"]);
 
         results.push({
             // Variant level
@@ -201,13 +209,15 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
             availability,
 
             // Plant level
-            botanicalName: str(item["g:title"]),
+            botanicalName: isTuinmateriaal ? title : str(item["g:title"]),
             imageUrl: str(item["g:image_link"]),
-            primaryCategory: getPrimaryCategory(allCategories),
+            // Tuinmaterialen altijd als primaire categorie "Tuinmaterialen" zodat
+            // getAppGroup() ze correct naar app_group "tuinmaterialen" mapt
+            primaryCategory: isTuinmateriaal ? "Tuinmaterialen" : getPrimaryCategory(allCategories),
             allCategories,
 
-            // From kenmerken JSON
-            dutchName: kenmerken.Nederlandse_naam ?? "",
+            // From kenmerken JSON (leeg voor tuinmaterialen)
+            dutchName: kenmerken.Nederlandse_naam ?? (isTuinmateriaal ? title : ""),
             planthoeveelheidPerM2: parsePlanthoeveelheid(kenmerken.Planthoeveelheid_per_m2),
             volwassenHoogte: kenmerken.Volwassen_hoogte ?? "",
             kleurBloem: kenmerken.Kleur_bloem ?? "",

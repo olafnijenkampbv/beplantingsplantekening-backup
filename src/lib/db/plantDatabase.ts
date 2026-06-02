@@ -124,6 +124,33 @@ function initialiseSchema(db: Database.Database): void {
         );
 
         -- ----------------------------------------------------------------
+        -- garden_materials
+        -- One row per unique garden material / product (grouped by trefnaam).
+        -- Completely separate from plants — materials have no botanical data.
+        -- ----------------------------------------------------------------
+        CREATE TABLE IF NOT EXISTS garden_materials (
+            id         TEXT PRIMARY KEY,               -- trefnaam (SKU base)
+            name       TEXT NOT NULL,                  -- g:title from the feed
+            image_url  TEXT NOT NULL DEFAULT '',
+            min_price  REAL NOT NULL DEFAULT 0,
+            in_stock   INTEGER NOT NULL DEFAULT 0,     -- 1 if any variant is in_stock
+            updated_at TEXT NOT NULL
+        );
+
+        -- ----------------------------------------------------------------
+        -- garden_material_variants
+        -- One row per purchasable product (a specific size/type of a material).
+        -- ----------------------------------------------------------------
+        CREATE TABLE IF NOT EXISTS garden_material_variants (
+            id          TEXT PRIMARY KEY,
+            material_id TEXT NOT NULL REFERENCES garden_materials(id) ON DELETE CASCADE,
+            size_label  TEXT NOT NULL DEFAULT '',
+            price       REAL NOT NULL DEFAULT 0,
+            availability TEXT NOT NULL DEFAULT 'out_of_stock',
+            updated_at  TEXT NOT NULL
+        );
+
+        -- ----------------------------------------------------------------
         -- Indexes for fast filtering and searching
         -- ----------------------------------------------------------------
         CREATE INDEX IF NOT EXISTS idx_plants_app_group   ON plants (app_group);
@@ -131,6 +158,8 @@ function initialiseSchema(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS idx_plants_inheems     ON plants (inheems);
         CREATE INDEX IF NOT EXISTS idx_plants_dutch_name  ON plants (dutch_name COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS idx_variants_plant_id  ON plant_variants (plant_id);
+        CREATE INDEX IF NOT EXISTS idx_gmat_in_stock      ON garden_materials (in_stock);
+        CREATE INDEX IF NOT EXISTS idx_gmat_variants_mid  ON garden_material_variants (material_id);
     `);
 
     // Migrations: add columns that were introduced after the initial schema

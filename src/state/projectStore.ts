@@ -454,13 +454,18 @@ function normalizeSelfUnionToDonut(obj: PolyObject): PolyObject {
     if ((obj.holes?.length ?? 0) > 0) {
         const normalized = normalizeObjectFromOuterMinusHoles(obj);
         if (normalized && normalized.length > 0) {
-            return normalized[0];
+            const first = normalized[0];
+            return {
+                ...first,
+                bulges: remapBulgesToRing(obj.points, obj.bulges, first.points),
+            };
         }
 
         return {
             ...obj,
             points: cleanupPoints(obj.points),
             holes: undefined,
+            bulges: remapBulgesToRing(obj.points, obj.bulges, cleanupPoints(obj.points)),
         };
     }
 
@@ -534,11 +539,13 @@ function normalizeSelfUnionToDonut(obj: PolyObject): PolyObject {
 
     const main = pieces[0];
     const nextHoles = sanitizeHoles(main.holes);
+    const remappedBulges = remapBulgesToRing(obj.points, obj.bulges, main.outer);
 
     return {
         ...obj,
         points: main.outer,
         holes: nextHoles,
+        bulges: remappedBulges,
     };
 }
 
@@ -729,9 +736,163 @@ function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | unde
 
     const srcCount = Math.floor(sourcePoints.length / 2);
     const dstCount = Math.floor(targetPoints.length / 2);
-    if (srcCount !== dstCount) return undefined;
 
     const srcBulges = normalizeBulges(sourcePoints, sourceBulges);
+    const out = new Array(dstCount).fill(0);
+    const eps = 1e-4;
+    const bulgeEps = 1e-6;
+
+    const samePoint = (ax: number, ay: number, bx: number, by: number) =>
+        Math.abs(ax - bx) <= eps && Math.abs(ay - by) <= eps;
+
+    const dist = (ax: number, ay: number, bx: number, by: number) =>
+        Math.hypot(ax - bx, ay - by);
+
+    const matchedTarget = new Array(dstCount).fill(false);
+    const usedSource = new Array(srcCount).fill(false);
+
+    // 1) Exact segment mapping first (do NOT abort on miss).
+    for (let i = 0; i < dstCount; i++) {
+        const ax = targetPoints[i * 2];
+        const ay = targetPoints[i * 2 + 1];
+        const bi = (i + 1) % dstCount;
+        const bx = targetPoints[bi * 2];
+        const by = targetPoints[bi * 2 + 1];
+
+        for (let j = 0; j < srcCount; j++) {
+            const cx = sourcePoints[j * 2];
+            const cy = sourcePoints[j * 2 + 1];
+            const dj = (j + 1) % srcCount;
+            const dx = sourcePoints[dj * 2];
+            const dy = sourcePoints[dj * 2 + 1];
+
+            if (samePoint(ax, ay, cx, cy) && samePoint(bx, by, dx, dy)) {
+                out[i] = srcBulges[j] ?? 0;
+                matchedTarget[i] = true;
+                usedSource[j] = true;
+                break;
+            }
+
+            if (samePoint(ax, ay, dx, dy) && samePoint(bx, by, cx, cy)) {
+                out[i] = -(srcBulges[j] ?? 0);
+                matchedTarget[i] = true;
+                usedSource[j] = true;
+                break;
+            }
+        }
+    }
+
+    const applyNearestBulgeFallback = () => {
+        for (let j = 0; j < srcCount; j++) {
+            const b = srcBulges[j] ?? 0;
+            if (Math.abs(b) <= bulgeEps) continue;
+            if (usedSource[j]) continue;
+
+            const sx1 = sourcePoints[j * 2];
+            const sy1 = sourcePoints[j * 2 + 1];
+            const sj2 = (j + 1) % srcCount;
+            const sx2 = sourcePoints[sj2 * 2];
+            const sy2 = sourcePoints[sj2 * 2 + 1];
+
+            let bestIdx = -1;
+            let bestScore = Number.POSITIVE_INFINITY;
+            let bestSign = 1;
+
+            for (let i = 0; i < dstCount; i++) {
+                if (matchedTarget[i]) continue;
+                const tx1 = targetPoints[i * 2];
+                const ty1 = targetPoints[i * 2 + 1];
+                const ti2 = (i + 1) % dstCount;
+                const tx2 = targetPoints[ti2 * 2];
+                const ty2 = targetPoints[ti2 * 2 + 1];
+
+                const forward = dist(tx1, ty1, sx1, sy1) + dist(tx2, ty2, sx2, sy2);
+                const reverse = dist(tx1, ty1, sx2, sy2) + dist(tx2, ty2, sx1, sy1);
+
+                const score = Math.min(forward, reverse);
+                const sign = forward <= reverse ? 1 : -1;
+
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestIdx = i;
+                    bestSign = sign;
+                }
+            }
+
+            if (bestIdx >= 0) {
+                out[bestIdx] = b * bestSign;
+                matchedTarget[bestIdx] = true;
+                usedSource[j] = true;
+            }
+        }
+    };
+
+    if (srcCount !== dstCount) {
+        applyNearestBulgeFallback();
+        return out;
+    }
+
+    if (matchedTarget.some((m) => !m)) {
+        // Als exacte endpoint-segmentmatch mist, kan het nog steeds dezelfde ring zijn
+        // met een andere startindex of omgekeerde winding. Probeer eerst cyclic remap.
+        const srcVertices = Array.from({ length: srcCount }, (_, idx) => ({
+            x: sourcePoints[idx * 2],
+            y: sourcePoints[idx * 2 + 1],
+        }));
+        const dstVertices = Array.from({ length: dstCount }, (_, idx) => ({
+            x: targetPoints[idx * 2],
+            y: targetPoints[idx * 2 + 1],
+        }));
+
+        const allForwardMatch = (shift: number) => {
+            for (let i = 0; i < dstCount; i++) {
+                const s = srcVertices[(i + shift) % srcCount];
+                const d = dstVertices[i];
+                if (!samePoint(d.x, d.y, s.x, s.y)) return false;
+            }
+            return true;
+        };
+
+        const allReverseMatch = (pivot: number) => {
+            for (let i = 0; i < dstCount; i++) {
+                const s = srcVertices[(pivot - i + srcCount) % srcCount];
+                const d = dstVertices[i];
+                if (!samePoint(d.x, d.y, s.x, s.y)) return false;
+            }
+            return true;
+        };
+
+        for (let shift = 0; shift < srcCount; shift++) {
+            if (allForwardMatch(shift)) {
+                const outForward = new Array(dstCount).fill(0).map((_, i) => srcBulges[(i + shift) % srcCount] ?? 0);
+                return outForward;
+            }
+        }
+
+        for (let pivot = 0; pivot < srcCount; pivot++) {
+            if (allReverseMatch(pivot)) {
+                const outReverse = new Array(dstCount).fill(0).map((_, i) => {
+                    const srcSegIdx = (pivot - i - 1 + srcCount) % srcCount;
+                    return -(srcBulges[srcSegIdx] ?? 0);
+                });
+                return outReverse;
+            }
+        }
+
+        const byIndex = normalizeBulges(targetPoints, sourceBulges);
+        return byIndex;
+    }
+
+    return out;
+}
+
+function remapBulgesFromSourcesToRing(
+    sources: Array<Pick<PolyObject, "points" | "bulges">>,
+    targetPoints: number[]
+): number[] | undefined {
+    if (!targetPoints || targetPoints.length < 6 || sources.length === 0) return undefined;
+
+    const dstCount = Math.floor(targetPoints.length / 2);
     const out = new Array(dstCount).fill(0);
     const eps = 1e-4;
 
@@ -746,30 +907,39 @@ function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | unde
         const by = targetPoints[bi * 2 + 1];
 
         let matched = false;
-        for (let j = 0; j < srcCount; j++) {
-            const cx = sourcePoints[j * 2];
-            const cy = sourcePoints[j * 2 + 1];
-            const dj = (j + 1) % srcCount;
-            const dx = sourcePoints[dj * 2];
-            const dy = sourcePoints[dj * 2 + 1];
 
-            if (samePoint(ax, ay, cx, cy) && samePoint(bx, by, dx, dy)) {
-                out[i] = srcBulges[j] ?? 0;
-                matched = true;
-                break;
+        for (const src of sources) {
+            if (!src.points || src.points.length < 6) continue;
+            const srcCount = Math.floor(src.points.length / 2);
+            if (srcCount < 3) continue;
+
+            const srcBulges = normalizeBulges(src.points, src.bulges);
+
+            for (let j = 0; j < srcCount; j++) {
+                const cx = src.points[j * 2];
+                const cy = src.points[j * 2 + 1];
+                const dj = (j + 1) % srcCount;
+                const dx = src.points[dj * 2];
+                const dy = src.points[dj * 2 + 1];
+
+                if (samePoint(ax, ay, cx, cy) && samePoint(bx, by, dx, dy)) {
+                    out[i] = srcBulges[j] ?? 0;
+                    matched = true;
+                    break;
+                }
+
+                if (samePoint(ax, ay, dx, dy) && samePoint(bx, by, cx, cy)) {
+                    out[i] = -(srcBulges[j] ?? 0);
+                    matched = true;
+                    break;
+                }
             }
 
-            if (samePoint(ax, ay, dx, dy) && samePoint(bx, by, cx, cy)) {
-                out[i] = -(srcBulges[j] ?? 0);
-                matched = true;
-                break;
-            }
+            if (matched) break;
         }
-
-        if (!matched) return undefined;
     }
 
-    return out;
+    return out.some((value) => Math.abs(value) > 1e-9) ? out : undefined;
 }
 
 /**
@@ -4131,6 +4301,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         type,
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
                     })),
                 ];
             }
@@ -4256,6 +4427,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         geometry: obj.geometry ?? getGeometryForType(obj.type),
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesToRing(obj.points, obj.bulges, piece.outer),
                         renderPieces: undefined,
                     });
                 });
@@ -4317,14 +4489,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         set((state) => {
             const existing = state.objects.find((o) => o.id === id);
             if (!existing) return state;
+            const normalizedToHoles =
+                Array.isArray(toHoles) && toHoles.length > 0
+                    ? toHoles
+                    : undefined;
 
             const fromPoints = existing.points;
             const same =
                 fromPoints.length === toPoints.length && fromPoints.every((v, i) => v === toPoints[i]);
 
             const sameHoles =
-                toHoles === undefined ||
-                JSON.stringify(existing.holes ?? []) === JSON.stringify(toHoles ?? []);
+                normalizedToHoles === undefined ||
+                JSON.stringify(existing.holes ?? []) === JSON.stringify(normalizedToHoles ?? []);
 
             if (same && sameHoles) {
                 return state;
@@ -4335,6 +4511,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 geometry: getGeometryForType(existing.type),
                 points: toPoints,
             };
+
+            if (objectSupportsBulges(existing)) {
+                const remappedForMoved =
+                    remapBulgesToRing(existing.points, existing.bulges, toPoints) ??
+                    normalizeBulges(toPoints, existing.bulges);
+                moved = {
+                    ...moved,
+                    bulges: remappedForMoved,
+                };
+            }
 
             // ✅ Unified boundaries: bij move/vertex/resize ook lagere polygon-objecten wegsnijden
             if (isPolylineObject(moved)) {
@@ -4586,8 +4772,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 const dy = (toPoints[1] ?? 0) - (fromPoints[1] ?? 0);
 
                 const nextHoles =
-                    toHoles !== undefined
-                        ? toHoles.map((h) => [...h])
+                    normalizedToHoles !== undefined
+                        ? normalizedToHoles.map((h) => [...h])
                         : isPureTranslation
                             ? translateHoles(existing.holes, dx, dy)
                             : (existing.holes ?? []).map((h) => [...h]);
@@ -4624,10 +4810,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     movedWithHoles.type === "plantbed" &&
                     ((movedWithHoles.holes?.length ?? 0) > 0)
                 ) {
-                    const normalizedMovedObjects =
-                        toHoles !== undefined
-                            ? normalizeSingleObjectToPieces(movedWithHoles)
-                            : [movedWithHoles];
+                    const normalizedMovedObjects = normalizeSingleObjectToPieces(movedWithHoles);
 
                     const cutCandidates: PolyObject[] = [];
                     for (const candidate of mergeCandidates) {
@@ -4646,6 +4829,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 id: i === 0 ? candidate.id : makeId(),
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
+                                bulges: remapBulgesToRing(candidate.points, candidate.bulges, piece.outer),
                                 plantbedNo: candidate.plantbedNo,
                                 customStyle: candidate.customStyle,
                             });
@@ -4689,11 +4873,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         : null;
 
                 if (!mergedPieces || mergedPieces.length === 0) {
-                    const normalizedMovedObjects =
-                        toHoles !== undefined
-                            ? normalizeSingleObjectToPieces(movedWithHoles)
-                            : [movedWithHoles];
-
+                    const normalizedMovedObjects = normalizeSingleObjectToPieces(movedWithHoles);
                     const cmd: Command = {
                         kind: "replaceMany",
                         before: state.objects,
@@ -4723,9 +4903,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         id: idx === 0 ? existing.id : makeId(),
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
                         plantbedNo: existing.plantbedNo,
                     }));
-
                 const cmd: Command = {
                     kind: "replaceMany",
                     before: state.objects,
@@ -4805,6 +4985,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             type: "plantbed",
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
+                            bulges: remapBulgesToRing(pb.points, pb.bulges, piece.outer),
                             plantbedNo: pb.plantbedNo,
                             customStyle: pb.customStyle,
                         });
@@ -4826,7 +5007,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     // - bij expliciete hole-edit moeten de live holes mee
                     // - bij gewone edge-resize/self-touch moet de nieuwe contour zichzelf
                     //   weer als donut/holes kunnen normaliseren
-                    holes: toHoles !== undefined ? toHoles.map((h) => [...h]) : undefined,
+                    holes: normalizedToHoles !== undefined ? normalizedToHoles.map((h) => [...h]) : undefined,
 
                     plantbedNo: existing.plantbedNo,
                     customStyle: existing.customStyle,
@@ -4911,7 +5092,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 // - bij expliciete hole-edit moeten de live holes mee
                 // - bij gewone edge-resize van een object zonder holes moet de nieuwe contour
                 //   zichzelf weer kunnen normaliseren naar een donut
-                holes: toHoles !== undefined ? toHoles.map((h) => [...h]) : undefined,
+                holes: normalizedToHoles !== undefined ? normalizedToHoles.map((h) => [...h]) : undefined,
 
                 plantbedNo: existing.plantbedNo,
                 customStyle: existing.customStyle,
@@ -5014,6 +5195,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 type,
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
+                                bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
                                 plantbedNo: existing.plantbedNo,
                                 customStyle: existing.customStyle,
                             }));
@@ -5377,6 +5559,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         type: obj.type,
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesToRing(obj.points, obj.bulges, piece.outer),
                         plantbedNo: obj.plantbedNo,
                     });
                 }
@@ -5488,6 +5671,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         type: "plantbed",
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesToRing(newObj.points, newObj.bulges, piece.outer),
                         plantbedNo,
                     };
                 });
@@ -5521,6 +5705,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 type,
                 points: piece.outer,
                 holes: piece.holes?.length ? piece.holes : undefined,
+                bulges: remapBulgesToRing(newObj.points, newObj.bulges, piece.outer),
             }));
 
             const mergeInput = [...sameType, ...drawPolys];
@@ -5540,6 +5725,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         type,
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
                     }))
                 : drawPieces
                     .filter((piece) => piece.outer.length >= 6)
@@ -5548,6 +5734,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         type,
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesToRing(newObj.points, newObj.bulges, piece.outer),
                     }));
 
             // ✅ selectie moet blijven op het object dat net is gewijzigd,
@@ -5665,6 +5852,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         id: idx === 0 ? obj.id : makeId(),
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesToRing(obj.points, obj.bulges, piece.outer),
                     });
                 }
             }
@@ -5720,6 +5908,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             ...moved,
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
+                            bulges: remapBulgesToRing(moved.points, moved.bulges, piece.outer),
                         }));
 
                     // eerst moved pieces toevoegen
@@ -5762,6 +5951,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 id: idx === 0 ? existing.id : makeId(),
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
+                                bulges: remapBulgesToRing(existing.points, existing.bulges, piece.outer),
                             });
                         });
                     }
@@ -5778,6 +5968,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         id: idx === 0 ? moved.id : makeId(),
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
+                        bulges: remapBulgesToRing(moved.points, moved.bulges, piece.outer),
                     }));
 
                 const mergeInput = [...sameType, ...drawPolys];
@@ -5811,6 +6002,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             id: nextId,
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
+                            bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
                         });
 
                         if (idx === primaryMergedIdx) {

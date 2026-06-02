@@ -31,14 +31,22 @@ export default function FinalisatieSidePanel() {
     const distributionOverrides = useProjectStore((s: { distributionOverrides: Record<string, Record<string, number>> }) => s.distributionOverrides);
     const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
 
+    // Splits planten en tuinmaterialen — tuinmaterialen nooit via plantbedLinks tellen
+    const tuinmaterialenIds = useMemo(
+        () => new Set(plantListItems.filter((i) => i.plant.category === "Tuinmaterialen").map((i) => i.id)),
+        [plantListItems]
+    );
+
     const plants = useMemo<ProjectPlantLike[]>(() => {
-        const seen = new Set<string>();
-        return plantListItems.flatMap((item) => {
-            if (seen.has(item.plant.id)) return [];
-            seen.add(item.plant.id);
-            return [{ id: item.plant.id, latin: item.plant.botanicalName, dutch: item.plant.dutchName, planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2 }];
-        });
-    }, [plantListItems]);
+        return plantListItems
+            .filter((item) => !tuinmaterialenIds.has(item.id))
+            .map((item) => ({
+                id: item.id,
+                latin: item.plant.botanicalName,
+                dutch: item.plant.dutchName,
+                planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2,
+            }));
+    }, [plantListItems, tuinmaterialenIds]);
 
     const { subtotal, btw, total } = useMemo(() => {
         let subtotal = 0;
@@ -49,10 +57,14 @@ export default function FinalisatieSidePanel() {
             const object = objects.find((o) => o.id === objectId);
             if (!object) continue;
 
+            // Stale tuinmaterialen-IDs uitsluiten
+            const plantOnlyIds = linkedPlantIds.filter((id) => !tuinmaterialenIds.has(id));
+            if (plantOnlyIds.length === 0) continue;
+
             const adviceData = buildAdviceData({
                 selectedObject: object,
                 currentType: object.type,
-                linkedPlantIds,
+                linkedPlantIds: plantOnlyIds,
                 plants,
                 distributionOverrides: distributionOverrides[objectId] ?? {},
             });
@@ -61,7 +73,7 @@ export default function FinalisatieSidePanel() {
                 if (row.adviceCount === null) continue;
 
                 const listItem = plantListItems.find(
-                    (item) => item.plant.id === row.plantId
+                    (item) => item.id === row.plantId
                 );
 
                 const effectiveCount =
@@ -75,11 +87,20 @@ export default function FinalisatieSidePanel() {
             }
         }
 
+        // Tuinmaterialen altijd apart optellen (nooit via plantbedLinks)
+        for (const item of plantListItems) {
+            if (!tuinmaterialenIds.has(item.id)) continue;
+            const price = item.plant.pricePerPiece ?? 0;
+            if (price <= 0) continue;
+            const count = item.quantity > 0 ? item.quantity : 1;
+            subtotal += count * price;
+        }
+
         const btw = subtotal * 0.09;
         const total = subtotal + btw;
 
         return { subtotal, btw, total };
-    }, [objects, plantbedLinks, distributionOverrides, plants, plantListItems]);
+    }, [objects, plantbedLinks, distributionOverrides, plants, plantListItems, tuinmaterialenIds]);
 
     return (
         <div className="flex flex-col gap-4">
@@ -223,7 +244,7 @@ export default function FinalisatieSidePanel() {
                             filter: "brightness(0) invert(1)",
                         }}
                     />
-                    Omzetten naar offerte
+                    Offerte direct bestellen
                 </button>
             </section>
         </div>

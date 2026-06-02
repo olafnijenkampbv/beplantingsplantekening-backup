@@ -252,21 +252,39 @@ export default React.memo(function BaseFillLayer({
                 }
 
                 if (isBuildingType(obj.type)) {
+                    const hasBulges = obj.bulges?.some((b) => Math.abs(b) > 0.004);
                     return (
                         <React.Fragment key={`fill-${obj.id}`}>
-                            <Line
-                                {...common}
-                                points={obj.points}
-                                closed
-                                fill={undefined}
-                                fillEnabled
-                                fillPriority="pattern"
-                                fillPatternImage={
-                                    getBuildingPatternCanvas(obj.type) as unknown as HTMLImageElement | undefined
-                                }
-                                fillPatternRepeat="repeat"
-                                strokeEnabled={false}
-                            />
+                            {hasBulges ? (
+                                <PolygonWithHoles
+                                    {...common}
+                                    points={obj.points}
+                                    holes={[]}
+                                    bulges={obj.bulges}
+                                    fill={undefined}
+                                    fillPriority="pattern"
+                                    fillPatternImage={
+                                        getBuildingPatternCanvas(obj.type) as unknown as HTMLImageElement | undefined
+                                    }
+                                    fillPatternRepeat="repeat"
+                                    stroke={undefined}
+                                    strokeWidth={0}
+                                />
+                            ) : (
+                                <Line
+                                    {...common}
+                                    points={obj.points}
+                                    closed
+                                    fill={undefined}
+                                    fillEnabled
+                                    fillPriority="pattern"
+                                    fillPatternImage={
+                                        getBuildingPatternCanvas(obj.type) as unknown as HTMLImageElement | undefined
+                                    }
+                                    fillPatternRepeat="repeat"
+                                    strokeEnabled={false}
+                                />
+                            )}
                             {renderObjectPattern(obj, `fill-pattern-${obj.id}`, stageScale)}
                         </React.Fragment>
                     );

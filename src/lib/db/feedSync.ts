@@ -23,6 +23,9 @@ import { getPlantDb } from "./plantDatabase";
 import { parseFeedXml, type ParsedFeedItem } from "./feedParser";
 import type { PlantAppGroup } from "./plantTypes";
 
+// Internal type that includes tuinmaterialen (not a PlantAppGroup — those go to garden_materials)
+type InternalAppGroup = PlantAppGroup | "tuinmaterialen";
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -45,6 +48,7 @@ export type SyncResult = {
     success: boolean;
     plantsImported: number;       // unique plants written to `plants` table
     variantsImported: number;     // size variants written to `plant_variants`
+    materialsImported: number;    // unique materials written to `garden_materials`
     skippedItems: number;         // feed items that had no trefnaam / kenmerken
     durationMs: number;
     error?: string;               // only present when success === false
@@ -162,8 +166,8 @@ function parseMaxHeightCm(raw: string): number {
     if (!raw) return 0;
     const lower = raw.toLowerCase().trim();
 
-    // Detect metres: "m" present as a standalone word, but no "cm"
-    const inMeters = /\bm\b/.test(lower) && !lower.includes("cm");
+    // Detect metres: standalone "m", "meter" or "meters" present, but no "cm"
+    const inMeters = /\b(?:meter|meters|m)\b/.test(lower) && !lower.includes("cm");
 
     // Extract every number (including decimals with . or ,)
     const matches = lower.match(/\d+(?:[.,]\d+)?/g);
@@ -242,37 +246,44 @@ function groupByTrefnaam(items: ParsedFeedItem[]): Map<string, PlantGroup> {
 // vaste-planten and can be filtered client-side.
 // ---------------------------------------------------------------------------
 
-function getAppGroup(primaryCategory: string): PlantAppGroup {
+function getAppGroup(primaryCategory: string): InternalAppGroup {
     const cat = primaryCategory.toLowerCase().trim();
 
     // --- Bomen ---
     if (
         cat.startsWith("bomen") ||
-        cat.startsWith("dak, lei") ||
-        cat.startsWith("dak-") ||
+        cat.startsWith("dak") ||          // "Dak, lei- & vormbomen" and variants
         cat.startsWith("meerstammig") ||
-        cat.startsWith("bosplantsoen") ||
         cat.startsWith("bonsai") ||
         cat.startsWith("fruit")
     ) {
         return "bomen";
     }
 
-    // --- Heesters & struiken (includes climbers, conifers, rhododendrons, roses) ---
+    // --- Hagen ---
+    if (cat.includes("haag")) {
+        return "hagen";
+    }
+
+    // --- Tuinmaterialen ---
+    if (cat.startsWith("tuinmaterialen")) {
+        return "tuinmaterialen";
+    }
+
+    // --- Heesters & struiken ---
     if (
         cat.startsWith("heesters") ||
         cat.startsWith("coniferen") ||
         cat.startsWith("klimplanten") ||
-        cat.startsWith("mediterraan") ||
         cat.startsWith("rhododendron") ||
         cat.startsWith("ericaceae") ||
         cat.startsWith("rozen") ||
-        cat.includes("haag")
+        cat.startsWith("bosplantsoen")    // woodland shrubs/trees — overig would hide them from tabs
     ) {
         return "heesters-struiken";
     }
 
-    // --- Vaste planten (includes bulbs, water plants, bedding plants) ---
+    // --- Vaste planten ---
     if (
         cat.startsWith("vaste planten") ||
         cat.startsWith("bloembollen") ||
@@ -282,7 +293,7 @@ function getAppGroup(primaryCategory: string): PlantAppGroup {
         return "vaste-planten";
     }
 
-    // --- Catch-all for anything that doesn't match the above ---
+    // --- Catch-all (visible in zoek-zelf, not in a category tab) ---
     return "overig";
 }
 
@@ -300,6 +311,7 @@ function getAppGroup(primaryCategory: string): PlantAppGroup {
 type WriteResult = {
     plantsImported: number;
     variantsImported: number;
+    materialsImported: number;
 };
 
 function writeToDatabase(
@@ -311,121 +323,123 @@ function writeToDatabase(
     // Prepare statements once — reusing them is 10-50× faster than re-parsing SQL
     const insertPlant = db.prepare(`
         INSERT OR REPLACE INTO plants (
-            id,
-            botanical_name,
-            dutch_name,
-            category,
-            app_group,
-            standplaats,
-            grondsoort,
-            bloeiperiode,
-            kleur_bloem,
-            kleur_blad,
-            volwassen_hoogte,
-            max_height_cm,
-            planthoeveelheid_per_m2,
-            inheems,
-            stikstofbehoefte,
-            toelichting,
-            image_url,
-            min_price,
-            in_stock,
-            updated_at
+            id, botanical_name, dutch_name, category, app_group,
+            standplaats, grondsoort, bloeiperiode, kleur_bloem, kleur_blad,
+            volwassen_hoogte, max_height_cm, planthoeveelheid_per_m2,
+            inheems, stikstofbehoefte, toelichting, image_url,
+            min_price, in_stock, updated_at
         ) VALUES (
-            @id,
-            @botanical_name,
-            @dutch_name,
-            @category,
-            @app_group,
-            @standplaats,
-            @grondsoort,
-            @bloeiperiode,
-            @kleur_bloem,
-            @kleur_blad,
-            @volwassen_hoogte,
-            @max_height_cm,
-            @planthoeveelheid_per_m2,
-            @inheems,
-            @stikstofbehoefte,
-            @toelichting,
-            @image_url,
-            @min_price,
-            @in_stock,
-            @updated_at
+            @id, @botanical_name, @dutch_name, @category, @app_group,
+            @standplaats, @grondsoort, @bloeiperiode, @kleur_bloem, @kleur_blad,
+            @volwassen_hoogte, @max_height_cm, @planthoeveelheid_per_m2,
+            @inheems, @stikstofbehoefte, @toelichting, @image_url,
+            @min_price, @in_stock, @updated_at
         )
     `);
 
     const insertVariant = db.prepare(`
         INSERT OR REPLACE INTO plant_variants (
-            id,
-            plant_id,
-            size_label,
-            price,
-            availability,
-            updated_at
+            id, plant_id, size_label, price, availability, updated_at
         ) VALUES (
-            @id,
-            @plant_id,
-            @size_label,
-            @price,
-            @availability,
-            @updated_at
+            @id, @plant_id, @size_label, @price, @availability, @updated_at
         )
     `);
 
-    // Everything inside db.transaction runs atomically —
-    // either all 50 000 rows land, or none do (on error).
+    const insertMaterial = db.prepare(`
+        INSERT OR REPLACE INTO garden_materials (
+            id, name, image_url, min_price, in_stock, updated_at
+        ) VALUES (
+            @id, @name, @image_url, @min_price, @in_stock, @updated_at
+        )
+    `);
+
+    const insertMaterialVariant = db.prepare(`
+        INSERT OR REPLACE INTO garden_material_variants (
+            id, material_id, size_label, price, availability, updated_at
+        ) VALUES (
+            @id, @material_id, @size_label, @price, @availability, @updated_at
+        )
+    `);
+
+    // Everything inside db.transaction runs atomically.
     const runTransaction = db.transaction((): WriteResult => {
         // Full refresh — clear old data first
         db.prepare("DELETE FROM plant_variants").run();
         db.prepare("DELETE FROM plants").run();
+        db.prepare("DELETE FROM garden_material_variants").run();
+        db.prepare("DELETE FROM garden_materials").run();
 
         let plantsImported = 0;
         let variantsImported = 0;
+        let materialsImported = 0;
 
         for (const [trefnaam, group] of groups) {
             const rep = group.representative;
+            const appGroup = getAppGroup(rep.primaryCategory);
 
-            // Insert one row into plants
-            insertPlant.run({
-                id: trefnaam,
-                botanical_name: rep.botanicalName,
-                dutch_name: rep.dutchName,
-                category: rep.primaryCategory,
-                app_group: getAppGroup(rep.primaryCategory),
-                standplaats: rep.standplaats,
-                grondsoort: rep.grondsoort,
-                bloeiperiode: rep.bloeiperiode,
-                kleur_bloem: rep.kleurBloem,
-                kleur_blad: rep.kleurBlad,
-                volwassen_hoogte: rep.volwassenHoogte,
-                max_height_cm: parseMaxHeightCm(rep.volwassenHoogte),
-                planthoeveelheid_per_m2: rep.planthoeveelheidPerM2,
-                inheems: rep.inheems ? 1 : 0,
-                stikstofbehoefte: rep.stikstofbehoefte,
-                toelichting: rep.toelichting,
-                image_url: rep.imageUrl,
-                min_price: group.minPrice,
-                in_stock: group.inStock ? 1 : 0,
-                updated_at: nowIso,
-            });
-            plantsImported++;
-
-            // Insert one row per size variant (partij)
-            for (const variant of group.variants) {
-                insertVariant.run({
-                    id: variant.productId,
-                    plant_id: trefnaam,
-                    size_label: variant.sizeLabel,
-                    price: variant.price,
-                    availability: variant.availability,
+            if (appGroup === "tuinmaterialen") {
+                // Write to garden_materials / garden_material_variants
+                insertMaterial.run({
+                    id: trefnaam,
+                    name: rep.botanicalName,
+                    image_url: rep.imageUrl,
+                    min_price: group.minPrice,
+                    in_stock: group.inStock ? 1 : 0,
                     updated_at: nowIso,
                 });
-                variantsImported++;
+                materialsImported++;
+
+                for (const variant of group.variants) {
+                    insertMaterialVariant.run({
+                        id: variant.productId,
+                        material_id: trefnaam,
+                        size_label: variant.sizeLabel,
+                        price: variant.price,
+                        availability: variant.availability,
+                        updated_at: nowIso,
+                    });
+                }
+            } else {
+                // Write to plants / plant_variants
+                insertPlant.run({
+                    id: trefnaam,
+                    botanical_name: rep.botanicalName,
+                    dutch_name: rep.dutchName,
+                    category: rep.primaryCategory,
+                    app_group: appGroup,
+                    standplaats: rep.standplaats,
+                    grondsoort: rep.grondsoort,
+                    bloeiperiode: rep.bloeiperiode,
+                    kleur_bloem: rep.kleurBloem,
+                    kleur_blad: rep.kleurBlad,
+                    volwassen_hoogte: rep.volwassenHoogte,
+                    max_height_cm: parseMaxHeightCm(rep.volwassenHoogte),
+                    planthoeveelheid_per_m2: rep.planthoeveelheidPerM2,
+                    inheems: rep.inheems ? 1 : 0,
+                    stikstofbehoefte: rep.stikstofbehoefte,
+                    toelichting: rep.toelichting,
+                    image_url: rep.imageUrl,
+                    min_price: group.minPrice,
+                    in_stock: group.inStock ? 1 : 0,
+                    updated_at: nowIso,
+                });
+                plantsImported++;
+
+                for (const variant of group.variants) {
+                    insertVariant.run({
+                        id: variant.productId,
+                        plant_id: trefnaam,
+                        size_label: variant.sizeLabel,
+                        price: variant.price,
+                        availability: variant.availability,
+                        updated_at: nowIso,
+                    });
+                    variantsImported++;
+                }
             }
         }
 
-        return { plantsImported, variantsImported };
+        return { plantsImported, variantsImported, materialsImported };
     });
 
     return runTransaction();
@@ -469,12 +483,13 @@ export async function syncPlantFeed(): Promise<SyncResult> {
 
         // 5. Write to database (atomic transaction — rolls back on any error)
         const nowIso = new Date().toISOString();
-        const { plantsImported, variantsImported } = writeToDatabase(groups, nowIso);
+        const { plantsImported, variantsImported, materialsImported } = writeToDatabase(groups, nowIso);
 
         result = {
             success: true,
             plantsImported,
             variantsImported,
+            materialsImported,
             skippedItems,
             durationMs: Date.now() - startMs,
         };
@@ -483,6 +498,7 @@ export async function syncPlantFeed(): Promise<SyncResult> {
             success: false,
             plantsImported: 0,
             variantsImported: 0,
+            materialsImported: 0,
             skippedItems: 0,
             durationMs: Date.now() - startMs,
             error: err instanceof Error ? err.message : String(err),

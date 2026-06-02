@@ -47,7 +47,7 @@ import {
     inferBoundaryRenderSide,
     isUnifiedBoundaryType,
 } from "@/features/editor/lib/boundarySystem";
-import { bulgeFromDraggedApex, snapBulge, apexPoint } from "@/features/editor/lib/bulgeMath";
+import { bulgeFromDraggedApex, snapBulge, apexPoint, densifyBulgedRing, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
 import { useBulgeDragStore, setBulgeDragLive, clearBulgeDrag } from "@/features/editor/state/bulgeDragStore";
 import {
     inferPolylineRenderSide as inferBoundaryPolylineRenderSide,
@@ -3347,6 +3347,8 @@ export default function HelloEditor() {
     const [isEdgeResizing, setIsEdgeResizing] = useState(false);
     const isEdgeResizingRef = useRef(false);
     const isResizeEdgeHoveredRef = useRef(false);
+    const [livePatternTick, setLivePatternTick] = useState(0);
+    const livePatternRafRef = useRef<number | null>(null);
 
     const edgeResizeRef = useRef<{
         objectId: string;
@@ -3375,6 +3377,14 @@ export default function HelloEditor() {
             computeAndPublishLiveMeasurement();
         });
     }, [computeAndPublishLiveMeasurement]);
+
+    const requestLivePatternRerender = useCallback(() => {
+        if (livePatternRafRef.current) return;
+        livePatternRafRef.current = requestAnimationFrame(() => {
+            livePatternRafRef.current = null;
+            setLivePatternTick((prev) => (prev + 1) % 1000000);
+        });
+    }, []);
 
     // RAF throttle for alignment guides during edge resize — same pattern as EditorTopLayer's
     // onDragMove. Without this, setAlignmentGuides fires on every raw mousemove event
@@ -4005,6 +4015,10 @@ export default function HelloEditor() {
             if (bulgeLiveMeasureRafRef.current) {
                 cancelAnimationFrame(bulgeLiveMeasureRafRef.current);
                 bulgeLiveMeasureRafRef.current = null;
+            }
+            if (livePatternRafRef.current) {
+                cancelAnimationFrame(livePatternRafRef.current);
+                livePatternRafRef.current = null;
             }
 
             if (fenceHintRaf1Ref.current) {
@@ -4739,6 +4753,13 @@ export default function HelloEditor() {
                         obj.holes ?? [],
                         workingBulges
                     );
+                    if (obj.type === "hedge") {
+                        const liveOuterStroke =
+                            workingBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
+                                ? densifyBulgedRing(obj.points, workingBulges, 40)
+                                : obj.points;
+                        selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(liveOuterStroke);
+                    }
                 }
 
                 // ✅ FIX 1B: Update HTML overlay (label + snap ring) via store
@@ -4764,6 +4785,9 @@ export default function HelloEditor() {
                 }
 
                 requestBulgeDragRerender();
+                if (obj?.type === "tiles") {
+                    requestLivePatternRerender();
+                }
 
                 return;
             }
@@ -4921,7 +4945,16 @@ export default function HelloEditor() {
                 selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(nextPoints, workingHoles, liveBulges);
 
                 // Update outer hedge stroke (both holes and no-holes branch).
-                selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(nextPoints);
+                if (editedObj?.type === "hedge") {
+                    const liveOuterStroke =
+                        liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
+                            ? densifyBulgedRing(nextPoints, liveBulges, 40)
+                            : nextPoints;
+                    selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(liveOuterStroke);
+                }
+                if (editedObj?.type === "tiles") {
+                    requestLivePatternRerender();
+                }
 
                 return;
             }
@@ -4983,7 +5016,13 @@ export default function HelloEditor() {
                     liveBulges
                 );
                 if (edit.holeIndex === null) {
-                    selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(edit.workingPoints);
+                    if (editedObj?.type === "hedge") {
+                        const liveOuterStroke =
+                            liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
+                                ? densifyBulgedRing(edit.workingPoints, liveBulges, 40)
+                                : edit.workingPoints;
+                        selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(liveOuterStroke);
+                    }
                 } else {
                     const hPts = vWorkingHoles[edit.holeIndex];
                     if (hPts) {
@@ -5020,6 +5059,9 @@ export default function HelloEditor() {
                 // ✅ Tijdens vertex-drag altijd een throttled React rerender forceren,
                 // zodat ook labels/live afgeleide UI direct meebewegen.
                 requestVertexDragRerender();
+                if (editedObj?.type === "tiles") {
+                    requestLivePatternRerender();
+                }
 
                 const layer = (line ?? h)?.getLayer?.();
                 if (layer) layer.batchDraw();
@@ -5128,7 +5170,7 @@ export default function HelloEditor() {
                 }
             }
         },
-        [activeTool, isBoxSelecting, isPanning, commitPreview, requestBulgeDragRerender]
+        [activeTool, isBoxSelecting, isPanning, commitPreview, requestBulgeDragRerender, requestLivePatternRerender]
     );
 
     const handleMouseUp = useCallback(
@@ -6794,6 +6836,7 @@ export default function HelloEditor() {
                                                 measureLines={measureLines}
                                                 shouldHideHeavySceneDecorations={shouldHideHeavySceneDecorations}
                                                 stageScale={stageScale}
+                                                livePatternTick={livePatternTick}
                                                 plantbedNumberLayouts={plantbedNumberLayouts}
                                                 COLORS={COLORS}
 
@@ -6903,6 +6946,5 @@ export default function HelloEditor() {
                 </div>
             </div>
         </div>
-
     );
 }

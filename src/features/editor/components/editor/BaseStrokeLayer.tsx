@@ -6,7 +6,7 @@ import {
     PolygonWithHoles,
 } from "@/features/editor/lib/editorCanvasPrimitives";
 import { DynamicStrokeShape } from "@/features/editor/lib/treebedGeometry";
-import { traceBulgedPath, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
+import { traceBulgedPath, STRAIGHT_THRESHOLD, densifyBulgedRing } from "@/features/editor/lib/bulgeMath";
 
 type BaseStrokeLayerProps = {
     unselectedNonPlantbeds: PolyObject[];
@@ -55,10 +55,15 @@ export default React.memo(function BaseStrokeLayer({
                     : null;
 
                 if (obj.type === "hedge") {
+                    const hasBulges = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                    const outerStrokePoints =
+                        hasBulges && obj.bulges
+                            ? densifyBulgedRing(obj.points, obj.bulges, 40)
+                            : obj.points;
                     return (
                         <React.Fragment key={`stroke-${obj.id}`}>
                             <DynamicStrokeShape
-                                points={obj.points}
+                                points={outerStrokePoints}
                                 stroke={getObjectRenderStyle(obj).stroke}
                                 strokeWidth={2}
                                 seedKey={`hedge-stroke:${obj.id}:base:outer`}

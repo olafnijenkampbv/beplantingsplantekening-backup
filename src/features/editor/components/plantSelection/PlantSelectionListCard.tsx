@@ -615,10 +615,19 @@ export default function PlantSelectionListCard() {
     };
 
     const handleChangeSize = (itemId: string, value: string) => {
-        updateItem(itemId, (item) => ({
-            ...item,
-            size: value,
-        }));
+        updateItem(itemId, (item) => {
+            // Zoek de geselecteerde variant op zodat we de exacte prijs kunnen opslaan
+            const variants = getVariants(item.plant.id);
+            const selectedVariant = variants.find((v) => v.sizeLabel === value) ?? null;
+            return {
+                ...item,
+                size: value,
+                plant: {
+                    ...item.plant,
+                    pricePerPiece: selectedVariant ? selectedVariant.price : item.plant.pricePerPiece,
+                },
+            };
+        });
     };
 
     const handleChangeNote = (itemId: string, value: string) => {
@@ -1190,12 +1199,16 @@ export default function PlantSelectionListCard() {
                                                                         }}
                                                                     >
                                                                         <img
-                                                                            src={item.plant.imageUrl}
+                                                                            src={item.plant.imageUrl || "/images/logo.png"}
                                                                             alt={item.plant.botanicalName}
                                                                             className="block h-full w-full"
-                                                                            style={{
+                                                                            style={item.plant.imageUrl ? {
                                                                                 objectFit: "cover",
                                                                                 objectPosition: "center",
+                                                                            } : {
+                                                                                objectFit: "contain",
+                                                                                objectPosition: "center",
+                                                                                padding: "20%",
                                                                             }}
                                                                         />
                                                                     </div>
@@ -1209,13 +1222,16 @@ export default function PlantSelectionListCard() {
                                                                         {item.plant.botanicalName}
                                                                     </div>
 
-                                                                    <div
-                                                                        className="mt-1 text-[14px] leading-[1.35]"
-                                                                        style={{ color: COLORS.text }}
-                                                                    >
-                                                                        {item.plant.dutchName}
-                                                                    </div>
+                                                                    {item.plant.category !== "Tuinmaterialen" ? (
+                                                                        <div
+                                                                            className="mt-1 text-[14px] leading-[1.35]"
+                                                                            style={{ color: COLORS.text }}
+                                                                        >
+                                                                            {item.plant.dutchName}
+                                                                        </div>
+                                                                    ) : null}
 
+                                                                    {item.plant.category !== "Tuinmaterialen" ? (
                                                                     <button
                                                                         type="button"
                                                                         onClick={() =>
@@ -1244,6 +1260,7 @@ export default function PlantSelectionListCard() {
                                                                                 : "Bekijk plantspecificaties"}
                                                                         </span>
                                                                     </button>
+                                                                ) : null}
                                                                 </div>
 
                                                                 <div className="pt-2">
@@ -1310,7 +1327,9 @@ export default function PlantSelectionListCard() {
                                                                 >
                                                                     {selectedVariant
                                                                         ? formatPricePerPiece(selectedVariant.price)
-                                                                        : null}
+                                                                        : item.fixedSize && item.plant.pricePerPiece
+                                                                            ? formatPricePerPiece(item.plant.pricePerPiece)
+                                                                            : null}
                                                                 </div>
 
                                                                 <div className="flex h-full items-center justify-center pt-2">

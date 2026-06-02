@@ -10,7 +10,7 @@ import { useLiveEditStore } from "@/features/editor/state/liveEditStore";
 import { useBulgeDragStore } from "@/features/editor/state/bulgeDragStore";
 import { Html } from "react-konva-utils";
 import { useProjectStore, PolyObject, ObjectType, OBJECT_STYLES, objectSupportsBulges, normalizeBulges } from "@/state/projectStore";
-import { apexPoint, traceBulgedPath, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
+import { apexPoint, traceBulgedPath, STRAIGHT_THRESHOLD, densifyBulgedRing } from "@/features/editor/lib/bulgeMath";
 import MeasurementOverlay from "@/features/editor/components/MeasurementOverlay";
 import MeasureToolOverlay from "@/features/editor/components/editor/MeasureToolOverlay";
 import TypeLabelCard, {
@@ -974,6 +974,7 @@ function EditorTopLayerInner(props: any) {
         measureLines,
         shouldHideHeavySceneDecorations,
         stageScale,
+        livePatternTick,
         plantbedNumberLayouts,
         COLORS,
 
@@ -1049,6 +1050,7 @@ function EditorTopLayerInner(props: any) {
     const unselectedNonPlantbedsTyped = unselectedNonPlantbeds as PolyObject[];
     const objectsTyped = objects as PolyObject[];
     const selectedTyped = selected as PolyObject[];
+    void livePatternTick;
 
     const renderTilesPatternSafe = renderTilesPatternProp ?? renderTilesPattern;
     const createTreebedPointsFromCenterDragSafe =
@@ -2409,6 +2411,10 @@ function EditorTopLayerInner(props: any) {
                                             const hasBulges = ringBulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
 
                                             if (obj.type === "hedge") {
+                                                const hedgeStrokePoints =
+                                                    hasBulges && ringBulges
+                                                        ? densifyBulgedRing(ringPoints, ringBulges, 40)
+                                                        : ringPoints;
                                                 return (
                                                     <DynamicStrokeShape
                                                         key={key}
@@ -2416,7 +2422,7 @@ function EditorTopLayerInner(props: any) {
                                                             if (!node) return;
                                                             selectedHedgeStrokeRefs.current[refKey] = node;
                                                         } : undefined}
-                                                        points={ringPoints}
+                                                        points={hedgeStrokePoints}
                                                         stroke={COLORS.orange}
                                                         strokeWidth={strokeWidth}
                                                         seedKey={`hedge-stroke:${obj.id}:selected:${key}`}
@@ -2514,7 +2520,8 @@ function EditorTopLayerInner(props: any) {
                                                     `selected-fill-pattern-${obj.id}`,
                                                     stageScale,
                                                     livePolygonPoints,
-                                                    livePolygonHoles
+                                                    livePolygonHoles,
+                                                    liveBulges
                                                 )}
 
                                                 {!isLiveEditingThisPolygon &&
@@ -2686,7 +2693,9 @@ function EditorTopLayerInner(props: any) {
                                                                     selectedHedgeStrokeRefs.current[obj.id] = node;
                                                                 }
                                                             }}
-                                                            points={livePolygonPoints}
+                                                            points={liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
+                                                                ? densifyBulgedRing(livePolygonPoints, liveBulges, 40)
+                                                                : livePolygonPoints}
                                                             stroke={COLORS.orange}
                                                             strokeWidth={noHolesStrokeW}
                                                             seedKey={`hedge-stroke:${obj.id}:selected`}
@@ -2697,7 +2706,9 @@ function EditorTopLayerInner(props: any) {
                                                         obj,
                                                         `selected-fill-pattern-${obj.id}`,
                                                         stageScale,
-                                                        livePolygonPoints
+                                                        livePolygonPoints,
+                                                        undefined,
+                                                        liveBulges
                                                     )}
                                                 </>
 

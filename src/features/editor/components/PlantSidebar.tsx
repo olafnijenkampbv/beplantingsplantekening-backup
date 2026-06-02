@@ -6,6 +6,7 @@ import type { TreebedVariant } from "@/state/projectStore";
 import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwatch";
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
+import { usePlantVariantStore } from "@/features/editor/state/plantVariantStore";
 import { goToFinalisatie } from "@/features/editor/lib/editorWorkflowNavigation";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 
@@ -553,34 +554,39 @@ export default function PlantSidebar(props: {
 
     // ✅ Plants uit de drawing-aware plantenlijststore
     const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
+    const variantCache = usePlantVariantStore((s) => s.cache);
+    const fetchVariants = usePlantVariantStore((s) => s.fetchVariants);
+
+    // Zorg dat variant-data geladen is voor alle planten in de lijst
+    useEffect(() => {
+        for (const item of plantListItems) {
+            fetchVariants(item.plant.id);
+        }
+    }, [plantListItems, fetchVariants]);
 
     const plants = useMemo(() => {
-        const seenPlantIds = new Set<string>();
         let nextNr = 1;
 
-        return plantListItems.flatMap((item) => {
+        return plantListItems.filter((item) => item.plant.category !== "Tuinmaterialen").map((item) => {
             const plantId = item.plant.id;
+            const variants = variantCache[plantId]?.variants ?? [];
+            const selectedVariant =
+                item.size && item.size !== "Geen maat geselecteerd"
+                    ? variants.find((v) => v.sizeLabel === item.size) ?? null
+                    : null;
 
-            if (seenPlantIds.has(plantId)) {
-                return [];
-            }
-
-            seenPlantIds.add(plantId);
-
-            return [
-                {
-                    id: plantId,
-                    nr: nextNr++,
-                    latin: item.plant.botanicalName,
-                    dutch: item.plant.dutchName,
-                    size: item.size || "Geen maat geselecteerd",
-                    imageSrc: item.plant.imageUrl ?? "/images/placeholder-plant.jpg",
-                    pricePerPiece: item.plant.pricePerPiece,
-                    planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2,
-                },
-            ];
+            return {
+                id: item.id,
+                nr: nextNr++,
+                latin: item.plant.botanicalName,
+                dutch: item.plant.dutchName,
+                size: item.size || "Geen maat geselecteerd",
+                imageSrc: item.plant.imageUrl ?? "/images/placeholder-plant.jpg",
+                pricePerPiece: selectedVariant ? selectedVariant.price : item.plant.pricePerPiece,
+                planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2,
+            };
         });
-    }, [plantListItems]);
+    }, [plantListItems, variantCache]);
 
     const plantsById = useMemo(() => {
         return Object.fromEntries(

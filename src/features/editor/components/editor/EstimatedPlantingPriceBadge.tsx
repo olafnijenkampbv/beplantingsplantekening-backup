@@ -76,7 +76,7 @@ type LinkStatus = {
 // ---------------------------------------------------------------------------
 
 function computePriceData(params: {
-    plantListItems: Array<{ id: string; plant: { id: string; pricePerPiece?: number } }>;
+    plantListItems: Array<{ id: string; quantity: number; plant: { id: string; category?: string; pricePerPiece?: number } }>;
     objects: ReturnType<typeof useProjectStore.getState>["objects"];
     plantbedLinks: ReturnType<typeof useProjectStore.getState>["plantbedLinks"];
     projectPlants: ProjectPlantLike[];
@@ -84,19 +84,28 @@ function computePriceData(params: {
 }): PriceData {
     const { plantListItems, objects, plantbedLinks, projectPlants, distributionOverrides } = params;
 
-    // Bouw een map plantId -> pricePerPiece vanuit de plantenlijst
+    // Splits plantenlijst in planten en tuinmaterialen
+    // Tuinmaterialen worden NOOIT via plantbedLinks geteld — altijd apart
+    const tuinmaterialenItems = plantListItems.filter(
+        (item) => item.plant.category === "Tuinmaterialen"
+    );
+    const tuinmaterialenIds = new Set(tuinmaterialenItems.map((item) => item.id));
+
+    // Bouw een map plantId -> pricePerPiece voor planten (excl. tuinmaterialen)
+    // item.id gebruiken (PlantListItem.id) omdat plantbedLinks ook item.id opslaat
     const priceMap = new Map<string, number>();
     for (const item of plantListItems) {
+        if (tuinmaterialenIds.has(item.id)) continue; // tuinmaterialen apart optellen
         const price = item.plant.pricePerPiece;
         if (typeof price === "number" && Number.isFinite(price)) {
-            priceMap.set(item.plant.id, price);
+            priceMap.set(item.id, price);
         }
     }
 
     let subtotal = 0;
     let hasMissingPrices = false;
 
-    // Loop over alle objecten die gekoppelde planten hebben
+    // Loop over alle objecten die gekoppelde planten hebben (alleen echte planten)
     for (const [objectId, linkedPlantIds] of Object.entries(plantbedLinks)) {
         if (!linkedPlantIds || linkedPlantIds.length === 0) continue;
 
@@ -105,11 +114,15 @@ function computePriceData(params: {
 
         const objectType = object.type;
 
+        // Alleen planten meenemen — filter stale tuinmaterialen-IDs eruit
+        const plantOnlyIds = linkedPlantIds.filter((id) => !tuinmaterialenIds.has(id));
+        if (plantOnlyIds.length === 0) continue;
+
         // Bereken adviesdata voor dit object via de centrale helper
         const adviceData = buildAdviceData({
             selectedObject: object,
             currentType: objectType,
-            linkedPlantIds,
+            linkedPlantIds: plantOnlyIds,
             plants: projectPlants,
             distributionOverrides: distributionOverrides[objectId],
         });
@@ -127,6 +140,15 @@ function computePriceData(params: {
         }
     }
 
+    // Tuinmaterialen altijd apart optellen (niet via plantbedLinks)
+    // Gebruik item.quantity als handmatig ingesteld, anders 1 als standaard
+    for (const item of tuinmaterialenItems) {
+        const price = item.plant.pricePerPiece;
+        if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) continue;
+        const count = item.quantity > 0 ? item.quantity : 1;
+        subtotal += count * price;
+    }
+
     const vatAmount = subtotal * VAT_RATE;
     const totalIncVat = subtotal + vatAmount;
 
@@ -139,14 +161,18 @@ function computePriceData(params: {
 }
 
 function computeLinkStatus(params: {
-    plantListItems: Array<{ plant: { id: string } }>;
+    plantListItems: Array<{ id: string; plant: { id: string; category?: string } }>;
     plantbedLinks: ReturnType<typeof useProjectStore.getState>["plantbedLinks"];
 }): LinkStatus {
     const { plantListItems, plantbedLinks } = params;
 
-    const totalCount = plantListItems.length;
+    // Tuinmaterialen tellen niet mee — ze kunnen niet aan plantvakken gekoppeld worden
+    const linkablePlants = plantListItems.filter(
+        (item) => item.plant.category !== "Tuinmaterialen"
+    );
+    const totalCount = linkablePlants.length;
 
-    // Verzamel unieke plantIds die minimaal één keer gekoppeld zijn
+    // Verzamel unieke item.ids die minimaal één keer gekoppeld zijn
     const linkedPlantIdSet = new Set<string>();
     for (const plantIds of Object.values(plantbedLinks)) {
         for (const plantId of plantIds) {
@@ -154,8 +180,8 @@ function computeLinkStatus(params: {
         }
     }
 
-    const linkedCount = plantListItems.filter((item) =>
-        linkedPlantIdSet.has(item.plant.id)
+    const linkedCount = linkablePlants.filter((item) =>
+        linkedPlantIdSet.has(item.id)
     ).length;
 
     const percentage =

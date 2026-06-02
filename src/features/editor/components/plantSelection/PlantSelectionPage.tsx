@@ -18,6 +18,8 @@ import PlantProposalGroupsCard from "@/features/editor/components/plantSelection
 import PlantSelectionSummaryCard from "@/features/editor/components/plantSelection/PlantSelectionSummaryCard";
 import PlantSelectionFiltersCard from "@/features/editor/components/plantSelection/PlantSelectionFiltersCard";
 import PlantProposalGrid from "@/features/editor/components/plantSelection/PlantProposalGrid";
+import GardenMaterialGrid from "@/features/editor/components/plantSelection/GardenMaterialGrid";
+import { useGardenMaterialCatalogStore } from "@/features/editor/state/gardenMaterialCatalogStore";
 import PlantSelectionListCard from "@/features/editor/components/plantSelection/PlantSelectionListCard";
 import {
     getPlantSelectionSnapshotForDrawing,
@@ -27,6 +29,8 @@ import {
     readRightStepSnapshotsByDrawingIdFromStorage,
     writePlantSelectionSnapshotsByDrawingIdToStorage,
 } from "@/features/editor/lib/appDrawingPersistence";
+
+import { HEIGHT_BOUNDARIES, type ScoringInput } from "@/features/editor/lib/plantScoring";
 
 // Maps step2 wizard grondsoort keys to the matching display value in
 // PLANT_SELECTION_GRONDSOORT_OPTIONS (which are the real DB column values).
@@ -39,15 +43,20 @@ const STEP2_GRONDSOORT_TO_FILTER_OPTION: Record<string, string> = {
 };
 
 
-// Maps step4.heightStyle values to a SQLite height range (cm).
-// Plants with max_height_cm = 0 (unknown) are always included as a safe fallback.
+// Maps step4.heightStyle to the SQL exclusion boundaries.
+// Only the truly incompatible height range is excluded; primary vs secondary
+// distinction is handled by the scoring system (plantScoring.ts).
+//
+// laag-horizontaal : primary < 60cm, secondary 60–150cm, excluded > 150cm
+// accent-op-hoogte : primary > 150cm, secondary 60–150cm, excluded < 60cm
+// gelaagd-ruimtelijk: primary 60–150cm, secondary < 60 or > 150, nothing excluded
 function heightStyleToRange(style: string | null): {
     minHeightCm: number | undefined;
     maxHeightCm: number | undefined;
 } {
-    if (style === "laag-horizontaal")  return { minHeightCm: undefined, maxHeightCm: 150 };
-    if (style === "accent-op-hoogte")  return { minHeightCm: 60, maxHeightCm: undefined };
-    // "gelaagd-ruimtelijk" and null: no height filter
+    if (style === "laag-horizontaal") return { minHeightCm: undefined, maxHeightCm: HEIGHT_BOUNDARIES.HIGH };
+    if (style === "accent-op-hoogte") return { minHeightCm: HEIGHT_BOUNDARIES.LOW, maxHeightCm: undefined };
+    // "gelaagd-ruimtelijk" and null: no exclusion
     return { minHeightCm: undefined, maxHeightCm: undefined };
 }
 
@@ -105,6 +114,12 @@ export default function PlantSelectionPage() {
     const setMultipleCatalogFilters = usePlantCatalogStore((s) => s.setMultipleFilters);
     const setCatalogSearch = usePlantCatalogStore((s) => s.setSearch);
     const loadMoreCatalogPlants = usePlantCatalogStore((s) => s.loadMorePlants);
+
+    const gardenMaterials = useGardenMaterialCatalogStore((s) => s.materials);
+    const gardenMaterialsTotal = useGardenMaterialCatalogStore((s) => s.total);
+    const gardenMaterialsIsLoading = useGardenMaterialCatalogStore((s) => s.isLoading);
+    const gardenMaterialsError = useGardenMaterialCatalogStore((s) => s.error);
+    const fetchGardenMaterials = useGardenMaterialCatalogStore((s) => s.fetchMaterials);
 
     useEffect(() => {
         if (typeof window === "undefined") return;
@@ -201,6 +216,9 @@ export default function PlantSelectionPage() {
         if (!hasHydratedDrawingContext) return;
 
         const { minHeightCm, maxHeightCm } = heightStyleToRange(step4.heightStyle);
+
+        // Tuinmaterialen komen uit een aparte store — plantCatalogStore niet aanraken
+        if (selectedGroup === "tuinmaterialen") return;
 
         if (selectedGroup === "zoek-zelf") {
             setMultipleCatalogFilters({
@@ -305,6 +323,13 @@ export default function PlantSelectionPage() {
         setCatalogFilter("sort", sort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sortValue]);
+
+    // Fetch garden materials when the tuinmaterialen tab is opened (once)
+    useEffect(() => {
+        if (selectedGroup === "tuinmaterialen") {
+            fetchGardenMaterials();
+        }
+    }, [selectedGroup, fetchGardenMaterials]);
 
     const visiblePlants = catalogPlants;
 
@@ -418,34 +443,93 @@ export default function PlantSelectionPage() {
                         </div>
 
                         <div className="space-y-6">
-                            {catalogError ? (
-                                <div
-                                    className="rounded-[8px] border px-4 py-3 text-[14px]"
-                                    style={{ borderColor: "#F4C8B8", backgroundColor: "#FFF7F4", color: "#E94E1B" }}
-                                >
-                                    Planten konden niet worden geladen: {catalogError}
-                                </div>
-                            ) : null}
-                            <PlantProposalGrid
-                                key={selectedGroup}
-                                title={GROUP_LABELS[selectedGroup]}
-                                resultsCount={catalogTotal}
-                                currentPage={catalogPage}
-                                totalPages={catalogTotalPages}
-                                plants={visiblePlants}
-                                viewMode={viewMode}
-                                sortValue={sortValue}
-                                selectedGroup={selectedGroup}
-                                filters={filters}
-                                advancedFilters={advancedFilters}
-                                onChangeSort={setSortValue}
-                                onChangeViewMode={setViewMode}
-                                onAddToPlantList={(plant, size) => addPlantToList(plant, size, !!size)}
-                                onRemoveFilterChip={handleRemoveFilterChip}
-                                onClearAllFilters={handleClearAllFilters}
-                                onLoadMoreFromApi={loadMoreCatalogPlants}
-                                onSearchQueryChange={setCatalogSearch}
-                            />
+                            {selectedGroup === "tuinmaterialen" ? (
+                                <>
+                                    {gardenMaterialsError ? (
+                                        <div
+                                            className="rounded-[8px] border px-4 py-3 text-[14px]"
+                                            style={{ borderColor: "#F4C8B8", backgroundColor: "#FFF7F4", color: "#E94E1B" }}
+                                        >
+                                            Tuinmaterialen konden niet worden geladen: {gardenMaterialsError}
+                                        </div>
+                                    ) : null}
+                                    <GardenMaterialGrid
+                                        materials={gardenMaterials}
+                                        total={gardenMaterialsTotal}
+                                        isLoading={gardenMaterialsIsLoading}
+                                        viewMode={viewMode}
+                                        sortValue={sortValue}
+                                        onChangeSort={setSortValue}
+                                        onChangeViewMode={setViewMode}
+                                        onAddToPlantList={(material, variant) =>
+                                            addPlantToList(
+                                                {
+                                                    id: material.id,
+                                                    botanicalName: material.name,
+                                                    dutchName: material.name,
+                                                    category: "Tuinmaterialen",
+                                                    appGroup: "overig",
+                                                    standplaatsen: [],
+                                                    grondsoorten: [],
+                                                    bloeiperiode: "",
+                                                    kleuren: [],
+                                                    kleurBlad: [],
+                                                    volwassenHoogte: "",
+                                                    maxHeightCm: 0,
+                                                    planthoeveelheidPerM2: 1,
+                                                    inheems: false,
+                                                    stikstofbehoefte: "",
+                                                    toelichting: "",
+                                                    imageUrl: material.imageUrl,
+                                                    pricePerPiece: variant.price,
+                                                    inStock: variant.availability === "in_stock",
+                                                },
+                                                variant.sizeLabel,
+                                                true
+                                            )
+                                        }
+                                    />
+                                </>
+                            ) : (
+                                <>
+                                    {catalogError ? (
+                                        <div
+                                            className="rounded-[8px] border px-4 py-3 text-[14px]"
+                                            style={{ borderColor: "#F4C8B8", backgroundColor: "#FFF7F4", color: "#E94E1B" }}
+                                        >
+                                            Planten konden niet worden geladen: {catalogError}
+                                        </div>
+                                    ) : null}
+                                    <PlantProposalGrid
+                                        key={selectedGroup}
+                                        title={GROUP_LABELS[selectedGroup]}
+                                        resultsCount={catalogTotal}
+                                        currentPage={catalogPage}
+                                        totalPages={catalogTotalPages}
+                                        plants={visiblePlants}
+                                        viewMode={viewMode}
+                                        sortValue={sortValue}
+                                        selectedGroup={selectedGroup}
+                                        filters={filters}
+                                        advancedFilters={advancedFilters}
+                                        scoringInput={{
+                                            heightStyle: step4.heightStyle as ScoringInput["heightStyle"],
+                                            standplaatsen: step2.standplaatsen.filter((s) => s !== "wisselend-onbekend"),
+                                            groundTypes: step2.groundTypes
+                                                .map((g) => STEP2_GRONDSOORT_TO_FILTER_OPTION[g] ?? "")
+                                                .filter(Boolean)
+                                                .map((g) => g.toLowerCase()),
+                                        }}
+                                        onChangeSort={setSortValue}
+                                        onChangeViewMode={setViewMode}
+                                        onAddToPlantList={(plant, size) => addPlantToList(plant, size, !!size)}
+                                        onRemoveFilterChip={handleRemoveFilterChip}
+                                        onClearAllFilters={handleClearAllFilters}
+                                        onLoadMoreFromApi={loadMoreCatalogPlants}
+                                        onSearchQueryChange={setCatalogSearch}
+                                    />
+                                </>
+                            )}
                         </div>
 
                         <div className="xl:col-span-2">

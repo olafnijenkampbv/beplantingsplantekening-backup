@@ -712,13 +712,13 @@ const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
         for (const item of plantListItems) {
             const price = item.plant.pricePerPiece;
             if (typeof price === "number" && Number.isFinite(price)) {
-                map.set(item.plant.id, price);
+                map.set(item.id, price);
             }
         }
         return map;
     }, [plantListItems]);
 
-    const isSupportedType = currentType === "plantbed" || currentType === "hedge";
+    const isSupportedType = currentType === "plantbed" || currentType === "hedge" || currentType === "treebed";
     const adviceData = React.useMemo<AdviceData | null>(() => {
         if (!selectedObject || !isSupportedType || linkedPlantIds.length === 0) {
             return null;

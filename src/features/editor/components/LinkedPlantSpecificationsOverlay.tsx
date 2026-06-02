@@ -160,7 +160,7 @@ export default function LinkedPlantSpecificationsOverlay(props: {
         toelichting: string;
     } | null => {
         if (!plant) return null;
-        const apiPlant = plantListItems.find((item) => item.plant.id === plant.id)?.plant;
+        const apiPlant = plantListItems.find((item) => item.id === plant.id)?.plant;
         if (!apiPlant) return { leftColumn: [], rightColumn: [], toelichting: "" };
         return buildSpecsFromApiPlant(apiPlant);
     }, [plant, plantListItems]);

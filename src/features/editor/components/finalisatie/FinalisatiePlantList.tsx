@@ -472,7 +472,7 @@ function buildPlantAdviceInfoForList(
 
     if (!linkedEntries.length) return null;
 
-    const item = plantListItems.find((li) => li.plant.id === plantId);
+    const item = plantListItems.find((li) => li.id === plantId);
     let displayName = item?.plant.botanicalName ?? "";
     let dutchName = item?.plant.dutchName ?? "";
 
@@ -582,12 +582,12 @@ export default function FinalisatiePlantList() {
             s.distributionOverrides
     );
     const plants = useMemo<ProjectPlantLike[]>(() => {
-        const seen = new Set<string>();
-        return items.flatMap((item) => {
-            if (seen.has(item.plant.id)) return [];
-            seen.add(item.plant.id);
-            return [{ id: item.plant.id, latin: item.plant.botanicalName, dutch: item.plant.dutchName, planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2 }];
-        });
+        return items.map((item) => ({
+            id: item.id,
+            latin: item.plant.botanicalName,
+            dutch: item.plant.dutchName,
+            planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2,
+        }));
     }, [items]);
 
     const [searchQuery, setSearchQuery] = useState("");
@@ -1130,21 +1130,24 @@ export default function FinalisatiePlantList() {
                                     buildSpecificationsFromApiPlant(item.plant);
 
                                 const linkGroups = buildLinkGroups(
-                                    item.plant.id,
+                                    item.id,
                                     plantbedLinks,
                                     objects
                                 );
 
                                 const adviceCount = buildTotalAdviceCount(
-                                    item.plant.id,
+                                    item.id,
                                     plantbedLinks,
                                     objects,
                                     plants,
                                     distributionOverrides
                                 );
 
+                                const isGardenMaterial = item.plant.category === "Tuinmaterialen";
+                                // Tuinmaterialen hebben geen advies (niet gekoppeld aan vakken)
+                                // — gebruik item.quantity of standaard 1 als minimum
                                 const effectiveCount =
-                                    item.quantity > 0 ? item.quantity : adviceCount;
+                                    item.quantity > 0 ? item.quantity : (isGardenMaterial ? 1 : adviceCount);
 
                                 const totalPrice =
                                     effectiveCount * (item.plant.pricePerPiece ?? 0);
@@ -1188,12 +1191,16 @@ export default function FinalisatiePlantList() {
                                                         }}
                                                     >
                                                         <img
-                                                            src={item.plant.imageUrl}
+                                                            src={item.plant.imageUrl || "/images/logo.png"}
                                                             alt={item.plant.botanicalName}
                                                             className="block h-full w-full"
-                                                            style={{
+                                                            style={item.plant.imageUrl ? {
                                                                 objectFit: "cover",
                                                                 objectPosition: "center",
+                                                            } : {
+                                                                objectFit: "contain",
+                                                                objectPosition: "center",
+                                                                padding: "20%",
                                                             }}
                                                         />
                                                     </div>
@@ -1207,40 +1214,44 @@ export default function FinalisatiePlantList() {
                                                     >
                                                         {item.plant.botanicalName}
                                                     </div>
-                                                    <div
-                                                        className="mt-1 text-[14px] leading-[1.35]"
-                                                        style={{ color: COLORS.muted }}
-                                                    >
-                                                        {item.plant.dutchName}
-                                                    </div>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() =>
-                                                            handleTogglePlantSpecifications(item.id)
-                                                        }
-                                                        className="mt-auto inline-flex cursor-pointer items-center gap-2 text-[14px]"
-                                                        style={{ color: COLORS.orange }}
-                                                    >
-                                                        <img
-                                                            src={
-                                                                isSpecificationsOpen
-                                                                    ? "/icons/cancel.svg"
-                                                                    : "/icons/info.svg"
+                                                    {item.plant.category !== "Tuinmaterialen" ? (
+                                                        <div
+                                                            className="mt-1 text-[14px] leading-[1.35]"
+                                                            style={{ color: COLORS.muted }}
+                                                        >
+                                                            {item.plant.dutchName}
+                                                        </div>
+                                                    ) : null}
+                                                    {item.plant.category !== "Tuinmaterialen" ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                handleTogglePlantSpecifications(item.id)
                                                             }
-                                                            alt=""
-                                                            style={{
-                                                                width: 16,
-                                                                height: 16,
-                                                                display: "block",
-                                                                filter: ORANGE_ICON_FILTER,
-                                                            }}
-                                                        />
-                                                        <span>
-                                                            {isSpecificationsOpen
-                                                                ? "Verberg plantspecificaties"
-                                                                : "Bekijk plantspecificaties"}
-                                                        </span>
-                                                    </button>
+                                                            className="mt-auto inline-flex cursor-pointer items-center gap-2 text-[14px]"
+                                                            style={{ color: COLORS.orange }}
+                                                        >
+                                                            <img
+                                                                src={
+                                                                    isSpecificationsOpen
+                                                                        ? "/icons/cancel.svg"
+                                                                        : "/icons/info.svg"
+                                                                }
+                                                                alt=""
+                                                                style={{
+                                                                    width: 16,
+                                                                    height: 16,
+                                                                    display: "block",
+                                                                    filter: ORANGE_ICON_FILTER,
+                                                                }}
+                                                            />
+                                                            <span>
+                                                                {isSpecificationsOpen
+                                                                    ? "Verberg plantspecificaties"
+                                                                    : "Bekijk plantspecificaties"}
+                                                            </span>
+                                                        </button>
+                                                    ) : null}
                                                 </div>
 
                                                 {/* Maatvoering */}
@@ -1254,12 +1265,14 @@ export default function FinalisatiePlantList() {
                                                 {/* Gekoppeld aan */}
                                                 <div className="flex flex-col gap-2 pt-1">
                                                     {linkGroups.length === 0 ? (
-                                                        <span
-                                                            className="text-[13px]"
-                                                            style={{ color: COLORS.softText }}
-                                                        >
-                                                            Niet gekoppeld
-                                                        </span>
+                                                        item.plant.category !== "Tuinmaterialen" ? (
+                                                            <span
+                                                                className="text-[13px]"
+                                                                style={{ color: COLORS.softText }}
+                                                            >
+                                                                Niet gekoppeld
+                                                            </span>
+                                                        ) : null
                                                     ) : (
                                                         linkGroups.map((group) => (
                                                             <div key={group.typeLabel}>
@@ -1325,7 +1338,7 @@ export default function FinalisatiePlantList() {
                                                                     event.target.value
                                                                 )
                                                             }
-                                                            placeholder={String(adviceCount)}
+                                                            placeholder={isGardenMaterial ? "1" : String(adviceCount)}
                                                             className="h-[40px] w-[72px] rounded-[4px] border bg-white px-3 text-[14px] outline-none"
                                                             style={{
                                                                 borderColor: COLORS.borderSoft,
@@ -1339,57 +1352,59 @@ export default function FinalisatiePlantList() {
                                                             st.
                                                         </span>
                                                     </div>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            const info = buildPlantAdviceInfoForList(
-                                                                item.plant.id,
-                                                                items,
-                                                                objects,
-                                                                plants,
-                                                                plantbedLinks,
-                                                                distributionOverrides
-                                                            );
-                                                            if (info) setAdvicePopupInfo(info);
-                                                        }}
-                                                        className="mt-auto inline-flex flex-col rounded-[4px] px-2 py-1 text-[14px]"
-                                                        onMouseEnter={() => setHoveredAdviceId(item.id)}
-                                                        onMouseLeave={() => setHoveredAdviceId(null)}
-                                                        style={{
-                                                            backgroundColor: "#F0F5EE",
-                                                            border: hoveredAdviceId === item.id
-                                                                ? `1.5px solid ${COLORS.green}`
-                                                                : "1.5px solid transparent",
-                                                            cursor: "pointer",
-                                                            textAlign: "left",
-                                                            transition: "border-color 120ms ease",
-                                                        }}
-                                                    >
-                                                        <span className="inline-flex items-center gap-1.5">
-                                                            <img
-                                                                src="/icons/help.svg"
-                                                                alt=""
-                                                                style={{
-                                                                    width: 14,
-                                                                    height: 14,
-                                                                    display: "block",
-                                                                    flexShrink: 0,
-                                                                }}
-                                                            />
-                                                            <span
-                                                                className="font-semibold"
-                                                                style={{ color: COLORS.green }}
-                                                            >
-                                                                Advies:
-                                                            </span>
-                                                        </span>
-                                                        <span
-                                                            className="mt-0.5 text-[14px]"
-                                                            style={{ color: COLORS.text }}
+                                                    {item.plant.category !== "Tuinmaterialen" ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                const info = buildPlantAdviceInfoForList(
+                                                                    item.id,
+                                                                    items,
+                                                                    objects,
+                                                                    plants,
+                                                                    plantbedLinks,
+                                                                    distributionOverrides
+                                                                );
+                                                                if (info) setAdvicePopupInfo(info);
+                                                            }}
+                                                            className="mt-auto inline-flex flex-col rounded-[4px] px-2 py-1 text-[14px]"
+                                                            onMouseEnter={() => setHoveredAdviceId(item.id)}
+                                                            onMouseLeave={() => setHoveredAdviceId(null)}
+                                                            style={{
+                                                                backgroundColor: "#F0F5EE",
+                                                                border: hoveredAdviceId === item.id
+                                                                    ? `1.5px solid ${COLORS.green}`
+                                                                    : "1.5px solid transparent",
+                                                                cursor: "pointer",
+                                                                textAlign: "left",
+                                                                transition: "border-color 120ms ease",
+                                                            }}
                                                         >
-                                                            {adviceCount} stuks
-                                                        </span>
-                                                    </button>
+                                                            <span className="inline-flex items-center gap-1.5">
+                                                                <img
+                                                                    src="/icons/help.svg"
+                                                                    alt=""
+                                                                    style={{
+                                                                        width: 14,
+                                                                        height: 14,
+                                                                        display: "block",
+                                                                        flexShrink: 0,
+                                                                    }}
+                                                                />
+                                                                <span
+                                                                    className="font-semibold"
+                                                                    style={{ color: COLORS.green }}
+                                                                >
+                                                                    Advies:
+                                                                </span>
+                                                            </span>
+                                                            <span
+                                                                className="mt-0.5 text-[14px]"
+                                                                style={{ color: COLORS.text }}
+                                                            >
+                                                                {adviceCount} stuks
+                                                            </span>
+                                                        </button>
+                                                    ) : null}
                                                 </div>
 
                                                 {/* Prijs */}

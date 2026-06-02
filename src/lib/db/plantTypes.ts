@@ -56,9 +56,10 @@ export type PlantWithVariants = PlantRow & {
 export type PlantAppGroup =
     | "bodembedekkers"
     | "vaste-planten"
+    | "hagen"
     | "heesters-struiken"
     | "bomen"
-    | "overig";           // catch-all for categories that don't fit the main four
+    | "overig";           // catch-all for categories that don't fit the main tabs
 
 // ---------------------------------------------------------------------------
 // API response type — what the browser receives from /api/plants

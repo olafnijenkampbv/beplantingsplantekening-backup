@@ -1,9 +1,11 @@
 export type PlantGroupKey =
     | "bodembedekkers"
     | "vaste-planten"
+    | "hagen"
     | "heesters-struiken"
     | "bomen"
-    | "zoek-zelf";
+    | "zoek-zelf"
+    | "tuinmaterialen";
 
 export type ViewMode = "grid" | "list";
 
@@ -145,17 +147,21 @@ export const GROUP_OPTIONS: Array<{
     label: string;
     variant?: "primary" | "secondary" | "search";
 }> = [
-    { key: "bodembedekkers", label: "Bodembedekkers", variant: "primary" },
-    { key: "vaste-planten", label: "Vaste planten", variant: "secondary" },
-    { key: "heesters-struiken", label: "Heesters & struiken", variant: "secondary" },
-    { key: "bomen", label: "Bomen", variant: "secondary" },
-    { key: "zoek-zelf", label: "Zoek zelf een plant", variant: "search" },
+    { key: "bodembedekkers",   label: "Bodembedekkers",       variant: "primary" },
+    { key: "vaste-planten",    label: "Vaste planten",         variant: "secondary" },
+    { key: "hagen",            label: "Hagen",                 variant: "secondary" },
+    { key: "heesters-struiken",label: "Heesters & struiken",   variant: "secondary" },
+    { key: "bomen",            label: "Bomen",                 variant: "secondary" },
+    { key: "zoek-zelf",        label: "Zoek zelf een plant",   variant: "search" },
+    { key: "tuinmaterialen",   label: "Tuinmaterialen",        variant: "secondary" },
 ];
 
 export const GROUP_LABELS: Record<PlantGroupKey, string> = {
-    "bodembedekkers": "Bodembedekkers",
-    "vaste-planten": "Vaste planten",
+    "bodembedekkers":    "Bodembedekkers",
+    "vaste-planten":     "Vaste planten",
+    "hagen":             "Hagen",
     "heesters-struiken": "Heesters & struiken",
-    bomen: "Bomen",
-    "zoek-zelf": "Zoek zelf een plant",
+    "bomen":             "Bomen",
+    "zoek-zelf":         "Zoek zelf een plant",
+    "tuinmaterialen":    "Tuinmaterialen",
 };

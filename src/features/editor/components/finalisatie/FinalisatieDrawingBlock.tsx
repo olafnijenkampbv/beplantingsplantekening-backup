@@ -313,6 +313,7 @@ type ProductRowsProps = {
     objects: PolyObject[];
     plants: ProjectPlantLike[];
     plantListItems: PlantListItem[];
+    tuinmaterialenItems: PlantListItem[];
     distributionOverrides: Record<string, Record<string, number>>;
     hoveredObjectId: string | null;
     hoveredRowObjectId: string | null;
@@ -324,6 +325,7 @@ function ProductRows({
     objects,
     plants,
     plantListItems,
+    tuinmaterialenItems,
     distributionOverrides,
     hoveredObjectId,
     hoveredRowObjectId,
@@ -364,7 +366,7 @@ function ProductRows({
             for (const r of advice.rows) {
                 if (r.adviceCount === null) continue;
 
-                const item = plantListItems.find((li) => li.plant.id === r.plantId);
+                const item = plantListItems.find((li) => li.id === r.plantId);
                 const count =
                     item && item.quantity > 0 ? item.quantity : (r.adviceCount ?? 0);
 
@@ -428,7 +430,7 @@ function ProductRows({
         });
     }, [rows]);
 
-    if (!rows.length) {
+    if (!rows.length && !tuinmaterialenItems.length) {
         return (
             <p className="py-4 text-[13px]" style={{ color: COLORS.muted }}>
                 Nog geen planten gekoppeld aan vakken.
@@ -561,6 +563,62 @@ function ProductRows({
                             })}
                         </React.Fragment>
                     ))}
+
+                    {/* ── Dode materialen (tuinmaterialen) ───────────────── */}
+                    {tuinmaterialenItems.length > 0 ? (
+                        <React.Fragment key="tuinmaterialen">
+                            <tr>
+                                <td
+                                    colSpan={6}
+                                    className="pb-1.5 pt-5 text-[11px] font-semibold uppercase tracking-wider"
+                                    style={{
+                                        color: "#898988",
+                                        borderBottom: `1px solid ${COLORS.border}`,
+                                    }}
+                                >
+                                    Dode materialen
+                                </td>
+                            </tr>
+                            {tuinmaterialenItems.map((item) => {
+                                const count = item.quantity > 0 ? item.quantity : 1;
+                                return (
+                                    <tr
+                                        key={item.id}
+                                        style={{
+                                            borderBottom: `1px dashed ${COLORS.borderSoft}`,
+                                        }}
+                                    >
+                                        {/* Vak — leeg voor materialen */}
+                                        <td className={COL_CELL} />
+                                        {/* Naam */}
+                                        <td className={COL_CELL} style={{ color: COLORS.text }}>
+                                            {item.plant.botanicalName}
+                                        </td>
+                                        {/* Nederlandse naam — leeg */}
+                                        <td className={COL_CELL} />
+                                        {/* Maatvoering */}
+                                        <td className={COL_CELL} style={{ color: COLORS.text }}>
+                                            {item.size || "—"}
+                                        </td>
+                                        {/* Planthoeveelheid — leeg */}
+                                        <td className={COL_CELL} />
+                                        {/* Aantal */}
+                                        <td
+                                            className={COL_CELL}
+                                            style={{
+                                                color: COLORS.text,
+                                                fontWeight: 600,
+                                                textAlign: "right",
+                                                paddingRight: 0,
+                                            }}
+                                        >
+                                            {count} st.
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </React.Fragment>
+                    ) : null}
                 </tbody>
             </table>
         </div>
@@ -584,13 +642,64 @@ export default function FinalisatieDrawingBlock() {
     );
     const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
 
+    const tuinmaterialenItems = useMemo(
+        () => plantListItems.filter((item) => item.plant.category === "Tuinmaterialen"),
+        [plantListItems]
+    );
+
+    // Sfeerimpressie: één afbeelding per gekoppelde plant, met vaklabel
+    type SfeerImage = {
+        key: string;
+        imageUrl: string;
+        vakLabel: string;
+        labelBg: string;
+        labelBorder: string | null;
+        labelText: string;
+        plantName: string;
+    };
+    const sfeerImages = useMemo((): SfeerImage[] => {
+        const seen = new Set<string>(); // dedup per plant×vak combinatie
+        const result: SfeerImage[] = [];
+
+        for (const [objectId, linkedIds] of Object.entries(plantbedLinks)) {
+            if (!linkedIds?.length) continue;
+            const object = objects.find((o) => o.id === objectId);
+            if (!object || !["plantbed", "hedge", "treebed"].includes(object.type)) continue;
+
+            const vakLabel = getPolyLabel(object, objects);
+            const ls = getVakLabelStyle(object);
+
+            for (const plantId of linkedIds) {
+                const item = plantListItems.find((li) => li.id === plantId);
+                // Sla over: geen afbeelding, tuinmaterialen, of standaard logo-placeholder
+                if (!item?.plant.imageUrl) continue;
+                if (item.plant.category === "Tuinmaterialen") continue;
+                const dedupKey = `${objectId}:${plantId}`;
+                if (seen.has(dedupKey)) continue;
+                seen.add(dedupKey);
+                result.push({
+                    key: dedupKey,
+                    imageUrl: item.plant.imageUrl,
+                    vakLabel,
+                    labelBg: ls.bg,
+                    labelBorder: ls.border,
+                    labelText: ls.text,
+                    plantName: item.plant.botanicalName,
+                });
+            }
+        }
+        return result;
+    }, [plantbedLinks, objects, plantListItems]);
+
     const plants = useMemo<ProjectPlantLike[]>(() => {
-        const seen = new Set<string>();
-        return plantListItems.flatMap((item) => {
-            if (seen.has(item.plant.id)) return [];
-            seen.add(item.plant.id);
-            return [{ id: item.plant.id, latin: item.plant.botanicalName, dutch: item.plant.dutchName, planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2 }];
-        });
+        return plantListItems
+            .filter((item) => item.plant.category !== "Tuinmaterialen")
+            .map((item) => ({
+                id: item.id,
+                latin: item.plant.botanicalName,
+                dutch: item.plant.dutchName,
+                planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2,
+            }));
     }, [plantListItems]);
     const locationType = useRightStepMenuStore((s) => s.step1.locationType);
 
@@ -602,6 +711,7 @@ export default function FinalisatieDrawingBlock() {
     const [hoveredObjectId, setHoveredObjectId] = useState<string | null>(null);
     const [hoveredLegendType, setHoveredLegendType] = useState<ObjectType | null>(null);
     const [hoveredRowObjectId, setHoveredRowObjectId] = useState<string | null>(null);
+    const [lightboxImage, setLightboxImage] = useState<{ url: string; name: string } | null>(null);
 
     // ── Refs ────────────────────────────────────────────────────────────────
     const canvasRef = useRef<HTMLDivElement>(null);
@@ -777,7 +887,7 @@ export default function FinalisatieDrawingBlock() {
                     <h2 className="text-[18px] font-bold" style={{ color: COLORS.green }}>
                         Beplantingsplantekening
                     </h2>
-                    <p className="mt-0.5 text-[13px]" style={{ color: COLORS.softText }}>
+                    <p className="mt-2 text-[14px]" style={{ color: COLORS.text }}>
                         Bekijk hieronder de technische tekening van jouw beplantingsplan.
                     </p>
                 </div>
@@ -1338,11 +1448,127 @@ export default function FinalisatieDrawingBlock() {
                     objects={objects}
                     plants={plants}
                     plantListItems={plantListItems}
+                    tuinmaterialenItems={tuinmaterialenItems}
                     distributionOverrides={distributionOverrides}
                     hoveredObjectId={hoveredObjectId}
                     hoveredRowObjectId={hoveredRowObjectId}
                     onRowHover={setHoveredRowObjectId}
                 />
+
+                {/* ── Sfeerimpressie ── */}
+                {sfeerImages.length > 0 && (
+                    <div className="mt-8">
+                        <p
+                            className="pb-2 text-[11px] font-semibold uppercase tracking-wider"
+                            style={{
+                                color: "#898988",
+                                borderBottom: `1px solid ${COLORS.border}`,
+                            }}
+                        >
+                            Sfeerimpressie
+                        </p>
+                        <div
+                            className="mt-4 grid"
+                            style={{
+                                gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                                gap: 10,
+                            }}
+                        >
+                            {sfeerImages.map((img) => (
+                                <button
+                                    key={img.key}
+                                    type="button"
+                                    onClick={() => setLightboxImage({ url: img.imageUrl, name: img.plantName })}
+                                    className="relative overflow-hidden rounded-[6px]"
+                                    style={{
+                                        aspectRatio: "4 / 3",
+                                        width: "100%",
+                                        backgroundColor: "#F1F1EE",
+                                        cursor: "pointer",
+                                        border: "none",
+                                        padding: 0,
+                                        display: "block",
+                                    }}
+                                >
+                                    <img
+                                        src={img.imageUrl}
+                                        alt={img.plantName}
+                                        className="block h-full w-full"
+                                        style={{ objectFit: "cover", objectPosition: "center" }}
+                                    />
+                                    {/* Vaklabel: wit kader om de gekleurde badge — identiek aan tabel */}
+                                    <div className="absolute left-2 top-2">
+                                        <div
+                                            style={{
+                                                backgroundColor: "white",
+                                                borderRadius: 5,
+                                                padding: 2,
+                                                display: "inline-flex",
+                                                boxShadow: "0 1px 3px rgba(0,0,0,0.18)",
+                                            }}
+                                        >
+                                            <span
+                                                className="inline-flex items-center rounded-[4px] px-1.5 py-0.5 text-[11px] font-bold"
+                                                style={{
+                                                    backgroundColor: img.labelBg,
+                                                    border: img.labelBorder ? `1.5px solid ${img.labelBorder}` : "none",
+                                                    color: img.labelText,
+                                                }}
+                                            >
+                                                {img.vakLabel}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* ── Lightbox ── */}
+                {lightboxImage && (
+                    <div
+                        className="fixed inset-0 z-[9999] flex items-center justify-center"
+                        style={{ backgroundColor: "rgba(0,0,0,0.75)" }}
+                        onMouseDown={() => setLightboxImage(null)}
+                    >
+                        <div
+                            className="relative"
+                            style={{ maxWidth: "90vw", maxHeight: "90vh" }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                        >
+                            <img
+                                src={lightboxImage.url}
+                                alt={lightboxImage.name}
+                                style={{
+                                    maxWidth: "min(90vw, 800px)",
+                                    maxHeight: "min(90vh, 700px)",
+                                    width: "auto",
+                                    height: "auto",
+                                    borderRadius: 8,
+                                    display: "block",
+                                }}
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setLightboxImage(null)}
+                                className="absolute flex items-center justify-center rounded-full"
+                                style={{
+                                    top: -16,
+                                    right: -16,
+                                    width: 32,
+                                    height: 32,
+                                    backgroundColor: "white",
+                                    border: "none",
+                                    cursor: "pointer",
+                                    boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+                                }}
+                            >
+                                <img src="/icons/cancel.svg" alt="Sluiten" style={{ width: 14, height: 14, display: "block" }} />
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
         </section>

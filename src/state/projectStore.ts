@@ -9,7 +9,7 @@ import {
     getBoundaryBandShapeForObject,
     mergeConnectedBoundaryPolylines,
 } from "@/features/editor/lib/boundarySystem";
-import { densifyBulgedRing, STRAIGHT_THRESHOLD, arcCenterRadius, bulgeFromDraggedApex } from "@/features/editor/lib/bulgeMath";
+import { densifyBulgedRing, STRAIGHT_THRESHOLD, arcCenterRadius, bulgeFromDraggedApex, normalizeCorners, cornerMaxRadius, remapCornersToRing } from "@/features/editor/lib/bulgeMath";
 
 function rectsIntersect(
     a: { x: number; y: number; w: number; h: number },
@@ -403,14 +403,17 @@ function normalizeSingleObjectToPieces(obj: PolyObject): PolyObject[] {
             return holeNormalized.map((piece) => ({
                 ...piece,
                 bulges: remapBulgesToRing(prepared.points, prepared.bulges, piece.points),
+                corners: remapCornersToRing(prepared.points, prepared.corners, piece.points),
             }));
         }
 
+        const cleanedFallback = cleanupPoints(prepared.points);
         return [{
             ...obj,
-            points: cleanupPoints(prepared.points),
+            points: cleanedFallback,
             holes: undefined,
-            bulges: remapBulgesToRing(prepared.points, prepared.bulges, cleanupPoints(prepared.points)),
+            bulges: remapBulgesToRing(prepared.points, prepared.bulges, cleanedFallback),
+            corners: remapCornersToRing(prepared.points, prepared.corners, cleanedFallback),
         }];
     }
 
@@ -424,6 +427,7 @@ function normalizeSingleObjectToPieces(obj: PolyObject): PolyObject[] {
         return [{
             ...selfNormalized,
             bulges: remapBulgesToRing(prepared.points, prepared.bulges, selfNormalized.points),
+            corners: remapCornersToRing(prepared.points, prepared.corners, selfNormalized.points),
         }];
     }
 
@@ -432,6 +436,7 @@ function normalizeSingleObjectToPieces(obj: PolyObject): PolyObject[] {
         return [{
             ...selfNormalized,
             bulges: remapBulgesToRing(prepared.points, prepared.bulges, selfNormalized.points),
+            corners: remapCornersToRing(prepared.points, prepared.corners, selfNormalized.points),
         }];
     }
 
@@ -443,6 +448,7 @@ function normalizeSingleObjectToPieces(obj: PolyObject): PolyObject[] {
             points: piece.outer,
             holes: sanitizeHoles(piece.holes),
             bulges: remapBulgesToRing(prepared.points, prepared.bulges, piece.outer),
+            corners: remapCornersToRing(prepared.points, prepared.corners, piece.outer),
         }));
 }
 
@@ -459,14 +465,17 @@ function normalizeSelfUnionToDonut(obj: PolyObject): PolyObject {
             return {
                 ...first,
                 bulges: remapBulgesToRing(obj.points, obj.bulges, first.points),
+                corners: remapCornersToRing(obj.points, obj.corners, first.points),
             };
         }
 
+        const cleanedDonut = cleanupPoints(obj.points);
         return {
             ...obj,
-            points: cleanupPoints(obj.points),
+            points: cleanedDonut,
             holes: undefined,
-            bulges: remapBulgesToRing(obj.points, obj.bulges, cleanupPoints(obj.points)),
+            bulges: remapBulgesToRing(obj.points, obj.bulges, cleanedDonut),
+            corners: remapCornersToRing(obj.points, obj.corners, cleanedDonut),
         };
     }
 
@@ -541,12 +550,14 @@ function normalizeSelfUnionToDonut(obj: PolyObject): PolyObject {
     const main = pieces[0];
     const nextHoles = sanitizeHoles(main.holes);
     const remappedBulges = remapBulgesToRing(obj.points, obj.bulges, main.outer);
+    const remappedCorners = remapCornersToRing(obj.points, obj.corners, main.outer);
 
     return {
         ...obj,
         points: main.outer,
         holes: nextHoles,
         bulges: remappedBulges,
+        corners: remappedCorners,
     };
 }
 
@@ -642,6 +653,14 @@ export type PolyObject = {
      */
     bulges?: number[];
 
+    /**
+     * ✅ HOEKAFRONDING — één straal (in EDITOR-UNITS) per hoekpunt i.
+     * corners[i] hoort bij vertex i. Lengte = points.length / 2.
+     * 0 = scherpe hoek. Afwezig/undefined ⇒ alles scherp (backwards compatible).
+     * ⚠️ ANDERS DAN bulges: dit is een LENGTE, geen dimensieloze waarde.
+     */
+    corners?: number[];
+
     // Alleen relevant voor plantbed (Plantvak)
     plantbedNo?: number;
 
@@ -674,6 +693,7 @@ export type PolyObject = {
 };
 
 export { OBJECT_STYLES, TYPE_Z_INDEX };
+export { normalizeCorners, cornerMaxRadius, remapCornersToRing } from "@/features/editor/lib/bulgeMath";
 
 export type EditorTool = "select" | "hand" | "cut" | "draw" | "measure";
 
@@ -1811,6 +1831,11 @@ type ProjectState = {
      * segmentIndex: index i → segment van vertex i naar vertex (i+1)%n.
      */
     setSegmentBulge: (objectId: string, segmentIndex: number, bulge: number) => void;
+
+    /**
+     * ✅ HOEKAFRONDING — zet de afrondingsstraal van één hoekpunt en commit via history.
+     */
+    setCornerRadius: (objectId: string, vertexIndex: number, radius: number) => void;
 
     confirmModal:
     | null
@@ -3964,10 +3989,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
             const withPieces = world.map((o) => {
                 if (!isPolylineObject(o)) {
+                    const cleanedPts = cleanupPoints(o.points);
                     return {
                         ...o,
-                        points: cleanupPoints(o.points),
+                        points: cleanedPts,
                         holes: o.holes?.map((h) => cleanupPoints(h)),
+                        corners: remapCornersToRing(o.points, o.corners, cleanedPts),
                     };
                 }
 
@@ -4599,6 +4626,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
                         bulges: remapBulgesToRing(obj.points, obj.bulges, piece.outer),
+                        corners: remapCornersToRing(obj.points, obj.corners, piece.outer),
                         renderPieces: undefined,
                     });
                 });
@@ -4909,6 +4937,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         plantbedNo: obj.plantbedNo,
                         customStyle: obj.customStyle,
                         bulges: p.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ? p.bulges : undefined,
+                        corners: remapCornersToRing(obj.points, obj.corners, p.outer),
                     });
                 });
             }
@@ -5003,6 +5032,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
                                 bulges: remapBulgesToRing(candidate.points, candidate.bulges, piece.outer),
+                                corners: remapCornersToRing(candidate.points, candidate.corners, piece.outer),
                                 plantbedNo: candidate.plantbedNo,
                                 customStyle: candidate.customStyle,
                             });
@@ -5077,6 +5107,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
                         bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
+                        corners: remapCornersToRing(movedWithHoles.points, movedWithHoles.corners, piece.outer),
                         plantbedNo: existing.plantbedNo,
                     }));
                 const cmd: Command = {
@@ -5159,6 +5190,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
                             bulges: remapBulgesToRing(pb.points, pb.bulges, piece.outer),
+                            corners: remapCornersToRing(pb.points, pb.corners, piece.outer),
                             plantbedNo: pb.plantbedNo,
                             customStyle: pb.customStyle,
                         });
@@ -5185,6 +5217,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     plantbedNo: existing.plantbedNo,
                     customStyle: existing.customStyle,
                     bulges: existing.bulges,
+                    corners: moved.corners,
                 });
 
                 const movedPlantbeds: PolyObject[] = movedSeedPlantbeds.flatMap((seed, seedIdx) => {
@@ -5220,6 +5253,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
                                 plantbedNo: existing.plantbedNo,
+                                corners: remapCornersToRing(seed.points, seed.corners, piece.outer),
                             })
                         );
 
@@ -5270,6 +5304,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 plantbedNo: existing.plantbedNo,
                 customStyle: existing.customStyle,
                 bulges: existing.bulges,
+                corners: moved.corners,
             });
 
             const movedObjectsRaw: PolyObject[] = movedSeedObjects.flatMap((seed, seedIdx) => {
@@ -5296,6 +5331,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
                             plantbedNo: existing.plantbedNo,
+                            corners: remapCornersToRing(seed.points, seed.corners, piece.outer),
                         })
                     );
             });
@@ -5369,6 +5405,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
                                 bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
+                                corners: remapCornersToRing(moved.points, moved.corners, piece.outer),
                                 plantbedNo: existing.plantbedNo,
                                 customStyle: existing.customStyle,
                             }));
@@ -5483,6 +5520,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         const next = [...normalized];
         next[segmentIndex] = Math.max(-3, Math.min(3, bulge));
         const updatedObj: PolyObject = { ...obj, bulges: next };
+        // Preserve the current selection so the object stays selected after the edit
+        const preservedSelectionId = state.selectedObjectId ?? objectId;
 
         // Na bulge-wijziging: snijd onderliggende objecten bij die door de nieuwe boog overlapt worden.
         const newZ = TYPE_Z_INDEX[updatedObj.type] ?? 0;
@@ -5526,7 +5565,23 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             }
         }
 
-        state.setObjectsWithHistory(nextObjects);
+        state.setObjectsWithHistory(nextObjects, preservedSelectionId);
+    },
+
+    setCornerRadius: (objectId, vertexIndex, radius) => {
+        const state = get();
+        const obj = state.objects.find((o) => o.id === objectId);
+        if (!obj) return;
+        const normalized = normalizeCorners(obj.points, obj.corners);
+        if (vertexIndex < 0 || vertexIndex >= normalized.length) return;
+        const maxR = cornerMaxRadius(obj.points, vertexIndex);
+        const next = [...normalized];
+        next[vertexIndex] = Math.max(0, Math.min(radius, maxR));
+        const updatedObj: PolyObject = { ...obj, corners: next };
+        const nextObjects = state.objects.map((o) => o.id === objectId ? updatedObj : o);
+        // Preserve the current selection so the object stays selected after the edit
+        const preservedSelectionId = state.selectedObjectId ?? objectId;
+        state.setObjectsWithHistory(nextObjects, preservedSelectionId);
     },
 
     commitBoundarySegmentsEdit: (objectId, beforeObject, afterBoundarySegments) =>
@@ -5774,6 +5829,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
                         bulges: remapBulgesToRing(obj.points, obj.bulges, piece.outer),
+                        corners: remapCornersToRing(obj.points, obj.corners, piece.outer),
                         plantbedNo: obj.plantbedNo,
                     });
                 }
@@ -6067,6 +6123,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
                         bulges: remapBulgesToRing(obj.points, obj.bulges, piece.outer),
+                        corners: remapCornersToRing(obj.points, obj.corners, piece.outer),
                     });
                 }
             }
@@ -6123,6 +6180,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
                             bulges: remapBulgesToRing(moved.points, moved.bulges, piece.outer),
+                            corners: remapCornersToRing(moved.points, moved.corners, piece.outer),
                         }));
 
                     // eerst moved pieces toevoegen
@@ -6166,6 +6224,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
                                 bulges: remapBulgesToRing(existing.points, existing.bulges, piece.outer),
+                                corners: remapCornersToRing(existing.points, existing.corners, piece.outer),
                             });
                         });
                     }
@@ -6183,6 +6242,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
                         bulges: remapBulgesToRing(moved.points, moved.bulges, piece.outer),
+                        corners: remapCornersToRing(moved.points, moved.corners, piece.outer),
                     }));
 
                 const mergeInput = [...sameType, ...drawPolys];
@@ -6217,6 +6277,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
                             bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
+                            corners: remapCornersToRing(moved.points, moved.corners, piece.outer),
                         });
 
                         if (idx === primaryMergedIdx) {

@@ -32,7 +32,7 @@ const FENCE_GATE_STROKE_WIDTH = 14;
 const GRID_SIZE = EDITOR_GRID_SIZE;
 
 export type PolygonWithHolesHandle = {
-    setPointsAndHoles: (newPoints: number[], newHoles: number[][], newBulges?: number[]) => void;
+    setPointsAndHoles: (newPoints: number[], newHoles: number[][], newBulges?: number[], newCorners?: number[]) => void;
 };
 
 export const PolygonWithHoles = React.forwardRef<
@@ -42,6 +42,8 @@ export const PolygonWithHoles = React.forwardRef<
         holes?: number[][];
         /** ✅ BOGEN — één bulge per segment. Afwezig = alles recht. */
         bulges?: number[];
+        /** ✅ HOEKAFRONDING — één straal per hoekpunt. Afwezig = alles scherp. */
+        corners?: number[];
         fill?: string;
         stroke?: string;
         strokeWidth?: number;
@@ -66,6 +68,7 @@ export const PolygonWithHoles = React.forwardRef<
         points,
         holes = [],
         bulges,
+        corners,
         fill,
         stroke,
         strokeWidth = 2,
@@ -90,16 +93,19 @@ export const PolygonWithHoles = React.forwardRef<
     const pointsRef = useRef<number[]>(points);
     const holesRef = useRef<number[][]>(holes);
     const bulgesRef = useRef<number[] | undefined>(bulges);
+    const cornersRef = useRef<number[] | undefined>(corners);
 
     useEffect(() => { pointsRef.current = points; }, [points]);
     useEffect(() => { holesRef.current = holes; }, [holes]);
     useEffect(() => { bulgesRef.current = bulges; }, [bulges]);
+    useEffect(() => { cornersRef.current = corners; }, [corners]);
 
     useImperativeHandle(ref, () => ({
-        setPointsAndHoles(newPoints: number[], newHoles: number[][], newBulges?: number[]) {
+        setPointsAndHoles(newPoints: number[], newHoles: number[][], newBulges?: number[], newCorners?: number[]) {
             pointsRef.current = newPoints;
             holesRef.current = newHoles;
             bulgesRef.current = newBulges;
+            if (newCorners !== undefined) cornersRef.current = newCorners;
             shapeRef.current?.getLayer()?.batchDraw();
         },
     }));
@@ -130,14 +136,16 @@ export const PolygonWithHoles = React.forwardRef<
                 const pts = pointsRef.current;
                 const hls = holesRef.current;
                 const bls = bulgesRef.current;
+                const cls = cornersRef.current;
                 if (!pts || pts.length < 6) return;
 
                 ctx.beginPath();
 
-                // outer ring — boog-bewust als bulges aanwezig
+                // outer ring — boog/hoek-bewust als bulges of corners aanwezig
                 const hasBulges = bls?.some((b) => Math.abs(b) > 0.004);
-                if (hasBulges && bls) {
-                    traceBulgedPath(ctx, pts, bls, true);
+                const hasCorners = cls?.some((c) => (c || 0) > 0);
+                if ((hasBulges || hasCorners) && bls) {
+                    traceBulgedPath(ctx, pts, bls, true, cls);
                 } else {
                     ctx.moveTo(pts[0], pts[1]);
                     for (let i = 2; i < pts.length; i += 2) {

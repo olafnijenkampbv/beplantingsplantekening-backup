@@ -8,9 +8,10 @@ import {
 import { useMeasureStore } from "@/features/editor/state/measureStore";
 import { useLiveEditStore } from "@/features/editor/state/liveEditStore";
 import { useBulgeDragStore } from "@/features/editor/state/bulgeDragStore";
+import { useCornerDragStore } from "@/features/editor/state/cornerDragStore";
 import { Html } from "react-konva-utils";
-import { useProjectStore, PolyObject, ObjectType, OBJECT_STYLES, objectSupportsBulges, normalizeBulges } from "@/state/projectStore";
-import { apexPoint, traceBulgedPath, STRAIGHT_THRESHOLD, densifyBulgedRing } from "@/features/editor/lib/bulgeMath";
+import { useProjectStore, PolyObject, ObjectType, OBJECT_STYLES, objectSupportsBulges, normalizeBulges, normalizeCorners, cornerMaxRadius } from "@/state/projectStore";
+import { apexPoint, traceBulgedPath, STRAIGHT_THRESHOLD, densifyBulgedRing, cornerGeom } from "@/features/editor/lib/bulgeMath";
 import MeasurementOverlay from "@/features/editor/components/MeasurementOverlay";
 import MeasureToolOverlay from "@/features/editor/components/editor/MeasureToolOverlay";
 import TypeLabelCard, {
@@ -596,31 +597,101 @@ function BulgeDragSection({ stageContainerRef }: { stageContainerRef: React.RefO
     );
 }
 
+function CornerDragSection({ stageContainerRef }: { stageContainerRef: React.RefObject<HTMLDivElement | null> }) {
+    const isActive = useCornerDragStore((s) => s.isActive);
+    const screenX = useCornerDragStore((s) => s.screenX);
+    const screenY = useCornerDragStore((s) => s.screenY);
+    const workingRadius = useCornerDragStore((s) => s.workingRadius);
+    const snapName = useCornerDragStore((s) => s.snapName);
+    const stageScale = useCornerDragStore((s) => s.stageScale);
+
+    if (!isActive) return null;
+    const container = stageContainerRef?.current;
+    if (!container) return null;
+
+    const snapped = !!snapName;
+    // Convert editor-units to cm (editor uses 150 units ≈ 1 m → 1 unit ≈ 0.667 cm)
+    const cm = workingRadius / 1.5;
+    const labelText = snapped
+        ? snapName!
+        : (cm >= 100 ? `r ${(cm / 100).toFixed(2).replace(/\.?0+$/, "")} m` : `r ${Math.round(cm)} cm`);
+
+    return (
+        <>
+            <div
+                style={{
+                    position: "absolute",
+                    left: screenX,
+                    top: screenY,
+                    transform: "translate(-50%, -150%)",
+                    background: snapped ? "#EEF3FF" : "#ffffff",
+                    border: `1px solid ${snapped ? "#cfdcfb" : "#E3E2E2"}`,
+                    borderRadius: 5,
+                    padding: "3px 7px",
+                    font: "700 11px/1 'DM Sans', sans-serif",
+                    color: "#4488FF",
+                    whiteSpace: "nowrap",
+                    pointerEvents: "none",
+                    zIndex: 9,
+                    boxShadow: "0 1px 3px rgba(0,0,0,.08)",
+                }}
+            >
+                {labelText}
+            </div>
+            {snapped && (
+                <div
+                    style={{
+                        position: "absolute",
+                        left: screenX,
+                        top: screenY,
+                        width: 30,
+                        height: 30,
+                        borderRadius: "50%",
+                        transform: "translate(-50%, -50%)",
+                        border: "2px dashed #4488FF",
+                        opacity: 0.6,
+                        pointerEvents: "none",
+                        zIndex: 6,
+                    }}
+                />
+            )}
+        </>
+    );
+}
+
 // Isolated component: re-renders only when liveEditStore changes during vertex/edge editing.
 // Renders the plantbed number + area label for the selected object at its live position.
+// When isLiveEditActive=true but livePrimary=null (gap between mousedown and first mousemove),
+// falls back to the committed selected object + plantbedNumberLayouts so the label stays visible.
 function LivePlantbedLabelSection({
     selected,
     viewVisibility,
     isLiveEditActive,
+    plantbedNumberLayouts,
 }: {
     selected: any[];
     viewVisibility: any;
     isLiveEditActive: boolean;
+    plantbedNumberLayouts: Map<string, any>;
 }) {
     const livePrimary = useLiveEditStore((s) => s.livePrimary);
     const liveLayouts = useLiveEditStore((s) => s.liveLayouts);
     if (!isLiveEditActive) return null;
 
-    if (!livePrimary || !liveLayouts) return null;
+    // Use live data when available; fall back to committed data during the mousedown→first-mousemove gap
+    const effectivePrimary = livePrimary ?? (selected.length === 1 ? selected[0] : null);
+    const effectiveLayouts = (livePrimary && liveLayouts) ? liveLayouts : plantbedNumberLayouts;
 
-    const obj = selected.find((o: any) => o.id === livePrimary.id);
+    if (!effectivePrimary || !effectiveLayouts) return null;
+
+    const obj = selected.find((o: any) => o.id === effectivePrimary.id);
     if (!obj) return null;
     if (obj.type !== "plantbed" && obj.type !== "hedge") return null;
 
-    const label = liveLayouts.get(livePrimary.id);
+    const label = effectiveLayouts.get(effectivePrimary.id);
     if (!label) return null;
 
-    return <>{renderNumberAreaLabel(livePrimary, label, livePrimary.points, "live-plantbed-label", viewVisibility)}</>;
+    return <>{renderNumberAreaLabel(effectivePrimary, label, effectivePrimary.points, "live-plantbed-label", viewVisibility)}</>;
 }
 
 // Isolated component: subscribes to drawPreviewStore so only THIS component re-renders
@@ -1022,6 +1093,11 @@ function EditorTopLayerInner(props: any) {
         setIsBulgeDragging: setIsBulgeDraggingProp,
         bulgeEditRef: bulgeEditRefProp,
         bulgeHandleRefs: bulgeHandleRefsProp,
+        isCornerDraggingRef: isCornerDraggingRefProp,
+        isCornerDragging: isCornerDraggingProp,
+        setIsCornerDragging: setIsCornerDraggingProp,
+        cornerEditRef: cornerEditRefProp,
+        cornerHandleRefs: cornerHandleRefsProp,
         pendingPlantbedClickRef,
         plantbedClickMovedRef,
         startTreebedRotate,
@@ -1045,6 +1121,8 @@ function EditorTopLayerInner(props: any) {
         draftSecondaryGuideLineRef,
         draftPreviewLineRef,
         applyViewportWheel,
+        dimHandlesForDrag: dimHandlesForDragProp,
+        restoreHandlesAfterDrag: restoreHandlesAfterDragProp,
     } = props;
 
     const unselectedNonPlantbedsTyped = unselectedNonPlantbeds as PolyObject[];
@@ -1330,6 +1408,33 @@ function EditorTopLayerInner(props: any) {
     const [_localIsBulgeDragging, _localSetIsBulgeDragging] = React.useState(false);
     const isBulgeDragging: boolean = isBulgeDraggingProp ?? _localIsBulgeDragging;
     const setIsBulgeDragging: (v: boolean) => void = setIsBulgeDraggingProp ?? _localSetIsBulgeDragging;
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Hoekafronding/Corner drag refs ────────────────────────────────────────
+    const _localIsCornerDraggingRef = React.useRef(false);
+    const _localCornerEditRef = React.useRef<{
+        objectId: string;
+        vertexIndex: number;
+        vx: number; vy: number;
+        px: number; py: number;
+        nx: number; ny: number;
+        workingRadius: number;
+        snapName: string | null;
+    } | null>(null);
+    const _localCornerHandleRefs = React.useRef<Record<string, Record<number, any>>>({});
+    const isCornerDraggingRef: React.MutableRefObject<boolean> = isCornerDraggingRefProp ?? _localIsCornerDraggingRef;
+    const cornerEditRef: React.MutableRefObject<any> = cornerEditRefProp ?? _localCornerEditRef;
+    const cornerHandleRefs: React.MutableRefObject<Record<string, Record<number, any>>> = cornerHandleRefsProp ?? _localCornerHandleRefs;
+    const [_localIsCornerDragging, _localSetIsCornerDragging] = React.useState(false);
+    const isCornerDragging: boolean = isCornerDraggingProp ?? _localIsCornerDragging;
+    const setIsCornerDragging: (v: boolean) => void = setIsCornerDraggingProp ?? _localSetIsCornerDragging;
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Handle animation helpers (resolved from props, no-ops when standalone) ──
+    const dimHandlesForDrag: (objectId: string, activeNode: any | null) => void =
+        dimHandlesForDragProp ?? (() => {});
+    const restoreHandlesAfterDrag: (objectId: string) => void =
+        restoreHandlesAfterDragProp ?? (() => {});
     // ─────────────────────────────────────────────────────────────────────────
 
     // RAF throttle for alignment guides during object drag — prevents a React re-render on every
@@ -1636,13 +1741,14 @@ function EditorTopLayerInner(props: any) {
                             isVertexDragging ||
                             isEdgeResizing ||
                             isBulgeDragging ||
+                            isCornerDragging ||
                             !!treebedResizePreview ||
                             !!treebedRotatePreview;
 
                         return (
                             <Group
                         listening={activeTool === "select"}
-                        draggable={activeTool === "select" && !isVertexDragging && !isEdgeResizing && !isBulgeDragging && !isPanning}
+                        draggable={activeTool === "select" && !isVertexDragging && !isEdgeResizing && !isBulgeDragging && !isCornerDragging && !isPanning}
                         onMouseDown={(evt) => {
                             if (activeTool !== "select") return;
 
@@ -1662,6 +1768,7 @@ function EditorTopLayerInner(props: any) {
                                 isVertexDraggingRef.current ||
                                 isEdgeResizingRef.current ||
                                 isBulgeDraggingRef.current ||
+                                isCornerDraggingRef.current ||
                                 treebedResizeRef.current ||
                                 treebedRotateRef.current
                             ) {
@@ -1699,6 +1806,7 @@ function EditorTopLayerInner(props: any) {
                                 isVertexDraggingRef.current ||
                                 isEdgeResizingRef.current ||
                                 isBulgeDraggingRef.current ||
+                                isCornerDraggingRef.current ||
                                 treebedResizeRef.current ||
                                 treebedRotateRef.current
                             ) {
@@ -1760,6 +1868,7 @@ function EditorTopLayerInner(props: any) {
                                 isVertexDraggingRef.current ||
                                 isEdgeResizingRef.current ||
                                 isBulgeDraggingRef.current ||
+                                isCornerDraggingRef.current ||
                                 treebedResizeRef.current ||
                                 treebedRotateRef.current
                             ) {
@@ -2300,6 +2409,16 @@ function EditorTopLayerInner(props: any) {
                                             return next;
                                         })();
 
+                                        const liveCorners = (() => {
+                                            const base = normalizeCorners(livePolygonPoints, obj.corners);
+                                            if (isCornerDraggingRef.current && cornerEditRef.current?.objectId === obj.id && typeof cornerEditRef.current.vertexIndex === "number") {
+                                                const next = [...base];
+                                                next[cornerEditRef.current.vertexIndex] = cornerEditRef.current.workingRadius;
+                                                return next;
+                                            }
+                                            return base;
+                                        })();
+
                                         const selectedPatternImage = isBuildingType(obj.type)
                                             ? getBuildingPatternCanvas(obj.type)
                                             : undefined;
@@ -2377,7 +2496,7 @@ function EditorTopLayerInner(props: any) {
                                                             evt.evt.preventDefault();
 
                                                             if (activeTool !== "select") return;
-                                                            if (isVertexDraggingRef.current) return;
+                                                            if (isVertexDraggingRef.current || isBulgeDraggingRef.current || isCornerDraggingRef.current || isEdgeResizingRef.current) return;
 
                                                             suppressPlantbedFocusRef.current = true;
                                                             pendingPlantbedClickRef.current = null;
@@ -2394,6 +2513,8 @@ function EditorTopLayerInner(props: any) {
 
                                                             isEdgeResizingRef.current = true;
                                                             setIsEdgeResizing(true);
+                                                            // Dim all handles — edge resize has no visible active handle
+                                                            dimHandlesForDrag(obj.id, null);
 
                                                             const st = stageRef.current;
                                                             if (st) {
@@ -2409,14 +2530,16 @@ function EditorTopLayerInner(props: any) {
                                             key: string,
                                             strokeWidth: number,
                                             refKey?: string,
-                                            ringBulges?: number[]
+                                            ringBulges?: number[],
+                                            ringCorners?: number[]
                                         ) => {
                                             const hasBulges = ringBulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                                            const hasCorners = ringCorners?.some((c) => (c || 0) > 0);
 
                                             if (obj.type === "hedge") {
                                                 const hedgeStrokePoints =
-                                                    hasBulges && ringBulges
-                                                        ? densifyBulgedRing(ringPoints, ringBulges, 40)
+                                                    (hasBulges || hasCorners) && ringBulges
+                                                        ? densifyBulgedRing(ringPoints, ringBulges, 40, ringCorners)
                                                         : ringPoints;
                                                 return (
                                                     <DynamicStrokeShape
@@ -2433,9 +2556,10 @@ function EditorTopLayerInner(props: any) {
                                                 );
                                             }
 
-                                            if (hasBulges && ringBulges) {
-                                                // ✅ BOGEN — arc-bewuste selectierand via sceneFunc
+                                            if ((hasBulges || hasCorners) && ringBulges) {
+                                                // ✅ BOGEN/HOEKEN — arc-bewuste selectierand via sceneFunc
                                                 const captureBulges = ringBulges;
+                                                const captureCorners = ringCorners;
                                                 return (
                                                     <Shape
                                                         key={key}
@@ -2447,7 +2571,7 @@ function EditorTopLayerInner(props: any) {
                                                         sceneFunc={(ctx, shape) => {
                                                             if (!ringPoints || ringPoints.length < 6) return;
                                                             ctx.beginPath();
-                                                            traceBulgedPath(ctx, ringPoints, captureBulges, true);
+                                                            traceBulgedPath(ctx, ringPoints, captureBulges, true, captureCorners);
                                                             ctx.closePath();
                                                             ctx.strokeShape(shape);
                                                         }}
@@ -2484,6 +2608,7 @@ function EditorTopLayerInner(props: any) {
                                                     points={livePolygonPoints}
                                                     holes={livePolygonHoles}
                                                     bulges={liveBulges}
+                                                    corners={liveCorners}
                                                     fill={selectedPatternImage ? undefined : getObjectRenderStyle(obj).fill}
                                                     fillPriority={selectedPatternImage ? "pattern" : "color"}
                                                     fillPatternImage={selectedPatternImage as unknown as HTMLImageElement | undefined}
@@ -2533,7 +2658,8 @@ function EditorTopLayerInner(props: any) {
                                                         `${obj.id}-outer-contour`,
                                                         obj.id === selectedObjectId ? 4 : 3,
                                                         obj.id,
-                                                        liveBulges
+                                                        liveBulges,
+                                                        liveCorners
                                                     )}
 
                                                 {!isLiveEditingThisPolygon &&
@@ -2642,6 +2768,17 @@ function EditorTopLayerInner(props: any) {
                                             }
                                             return next;
                                         })();
+
+                                        const liveCorners = (() => {
+                                            const base = normalizeCorners(livePolygonPoints, obj.corners);
+                                            if (isCornerDraggingRef.current && cornerEditRef.current?.objectId === obj.id && typeof cornerEditRef.current.vertexIndex === "number") {
+                                                const next = [...base];
+                                                next[cornerEditRef.current.vertexIndex] = cornerEditRef.current.workingRadius;
+                                                return next;
+                                            }
+                                            return base;
+                                        })();
+
                                         const noHolesStrokeW = obj.id === selectedObjectId ? 4 : 3;
 
                                         return (
@@ -2657,6 +2794,7 @@ function EditorTopLayerInner(props: any) {
                                                         points={livePolygonPoints}
                                                         holes={[]}
                                                         bulges={liveBulges}
+                                                        corners={liveCorners}
                                                         fill={selectedPatternImage ? undefined : getObjectRenderStyle(obj).fill}
                                                         fillPriority={selectedPatternImage ? "pattern" : "color"}
                                                         fillPatternImage={selectedPatternImage as unknown as HTMLImageElement | undefined}
@@ -2696,8 +2834,8 @@ function EditorTopLayerInner(props: any) {
                                                                     selectedHedgeStrokeRefs.current[obj.id] = node;
                                                                 }
                                                             }}
-                                                            points={liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
-                                                                ? densifyBulgedRing(livePolygonPoints, liveBulges, 40)
+                                                            points={(liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) || liveCorners.some((c) => (c || 0) > 0))
+                                                                ? densifyBulgedRing(livePolygonPoints, liveBulges, 40, liveCorners)
                                                                 : livePolygonPoints}
                                                             stroke={COLORS.orange}
                                                             strokeWidth={noHolesStrokeW}
@@ -2839,6 +2977,7 @@ function EditorTopLayerInner(props: any) {
                                         isVertexEditingThisPlantbed ||
                                         isEdgeEditingThisPlantbed ||
                                         (isBulgeDraggingRef.current && bulgeEditRef.current?.objectId === obj.id) ||
+                                        (isCornerDraggingRef.current && cornerEditRef.current?.objectId === obj.id) ||
                                         isTreebedResizeEditingThisPlantbed ||
                                         isTreebedRotateEditingThisPlantbed;
 
@@ -2888,7 +3027,8 @@ function EditorTopLayerInner(props: any) {
                                             no,
                                             areaText,
                                             obj.type === "treebed" ? [] : treebedLabelBlockers,
-                                            liveBulges
+                                            liveBulges,
+                                            obj.corners
                                         )
                                         : plantbedNumberLayouts.get(obj.id);
 
@@ -3136,6 +3276,9 @@ function EditorTopLayerInner(props: any) {
                                                                 evt.cancelBubble = true;
                                                                 evt.evt?.preventDefault?.();
 
+                                                                // Block new drag when another handle is already active
+                                                                if (isVertexDraggingRef.current || isBulgeDraggingRef.current || isCornerDraggingRef.current || isEdgeResizingRef.current) return;
+
                                                                 suppressPlantbedFocusRef.current = true;
                                                                 pendingPlantbedClickRef.current = null;
                                                                 plantbedClickMovedRef.current = false;
@@ -3150,6 +3293,11 @@ function EditorTopLayerInner(props: any) {
                                                                     workingBulge: bulges[segIdx] ?? 0,
                                                                     snapName: null,
                                                                 };
+
+                                                                // Fill active handle blue, dim all others
+                                                                const activeNode = bulgeHandleRefs.current[obj.id]?.[segIdx];
+                                                                if (activeNode) activeNode.fill("#4488FF");
+                                                                dimHandlesForDrag(obj.id, activeNode ?? null);
 
                                                                 const st = stageRef.current;
                                                                 if (st) st.container().style.cursor = "grabbing";
@@ -3177,6 +3325,139 @@ function EditorTopLayerInner(props: any) {
                                     })()}
 
                                 {/* Active bulge label/overlay is rendered via HelloEditor BulgeDragOverlay */}
+
+                                {/* ── Hoekafronding handles (afgeronde blauwe vierkantjes) ─────── */}
+                                {activeTool === "select" &&
+                                    selected.length === 1 &&
+                                    objectSupportsBulges(obj) &&
+                                    (() => {
+                                        const livePts = (() => {
+                                            if (isVertexDraggingRef.current && vertexEditRef.current?.objectId === obj.id && Array.isArray(vertexEditRef.current?.workingPoints) && vertexEditRef.current!.workingPoints.length >= 6) {
+                                                return vertexEditRef.current!.workingPoints;
+                                            }
+                                            if (isEdgeResizingRef.current && edgeResizeRef.current?.objectId === obj.id && Array.isArray(edgeResizeRef.current?.workingPoints) && edgeResizeRef.current!.workingPoints.length >= 6) {
+                                                return edgeResizeRef.current!.workingPoints;
+                                            }
+                                            return obj.points;
+                                        })();
+
+                                        const liveCorners = (() => {
+                                            const base = normalizeCorners(livePts, obj.corners);
+                                            if (isCornerDraggingRef.current && cornerEditRef.current?.objectId === obj.id && typeof cornerEditRef.current.vertexIndex === "number") {
+                                                const next = [...base];
+                                                next[cornerEditRef.current.vertexIndex] = cornerEditRef.current.workingRadius;
+                                                return next;
+                                            }
+                                            return base;
+                                        })();
+
+                                        const n = livePts.length / 2;
+                                        if (!cornerHandleRefs.current[obj.id]) cornerHandleRefs.current[obj.id] = {};
+
+                                        const handleSize = 14 / stageScale;
+                                        const handleCornerRadius = 3 / stageScale;
+                                        const handleStrokeWidth = 2 / stageScale;
+                                        const restWorld = 20 / stageScale;
+
+                                        return (
+                                            <React.Fragment key={`${obj.id}-corner-handles`}>
+                                                {Array.from({ length: n }).map((_, i) => {
+                                                    const p = (i - 1 + n) % n;
+                                                    const q = (i + 1) % n;
+                                                    const vx = livePts[i * 2], vy = livePts[i * 2 + 1];
+                                                    const px = livePts[p * 2], py = livePts[p * 2 + 1];
+                                                    const nx = livePts[q * 2], ny = livePts[q * 2 + 1];
+
+                                                    const g = cornerGeom(px, py, vx, vy, nx, ny);
+                                                    if (!g) return null;
+
+                                                    // Skip collinear (no real corner)
+                                                    if (cornerMaxRadius(livePts, i) <= 0) return null;
+
+                                                    const r = liveCorners[i] ?? 0;
+                                                    const apexOff = r > 0 ? r * (1 / g.sinHalf - 1) : 0;
+                                                    const off = Math.max(restWorld, apexOff);
+                                                    const hx = vx + g.bx * off;
+                                                    const hy = vy + g.by * off;
+
+                                                    const isActive = isCornerDraggingRef.current && cornerEditRef.current?.objectId === obj.id && cornerEditRef.current?.vertexIndex === i;
+
+                                                    return (
+                                                        <Rect
+                                                            key={`${obj.id}-ch-${i}`}
+                                                            x={hx - handleSize / 2}
+                                                            y={hy - handleSize / 2}
+                                                            width={handleSize}
+                                                            height={handleSize}
+                                                            cornerRadius={handleCornerRadius}
+                                                            fill={isActive ? "#4488FF" : "white"}
+                                                            stroke="#4488FF"
+                                                            strokeWidth={handleStrokeWidth}
+                                                            opacity={1}
+                                                            perfectDrawEnabled={false}
+                                                            ref={(node) => {
+                                                                if (!node) return;
+                                                                cornerHandleRefs.current[obj.id][i] = node;
+                                                            }}
+                                                            onMouseDown={(evt) => {
+                                                                if (evt?.evt?.button === 1 || isPanning) {
+                                                                    evt.cancelBubble = true;
+                                                                    return;
+                                                                }
+                                                                evt.cancelBubble = true;
+                                                                evt.evt?.preventDefault?.();
+
+                                                                // Block new drag when another handle is already active
+                                                                if (isVertexDraggingRef.current || isBulgeDraggingRef.current || isCornerDraggingRef.current || isEdgeResizingRef.current) return;
+
+                                                                suppressPlantbedFocusRef.current = true;
+                                                                pendingPlantbedClickRef.current = null;
+                                                                plantbedClickMovedRef.current = false;
+
+                                                                isCornerDraggingRef.current = true;
+                                                                setIsCornerDragging(true);
+
+                                                                cornerEditRef.current = {
+                                                                    objectId: obj.id,
+                                                                    vertexIndex: i,
+                                                                    vx, vy,
+                                                                    px, py,
+                                                                    nx, ny,
+                                                                    workingRadius: r,
+                                                                    snapName: null,
+                                                                };
+
+                                                                // Fill active handle blue, dim all others
+                                                                const selfNode = cornerHandleRefs.current[obj.id]?.[i];
+                                                                if (selfNode) selfNode.fill("#4488FF");
+                                                                dimHandlesForDrag(obj.id, selfNode ?? null);
+
+                                                                const st = stageRef.current;
+                                                                if (st) st.container().style.cursor = "grabbing";
+                                                            }}
+                                                            onDblClick={(evt) => {
+                                                                evt.cancelBubble = true;
+                                                                // Double-click resets corner radius to 0
+                                                                useProjectStore.getState().setCornerRadius(obj.id, i, 0);
+                                                            }}
+                                                            onMouseEnter={(evt) => {
+                                                                evt.cancelBubble = true;
+                                                                const st = stageRef.current;
+                                                                if (st) st.container().style.cursor = "grab";
+                                                            }}
+                                                            onMouseLeave={(evt) => {
+                                                                evt.cancelBubble = true;
+                                                                const st = stageRef.current;
+                                                                if (st && !isCornerDraggingRef.current) st.container().style.cursor = "default";
+                                                            }}
+                                                        />
+                                                    );
+                                                })}
+                                            </React.Fragment>
+                                        );
+                                    })()}
+
+                                {/* Active corner drag label is rendered via HelloEditor CornerDragOverlay */}
 
                                 {activeTool === "select" && obj.type !== "treebed" && !isUnifiedBoundaryType(obj.type) && (() => {
                                     const isVertexEditingThisPolygon =
@@ -3271,6 +3552,11 @@ function EditorTopLayerInner(props: any) {
                                                         evt.cancelBubble = true;
                                                         evt.evt.preventDefault();
 
+                                                        // Block new drag when another handle is already active
+                                                        if (isBulgeDraggingRef.current || isCornerDraggingRef.current || isEdgeResizingRef.current) {
+                                                            return;
+                                                        }
+
                                                         suppressPlantbedFocusRef.current = true;
                                                         pendingPlantbedClickRef.current = null;
                                                         plantbedClickMovedRef.current = false;
@@ -3288,6 +3574,11 @@ function EditorTopLayerInner(props: any) {
                                                             workingPoints: [...pts],
                                                             workingHoles: liveHoles.map((h: number[]) => [...h]),
                                                         };
+
+                                                        // Fill active handle orange, dim all others
+                                                        const activeNode = vertexHandleRefs.current[obj.id]?.[`${i}`];
+                                                        if (activeNode) activeNode.fill(COLORS.orange);
+                                                        dimHandlesForDrag(obj.id, activeNode ?? null);
 
                                                         const st = stageRef.current;
                                                         if (st) st.container().style.cursor = "grabbing";
@@ -3322,6 +3613,7 @@ function EditorTopLayerInner(props: any) {
                                                         setIsVertexDragging(false);
 
                                                         if (edit) {
+                                                            restoreHandlesAfterDrag(edit.objectId);
                                                             moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
                                                         }
 
@@ -3376,6 +3668,11 @@ function EditorTopLayerInner(props: any) {
                                                             evt.cancelBubble = true;
                                                             evt.evt.preventDefault();
 
+                                                            // Block new drag when another handle is already active
+                                                            if (isBulgeDraggingRef.current || isCornerDraggingRef.current || isEdgeResizingRef.current) {
+                                                                return;
+                                                            }
+
                                                             suppressPlantbedFocusRef.current = true;
                                                             pendingPlantbedClickRef.current = null;
                                                             plantbedClickMovedRef.current = false;
@@ -3393,6 +3690,11 @@ function EditorTopLayerInner(props: any) {
                                                                 workingPoints: [...pts],
                                                                 workingHoles: liveHoles.map((h: number[]) => [...h]),
                                                             };
+
+                                                            // Fill active handle orange, dim all others
+                                                            const activeNode = vertexHandleRefs.current[obj.id]?.[`h-${holeIdx}-${i}`];
+                                                            if (activeNode) activeNode.fill(COLORS.orange);
+                                                            dimHandlesForDrag(obj.id, activeNode ?? null);
 
                                                             const st = stageRef.current;
                                                             if (st) st.container().style.cursor = "grabbing";
@@ -3427,6 +3729,7 @@ function EditorTopLayerInner(props: any) {
                                                             setIsVertexDragging(false);
 
                                                             if (edit) {
+                                                                restoreHandlesAfterDrag(edit.objectId);
                                                                 moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
                                                             }
 
@@ -4089,6 +4392,7 @@ function EditorTopLayerInner(props: any) {
                                     selected={selected}
                                     viewVisibility={viewVisibility}
                                     isLiveEditActive={isLiveEditActive}
+                                    plantbedNumberLayouts={plantbedNumberLayouts}
                                 />
                             )}
                         </Group>

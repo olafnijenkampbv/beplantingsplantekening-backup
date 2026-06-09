@@ -1,7 +1,7 @@
 import type { ObjectType, PolyObject } from "./projectStore";
 import { AREA_MEASURABLE_OBJECT_TYPES } from "@/features/editor/components/editor/objectMenuConfig";
 import { getBoundaryBandShape, isUnifiedBoundaryType } from "@/features/editor/lib/boundarySystem";
-import { bulgedPolygonArea } from "@/features/editor/lib/bulgeMath";
+import { bulgedPolygonArea, normalizeCorners } from "@/features/editor/lib/bulgeMath";
 
 export const EDITOR_METRIC_SCALE = {
     editorUnitsPerGridStep: 15,
@@ -70,7 +70,7 @@ export function getPolygonAreaAbs(points: number[]): number {
     return Math.abs(getPolygonSignedArea(points));
 }
 
-export function getObjectAreaInEditorUnits(object: Pick<PolyObject, "type" | "points" | "holes" | "bulges">): number {
+export function getObjectAreaInEditorUnits(object: Pick<PolyObject, "type" | "points" | "holes" | "bulges" | "corners">): number {
     if (!isAreaMeasurableObject(object)) return 0;
     if (!object.points || object.points.length < 4) return 0;
 
@@ -87,10 +87,16 @@ export function getObjectAreaInEditorUnits(object: Pick<PolyObject, "type" | "po
 
     if (object.points.length < 6) return 0;
 
-    // ✅ BOGEN — boog-bewuste oppervlakteberekening
+    // ✅ BOGEN + HOEKAFRONDING — boog/hoek-bewuste oppervlakteberekening
     const hasBulges = object.bulges?.some((b) => Math.abs(b) > 0.004);
-    const outerArea = hasBulges
-        ? bulgedPolygonArea(object.points, object.bulges!)
+    const hasCorners = object.corners?.some((c) => (c || 0) > 0);
+    const n = object.points.length / 2;
+    const outerArea = (hasBulges || hasCorners)
+        ? bulgedPolygonArea(
+            object.points,
+            object.bulges ?? new Array(n).fill(0),
+            hasCorners ? normalizeCorners(object.points, object.corners) : undefined
+          )
         : getPolygonAreaAbs(object.points);
 
     // Holes blijven recht in v1
@@ -99,18 +105,18 @@ export function getObjectAreaInEditorUnits(object: Pick<PolyObject, "type" | "po
     return Math.max(0, outerArea - holesArea);
 }
 
-export function getObjectAreaInSquareMeters(object: Pick<PolyObject, "type" | "points" | "holes" | "bulges">): number {
+export function getObjectAreaInSquareMeters(object: Pick<PolyObject, "type" | "points" | "holes" | "bulges" | "corners">): number {
     return getSquareMetersFromEditorArea(getObjectAreaInEditorUnits(object));
 }
 
 export function getTotalAreaInEditorUnits(
-    objects: Array<Pick<PolyObject, "type" | "points" | "holes">>
+    objects: Array<Pick<PolyObject, "type" | "points" | "holes" | "bulges" | "corners">>
 ): number {
     return objects.reduce((sum, object) => sum + getObjectAreaInEditorUnits(object), 0);
 }
 
 export function getTotalAreaInSquareMeters(
-    objects: Array<Pick<PolyObject, "type" | "points" | "holes">>
+    objects: Array<Pick<PolyObject, "type" | "points" | "holes" | "bulges" | "corners">>
 ): number {
     return getSquareMetersFromEditorArea(getTotalAreaInEditorUnits(objects));
 }

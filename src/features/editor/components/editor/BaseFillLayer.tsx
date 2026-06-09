@@ -1,6 +1,6 @@
 import React from "react";
 import { Group, Layer, Line, Text } from "react-konva";
-import { PolyObject, OBJECT_STYLES, ObjectType, normalizeBulges } from "@/state/projectStore";
+import { PolyObject, OBJECT_STYLES, ObjectType, normalizeBulges, normalizeCorners } from "@/state/projectStore";
 import { renderObjectPattern } from "@/features/editor/lib/objectPatterns";
 import { isUnifiedBoundaryType, getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
 import { bboxFromPoints, estimateTextWidth } from "@/features/editor/lib/editorCanvasMath";
@@ -224,8 +224,9 @@ export default React.memo(function BaseFillLayer({
 
                 if (hasHoles) {
                     const hasBulgesHoles = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-                    const outerRing = hasBulgesHoles && obj.bulges
-                        ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48)
+                    const hasCornersHoles = obj.corners?.some((c) => (c || 0) > 0);
+                    const outerRing = (hasBulgesHoles || hasCornersHoles)
+                        ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48, normalizeCorners(obj.points, obj.corners))
                         : obj.points;
                     return (
                         <React.Fragment key={`fill-${obj.id}`}>
@@ -257,10 +258,11 @@ export default React.memo(function BaseFillLayer({
 
                 if (isBuildingType(obj.type)) {
                     const hasBulges = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                    const hasCorners = obj.corners?.some((c) => (c || 0) > 0);
                     // Densify arc to straight polygon so Konva's native pattern fill
                     // covers the full arc area (PolygonWithHoles sceneFunc doesn't clip patterns correctly).
-                    const buildingPoints = hasBulges && obj.bulges
-                        ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48)
+                    const buildingPoints = (hasBulges || hasCorners)
+                        ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48, normalizeCorners(obj.points, obj.corners))
                         : obj.points;
                     return (
                         <React.Fragment key={`fill-${obj.id}`}>
@@ -282,10 +284,11 @@ export default React.memo(function BaseFillLayer({
                     );
                 }
 
-                // Densify arc to straight polygon so fill always covers the full arc area.
+                // Densify arc/corner to straight polygon so fill always covers the full area.
                 const hasBulges = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-                const fillPoints = hasBulges && obj.bulges
-                    ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48)
+                const hasCorners = obj.corners?.some((c) => (c || 0) > 0);
+                const fillPoints = (hasBulges || hasCorners)
+                    ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48, normalizeCorners(obj.points, obj.corners))
                     : obj.points;
                 return (
                     <React.Fragment key={`fill-${obj.id}`}>
@@ -372,16 +375,18 @@ export default React.memo(function BaseFillLayer({
                     },
                 };
 
-                // ✅ BOGEN — gebruik PolygonWithHoles als het plantbed bogen heeft
+                // ✅ BOGEN/HOEKEN — gebruik PolygonWithHoles als het plantbed bogen of hoekafronding heeft
                 const pbHasBulges = pb.bulges?.some((b) => Math.abs(b) > 0.004);
+                const pbHasCorners = pb.corners?.some((c) => (c || 0) > 0);
                 return (
                     <React.Fragment key={`pb-fill-${pb.id}`}>
-                        {hasHoles || pbHasBulges ? (
+                        {hasHoles || pbHasBulges || pbHasCorners ? (
                             <PolygonWithHoles
                                 {...plantbedCommon}
                                 points={pb.points}
                                 holes={pb.holes ?? []}
-                                bulges={pb.bulges}
+                                bulges={normalizeBulges(pb.points, pb.bulges)}
+                                corners={normalizeCorners(pb.points, pb.corners)}
                                 fill={getObjectRenderStyle(pb).fill}
                                 stroke={undefined}
                                 strokeWidth={0}
@@ -412,8 +417,9 @@ export default React.memo(function BaseFillLayer({
                             const labelColor = getReadablePlantbedLabelColor(plantbedStyle.fill);
 
                             const pbHasBulgesForBbox = pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-                            const bboxPts = pbHasBulgesForBbox && pb.bulges
-                                ? densifyBulgedRing(pb.points, normalizeBulges(pb.points, pb.bulges), 24)
+                            const pbHasCornersForBbox = pb.corners?.some((c) => (c || 0) > 0);
+                            const bboxPts = (pbHasBulgesForBbox || pbHasCornersForBbox) && pb.bulges
+                                ? densifyBulgedRing(pb.points, normalizeBulges(pb.points, pb.bulges), 24, normalizeCorners(pb.points, pb.corners))
                                 : pb.points;
                             const bbox = bboxFromPoints(bboxPts);
                             const numberTextWidth = showPlantNumber

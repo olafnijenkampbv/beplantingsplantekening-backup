@@ -12,7 +12,7 @@ import {
     isAreaMeasurableObject,
 } from "@/state/areaMetrics";
 import { isUnifiedBoundaryType } from "@/features/editor/lib/boundarySystem";
-import { arcSamples, densifyBulgedRing, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
+import { arcSamples, densifyBulgedRing, STRAIGHT_THRESHOLD, normalizeCorners } from "@/features/editor/lib/bulgeMath";
 
 type PlantbedNumberLayout = {
     text: string;
@@ -541,8 +541,14 @@ function buildAreaLabelRenderData(
     }
     
     const hasBulges = object.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-    const bboxPoints = hasBulges && object.bulges
-        ? densifyBulgedRing(object.points, normalizeBulges(object.points, object.bulges), 24)
+    const hasCorners = object.corners?.some((c) => (c || 0) > 0);
+    const bboxPoints = (hasBulges || hasCorners)
+        ? densifyBulgedRing(
+            object.points,
+            normalizeBulges(object.points, object.bulges),
+            24,
+            hasCorners ? normalizeCorners(object.points, object.corners) : undefined
+          )
         : object.points;
     const bbox = getBoundingBoxFromPoints(bboxPoints);
     const holes = object.holes ?? [];

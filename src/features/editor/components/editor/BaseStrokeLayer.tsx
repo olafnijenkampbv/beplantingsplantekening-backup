@@ -1,6 +1,6 @@
 import React from "react";
 import { Layer, Line, Shape } from "react-konva";
-import { PolyObject, OBJECT_STYLES, ObjectType } from "@/state/projectStore";
+import { PolyObject, OBJECT_STYLES, ObjectType, normalizeBulges, normalizeCorners } from "@/state/projectStore";
 import { isUnifiedBoundaryType, getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
 import {
     PolygonWithHoles,
@@ -56,10 +56,10 @@ export default React.memo(function BaseStrokeLayer({
 
                 if (obj.type === "hedge") {
                     const hasBulges = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-                    const outerStrokePoints =
-                        hasBulges && obj.bulges
-                            ? densifyBulgedRing(obj.points, obj.bulges, 40)
-                            : obj.points;
+                    const hasCorners = obj.corners?.some((c) => (c || 0) > 0);
+                    const outerStrokePoints = (hasBulges || hasCorners)
+                        ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 40, normalizeCorners(obj.points, obj.corners))
+                        : obj.points;
                     return (
                         <React.Fragment key={`stroke-${obj.id}`}>
                             <DynamicStrokeShape
@@ -118,15 +118,17 @@ export default React.memo(function BaseStrokeLayer({
                     return null;
                 }
 
-                // ✅ BOGEN — gebruik PolygonWithHoles als het object bogen heeft
+                // ✅ BOGEN/HOEKEN — gebruik PolygonWithHoles als het object bogen of hoekafronding heeft
                 const hasBulges = obj.bulges?.some((b) => Math.abs(b) > 0.004);
-                if (hasBulges) {
+                const hasCorners = obj.corners?.some((c) => (c || 0) > 0);
+                if (hasBulges || hasCorners) {
                     return (
                         <PolygonWithHoles
                             key={`stroke-${obj.id}`}
                             points={obj.points}
                             holes={[]}
-                            bulges={obj.bulges}
+                            bulges={normalizeBulges(obj.points, obj.bulges)}
+                            corners={normalizeCorners(obj.points, obj.corners)}
                             fill={undefined}
                             stroke={getObjectRenderStyle(obj).stroke}
                             strokeWidth={2}
@@ -157,9 +159,11 @@ export default React.memo(function BaseStrokeLayer({
             {/* Erase PASS: snij strokes weg bij plantbed-rand — arc-bewust */}
             {unselectedPlantbeds.map((pb) => {
                 const hasBulges = pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-                if (hasBulges && pb.bulges) {
+                const hasCorners = pb.corners?.some((c) => (c || 0) > 0);
+                if (hasBulges || hasCorners) {
                     const capturePts = pb.points;
-                    const captureBulges = pb.bulges;
+                    const captureBulges = normalizeBulges(pb.points, pb.bulges);
+                    const captureCorners = normalizeCorners(pb.points, pb.corners);
                     return (
                         <Shape
                             key={`pb-erase-${pb.id}`}
@@ -169,7 +173,7 @@ export default React.memo(function BaseStrokeLayer({
                             sceneFunc={(ctx) => {
                                 if (!capturePts || capturePts.length < 6) return;
                                 ctx.beginPath();
-                                traceBulgedPath(ctx as any, capturePts, captureBulges, true);
+                                traceBulgedPath(ctx as any, capturePts, captureBulges, true, captureCorners);
                                 ctx.closePath();
                                 (ctx as any).globalCompositeOperation = "destination-out";
                                 (ctx as any).strokeStyle = "black";
@@ -201,8 +205,8 @@ export default React.memo(function BaseStrokeLayer({
             {/* Plantbed dashed outline bovenop — arc-bewust */}
             {(() => {
                 const visiblePbs = unselectedPlantbeds.filter((pb) => dragOverPlantbedId !== pb.id);
-                const bulgedPbs = visiblePbs.filter((pb) => pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD));
-                const straightPbs = visiblePbs.filter((pb) => !pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD));
+                const bulgedPbs = visiblePbs.filter((pb) => pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) || pb.corners?.some((c) => (c || 0) > 0));
+                const straightPbs = visiblePbs.filter((pb) => !pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) && !pb.corners?.some((c) => (c || 0) > 0));
 
                 // Group straight plantbeds by stroke color so shared edges are drawn exactly once per group.
                 // Drawing each plantbed separately causes phase-misaligned overlapping dashes that look solid.
@@ -217,7 +221,8 @@ export default React.memo(function BaseStrokeLayer({
                     <>
                         {bulgedPbs.map((pb) => {
                             const capturePts = pb.points;
-                            const captureBulges = pb.bulges!;
+                            const captureBulges = normalizeBulges(pb.points, pb.bulges);
+                            const captureCorners = normalizeCorners(pb.points, pb.corners);
                             const strokeColor = getObjectRenderStyle(pb).stroke;
                             return (
                                 <Shape
@@ -228,7 +233,7 @@ export default React.memo(function BaseStrokeLayer({
                                     sceneFunc={(ctx) => {
                                         if (!capturePts || capturePts.length < 6) return;
                                         ctx.beginPath();
-                                        traceBulgedPath(ctx as any, capturePts, captureBulges, true);
+                                        traceBulgedPath(ctx as any, capturePts, captureBulges, true, captureCorners);
                                         ctx.closePath();
                                         (ctx as any).strokeStyle = strokeColor;
                                         (ctx as any).lineWidth = 2;

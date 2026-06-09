@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Stage, Layer, Line, Rect, Group, Shape, Circle, Text } from "react-konva";
 import { Html } from "react-konva-utils";
 import { nanoid } from "nanoid";
-import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX, ViewVisibilityKey, CompassDirection, objectSupportsBulges, normalizeBulges } from "@/state/projectStore";
+import { useProjectStore, PolyObject, ObjectType, TreebedVariant, OBJECT_STYLES, TYPE_Z_INDEX, ViewVisibilityKey, CompassDirection, objectSupportsBulges, normalizeBulges, normalizeCorners } from "@/state/projectStore";
 import { useRightStepMenuStore } from "@/features/editor/state/rightStepMenuStore";
 import EditorToolbar from "@/features/editor/components/EditorToolbar";
 import EstimatedPlantingPriceBadge from "@/features/editor/components/editor/EstimatedPlantingPriceBadge";
@@ -47,8 +47,9 @@ import {
     inferBoundaryRenderSide,
     isUnifiedBoundaryType,
 } from "@/features/editor/lib/boundarySystem";
-import { bulgeFromDraggedApex, snapBulge, apexPoint, densifyBulgedRing, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
+import { bulgeFromDraggedApex, snapBulge, apexPoint, densifyBulgedRing, STRAIGHT_THRESHOLD, cornerGeom, radiusFromDraggedHandle, snapRadius } from "@/features/editor/lib/bulgeMath";
 import { useBulgeDragStore, setBulgeDragLive, clearBulgeDrag } from "@/features/editor/state/bulgeDragStore";
+import { useCornerDragStore, setCornerDragLive, clearCornerDrag } from "@/features/editor/state/cornerDragStore";
 import {
     inferPolylineRenderSide as inferBoundaryPolylineRenderSide,
     getOneSidedPolylineRenderPoints as getBoundaryOneSidedPolylineRenderPoints,
@@ -525,7 +526,8 @@ function buildPlantbedLayoutSignature(
     plantbedNo: number | string,
     areaText: string,
     treebedBlockersSignature: string,
-    bulges?: number[]
+    bulges?: number[],
+    corners?: number[]
 ) {
     return [
         String(plantbedNo),
@@ -534,6 +536,7 @@ function buildPlantbedLayoutSignature(
         buildHolesSignature(holes),
         treebedBlockersSignature,
         bulges ? buildFlatPointsSignature(bulges) : "",
+        corners ? buildFlatPointsSignature(corners) : "",
     ].join("::");
 }
 function buildTreebedLabelBlockers(objects: PolyObject[]) {
@@ -715,13 +718,17 @@ function getPlantbedNumberLayout(
     plantbedNo: number | string,
     areaText: string,
     treebedBlockers: TreebedLabelBlocker[],
-    bulges?: number[]
+    bulges?: number[],
+    corners?: number[]
 ): PlantbedNumberLayout {
     const text = String(plantbedNo);
     const hasBulges = bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-    const bboxPts = hasBulges && bulges
-        ? densifyBulgedRing(points, normalizeBulges(points, bulges), 24)
-        : points;
+    const hasCorners = corners?.some((c) => (c || 0) > 0);
+    const bboxPts = (hasBulges || hasCorners) && bulges
+        ? densifyBulgedRing(points, normalizeBulges(points, bulges), 24, hasCorners ? normalizeCorners(points, corners) : undefined)
+        : (hasCorners
+            ? densifyBulgedRing(points, normalizeBulges(points, []), 24, normalizeCorners(points, corners))
+            : points);
     const bb = bboxFromPoints(bboxPts);
     const relevantTreebedBlockers = getTreebedLabelBlockersForPlantbed(points, treebedBlockers);
 
@@ -1016,7 +1023,8 @@ function getFastPlantbedNumberLayout(
     points: number[],
     holes: number[][] = [],
     plantbedNo: number | string,
-    areaText: string
+    areaText: string,
+    baseLayout?: PlantbedNumberLayout
 ): PlantbedNumberLayout {
     const text = String(plantbedNo);
     const bb = bboxFromPoints(points);
@@ -1027,17 +1035,19 @@ function getFastPlantbedNumberLayout(
     const estimateNumberHeight = (fontSize: number) => fontSize * 0.78;
 
     const AREA_GAP = 8;
-    const numberFontSize = Math.round(
-        clamp(
-            Math.min(
-                Math.max(bb.h - GRID_SIZE * 0.45, GRID_SIZE * 0.55) * 0.32,
-                Math.max(bb.w - GRID_SIZE * 0.45, GRID_SIZE * 0.55) / Math.max(1, text.length * 0.72)
-            ),
-            4,
-            28
-        )
-    );
-    const areaFontSize = 12;
+    const numberFontSize =
+        baseLayout?.fontSize ??
+        Math.round(
+            clamp(
+                Math.min(
+                    Math.max(bb.h - GRID_SIZE * 0.45, GRID_SIZE * 0.55) * 0.32,
+                    Math.max(bb.w - GRID_SIZE * 0.45, GRID_SIZE * 0.55) / Math.max(1, text.length * 0.72)
+                ),
+                4,
+                28
+            )
+        );
+    const areaFontSize = baseLayout?.areaFontSize ?? 12;
 
     const numberTextWidth = estimateNumberWidth(numberFontSize);
     const numberTextHeight = estimateNumberHeight(numberFontSize);
@@ -1709,6 +1719,70 @@ function BulgeDragOverlay() {
 }
 
 
+/**
+ * Isolated corner-drag label component.
+ * Only this component re-renders on drag frames via useCornerDragStore.
+ */
+function CornerDragOverlay() {
+    const isActive = useCornerDragStore((s) => s.isActive);
+    const screenX = useCornerDragStore((s) => s.screenX);
+    const screenY = useCornerDragStore((s) => s.screenY);
+    const workingRadius = useCornerDragStore((s) => s.workingRadius);
+    const snapName = useCornerDragStore((s) => s.snapName);
+
+    if (!isActive) return null;
+
+    const snapped = !!snapName;
+    // 150 editor-units ≈ 1 m → 1 unit ≈ 0.667 cm
+    const cm = workingRadius / 1.5;
+    const labelText = snapped
+        ? snapName!
+        : (cm >= 100 ? `r ${(cm / 100).toFixed(2).replace(/\.?0+$/, "")} m` : `r ${Math.round(cm)} cm`);
+
+    return (
+        <>
+            <div
+                style={{
+                    position: "absolute",
+                    left: screenX,
+                    top: screenY,
+                    transform: "translate(-50%, -175%)",
+                    background: snapped ? "#EEF3FF" : "#ffffff",
+                    border: `1px solid ${snapped ? "#cfdcfb" : "#E3E2E2"}`,
+                    borderRadius: 5,
+                    padding: "3px 7px",
+                    font: "700 11px/1 'DM Sans', system-ui, sans-serif",
+                    color: "#4488FF",
+                    whiteSpace: "nowrap",
+                    pointerEvents: "none",
+                    zIndex: 900,
+                    boxShadow: "0 1px 3px rgba(0,0,0,.08)",
+                }}
+            >
+                {labelText}
+            </div>
+            {snapped && (
+                <div
+                    style={{
+                        position: "absolute",
+                        left: screenX,
+                        top: screenY,
+                        width: 30,
+                        height: 30,
+                        borderRadius: "50%",
+                        transform: "translate(-50%, -50%)",
+                        border: "2px dashed #4488FF",
+                        opacity: 0.6,
+                        pointerEvents: "none",
+                        zIndex: 899,
+                    }}
+                />
+            )}
+        </>
+    );
+}
+
+
 export default function HelloEditor() {
     const notify = useAppNotify();
     const dismissNotification = useDismissAppNotification();
@@ -2188,7 +2262,7 @@ export default function HelloEditor() {
         return (objects as PolyObject[])
             .filter((o) => o.type === "plantbed" || o.type === "hedge" || o.type === "treebed")
             .map((o) =>
-                `${o.id}:${o.plantbedNo ?? 0}:${o.points.join(",")}:${(o.holes ?? []).map((h) => h.join(",")).join(";")}`
+                `${o.id}:${o.plantbedNo ?? 0}:${o.points.join(",")}:${(o.holes ?? []).map((h) => h.join(",")).join(";")}:${(o.bulges ?? []).join(",")}:${(o.corners ?? []).join(",")}`
             )
             .join("|");
     }, [objects]);
@@ -2214,7 +2288,8 @@ export default function HelloEditor() {
                 obj.plantbedNo ?? 0,
                 areaText,
                 obj.type === "treebed" ? "" : treebedLabelBlockersSignature,
-                obj.bulges
+                obj.bulges,
+                obj.corners
             );
 
             const cached = cache.get(obj.id);
@@ -2230,7 +2305,8 @@ export default function HelloEditor() {
                 obj.plantbedNo ?? 0,
                 areaText,
                 blockersForLayout,
-                obj.bulges
+                obj.bulges,
+                obj.corners
             );
 
             cache.set(obj.id, {
@@ -3246,6 +3322,18 @@ export default function HelloEditor() {
                 ...baseObject,
                 bulges: liveBulges,
             };
+        } else if (
+            isCornerDraggingRef.current &&
+            cornerEditRef.current?.objectId === baseObject.id &&
+            typeof cornerEditRef.current.vertexIndex === "number" &&
+            typeof cornerEditRef.current.workingRadius === "number"
+        ) {
+            const liveCorners = normalizeCorners(baseObject.points, baseObject.corners);
+            liveCorners[cornerEditRef.current.vertexIndex] = cornerEditRef.current.workingRadius;
+            livePrimary = {
+                ...baseObject,
+                corners: liveCorners,
+            };
         }
 
         // Mirror livePlantbedNumberLayouts logic
@@ -3268,6 +3356,7 @@ export default function HelloEditor() {
             isVertexDraggingRef.current ||
             isEdgeResizingRef.current ||
             isBulgeDraggingRef.current ||
+            isCornerDraggingRef.current ||
             treebedRotatePreviewRef.current !== null ||
             treebedResizePreviewRef.current !== null;
         const committedLayout = plantbedNumberLayouts.get(livePrimary.id);
@@ -3280,13 +3369,14 @@ export default function HelloEditor() {
                     livePrimary.plantbedNo ?? 0, areaText, committedLayout)
                 : getFastPlantbedNumberLayout(
                     livePrimary.points, livePrimary.holes ?? [],
-                    livePrimary.plantbedNo ?? 0, areaText);
+                    livePrimary.plantbedNo ?? 0, areaText, committedLayout);
 
             livePlantbedLayoutCacheRef.current.set(livePrimary.id, {
                 signature: buildPlantbedLayoutSignature(
                     livePrimary.points, livePrimary.holes ?? [],
                     livePrimary.plantbedNo ?? 0, areaText,
-                    livePrimary.type === "treebed" ? "" : treebedLabelBlockersSignatureRef.current),
+                    livePrimary.type === "treebed" ? "" : treebedLabelBlockersSignatureRef.current,
+                    livePrimary.bulges, livePrimary.corners),
                 layout: fastLayout,
             });
             layouts.set(livePrimary.id, fastLayout);
@@ -3294,14 +3384,16 @@ export default function HelloEditor() {
             const signature = buildPlantbedLayoutSignature(
                 livePrimary.points, livePrimary.holes ?? [],
                 livePrimary.plantbedNo ?? 0, areaText,
-                livePrimary.type === "treebed" ? "" : treebedLabelBlockersSignatureRef.current);
+                livePrimary.type === "treebed" ? "" : treebedLabelBlockersSignatureRef.current,
+                livePrimary.bulges, livePrimary.corners);
             const cached = livePlantbedLayoutCacheRef.current.get(livePrimary.id);
             if (cached?.signature === signature) {
                 layouts.set(livePrimary.id, cached.layout);
             } else {
                 const fullLayout = getPlantbedNumberLayout(
                     livePrimary.points, livePrimary.holes ?? [],
-                    livePrimary.plantbedNo ?? 0, areaText, blockersForLayout);
+                    livePrimary.plantbedNo ?? 0, areaText, blockersForLayout,
+                    livePrimary.bulges, livePrimary.corners);
                 livePlantbedLayoutCacheRef.current.set(livePrimary.id, { signature, layout: fullLayout });
                 layouts.set(livePrimary.id, fullLayout);
             }
@@ -3494,6 +3586,49 @@ export default function HelloEditor() {
         snapName: string | null;
     } | null>(null);
     const bulgeHandleRefs = useRef<Record<string, Record<number, any>>>({});
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Hoekafronding/Corner drag refs ────────────────────────────────────────
+    const [isCornerDragging, setIsCornerDragging] = useState(false);
+    const isCornerDraggingRef = useRef(false);
+    const cornerEditRef = useRef<{
+        objectId: string;
+        vertexIndex: number;
+        vx: number; vy: number;
+        px: number; py: number;
+        nx: number; ny: number;
+        workingRadius: number;
+        snapName: string | null;
+    } | null>(null);
+    const cornerHandleRefs = useRef<Record<string, Record<number, any>>>({});
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Handle animation helpers ──────────────────────────────────────────────
+    // Called imperatively so Konva tweens run without conflicts with static React props.
+    // All handles have static opacity={1} in JSX → react-konva never resets them on re-render.
+    const dimHandlesForDrag = useCallback((objectId: string, activeNode: any | null) => {
+        for (const node of Object.values(vertexHandleRefs.current[objectId] ?? {})) {
+            if (node && node !== activeNode) node.to?.({ opacity: 0.25, duration: 0.12 });
+        }
+        for (const node of Object.values(bulgeHandleRefs.current[objectId] ?? {})) {
+            if (node && node !== activeNode) node.to?.({ opacity: 0.25, duration: 0.12 });
+        }
+        for (const node of Object.values(cornerHandleRefs.current[objectId] ?? {})) {
+            if (node && node !== activeNode) node.to?.({ opacity: 0.25, duration: 0.12 });
+        }
+    }, []);
+
+    const restoreHandlesAfterDrag = useCallback((objectId: string) => {
+        for (const node of Object.values(vertexHandleRefs.current[objectId] ?? {})) {
+            if (node) { node.fill?.('#ffffff'); node.to?.({ opacity: 1, duration: 0.18 }); }
+        }
+        for (const node of Object.values(bulgeHandleRefs.current[objectId] ?? {})) {
+            if (node) { node.fill?.('white'); node.to?.({ opacity: 1, duration: 0.18 }); }
+        }
+        for (const node of Object.values(cornerHandleRefs.current[objectId] ?? {})) {
+            if (node) { node.fill?.('white'); node.to?.({ opacity: 1, duration: 0.18 }); }
+        }
+    }, []);
     // ─────────────────────────────────────────────────────────────────────────
 
     const NOTICE_FADE_MS = 250;
@@ -4807,6 +4942,65 @@ export default function HelloEditor() {
                 return;
             }
 
+            if (isCornerDraggingRef.current && activeTool === "select") {
+                const edit = cornerEditRef.current;
+                const world = getPointerWorldPos(stage);
+                if (!edit || !world) return;
+
+                const { vx, vy, px, py, nx, ny } = edit;
+                const g = cornerGeom(px, py, vx, vy, nx, ny);
+                if (!g) return;
+
+                const restWorld = 20 / stageScaleRef.current;
+                const raw = radiusFromDraggedHandle(px, py, vx, vy, nx, ny, world.x, world.y, restWorld);
+                const snapped = snapRadius(raw.value, raw.max);
+                edit.workingRadius = snapped.value;
+                edit.snapName = snapped.name;
+
+                // Compute handle screen position
+                const r = edit.workingRadius;
+                const apexOff = r > 0 ? r * (1 / g.sinHalf - 1) : 0;
+                const off = Math.max(restWorld, apexOff);
+                const hx = vx + g.bx * off;
+                const hy = vy + g.by * off;
+
+                // Update HTML overlay via store
+                const screenPt = stage.getAbsoluteTransform().point({ x: hx, y: hy });
+                setCornerDragLive({
+                    screenX: screenPt.x,
+                    screenY: screenPt.y,
+                    workingRadius: edit.workingRadius,
+                    snapName: edit.snapName,
+                    stageScale: stageScaleRef.current,
+                });
+
+                // ✅ Update polygon shape imperatively so the corner arc follows the drag live
+                const obj = (objectsRef.current as PolyObject[]).find((o: PolyObject) => o.id === edit.objectId);
+                if (obj) {
+                    const workingBulges = normalizeBulges(obj.points, obj.bulges);
+                    const workingCorners = normalizeCorners(obj.points, obj.corners);
+                    workingCorners[edit.vertexIndex] = r;
+                    selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(
+                        obj.points, obj.holes ?? [], workingBulges, workingCorners
+                    );
+                }
+
+                // Move the active Konva handle imperatively
+                const h = cornerHandleRefs.current[edit.objectId]?.[edit.vertexIndex];
+                if (h) {
+                    const hs = 14 / stageScaleRef.current;
+                    h.position({ x: hx - hs / 2, y: hy - hs / 2 });
+                    h.fill("#4488FF"); // filled blue while dragging
+                    const layer = h.getLayer?.();
+                    if (layer) layer.batchDraw();
+                }
+
+                // ✅ Live m² update during corner drag
+                computeAndPublishLiveMeasurementRef.current?.();
+
+                return;
+            }
+
             if (
                 evt.shiftKey &&
                 activeTool === "draw" &&
@@ -4942,6 +5136,31 @@ export default function HelloEditor() {
                     if (bh) bh.position({ x: bhx, y: bhy });
                 }
 
+                // Keep corner handles in sync during live outer edge resize.
+                {
+                    const nc = nextPoints.length / 2;
+                    const liveCornerHandles = cornerHandleRefs.current[edit.objectId] ?? {};
+                    const objCorners = normalizeCorners(nextPoints, editedObj?.corners);
+                    const restWorld = 20 / stageScaleRef.current;
+                    const hs = 14 / stageScaleRef.current;
+                    for (let ci = 0; ci < nc; ci++) {
+                        const cp = (ci - 1 + nc) % nc;
+                        const cq = (ci + 1) % nc;
+                        const cvx = nextPoints[ci * 2], cvy = nextPoints[ci * 2 + 1];
+                        const cpx = nextPoints[cp * 2], cpy = nextPoints[cp * 2 + 1];
+                        const cnx = nextPoints[cq * 2], cny = nextPoints[cq * 2 + 1];
+                        const cg = cornerGeom(cpx, cpy, cvx, cvy, cnx, cny);
+                        if (!cg) continue;
+                        const cr = objCorners[ci] ?? 0;
+                        const apexOff = cr > 0 ? cr * (1 / cg.sinHalf - 1) : 0;
+                        const off = Math.max(restWorld, apexOff);
+                        const chx = cvx + cg.bx * off;
+                        const chy = cvy + cg.by * off;
+                        const ch = liveCornerHandles[ci];
+                        if (ch) ch.position({ x: chx - hs / 2, y: chy - hs / 2 });
+                    }
+                }
+
                 const line = selectedLineRefs.current[edit.objectId];
                 if (line) {
                     const liveRenderPoints =
@@ -5068,6 +5287,30 @@ export default function HelloEditor() {
                         const [bhx, bhy] = apexPoint(x1, y1, x2, y2, liveBulges[segIdx] ?? 0);
                         const bh = liveBulgeHandles[segIdx];
                         if (bh) bh.position({ x: bhx, y: bhy });
+                    }
+
+                    // Keep corner handles in sync during live outer vertex drag.
+                    const pts = edit.workingPoints;
+                    const nc = pts.length / 2;
+                    const liveCornerHandles = cornerHandleRefs.current[edit.objectId] ?? {};
+                    const objCorners = normalizeCorners(pts, editedObj?.corners);
+                    const restWorld = 20 / stageScaleRef.current;
+                    const hs = 14 / stageScaleRef.current;
+                    for (let ci = 0; ci < nc; ci++) {
+                        const cp = (ci - 1 + nc) % nc;
+                        const cq = (ci + 1) % nc;
+                        const cvx = pts[ci * 2], cvy = pts[ci * 2 + 1];
+                        const cpx = pts[cp * 2], cpy = pts[cp * 2 + 1];
+                        const cnx = pts[cq * 2], cny = pts[cq * 2 + 1];
+                        const cg = cornerGeom(cpx, cpy, cvx, cvy, cnx, cny);
+                        if (!cg) continue;
+                        const cr = objCorners[ci] ?? 0;
+                        const apexOff = cr > 0 ? cr * (1 / cg.sinHalf - 1) : 0;
+                        const off = Math.max(restWorld, apexOff);
+                        const chx = cvx + cg.bx * off;
+                        const chy = cvy + cg.by * off;
+                        const ch = liveCornerHandles[ci];
+                        if (ch) ch.position({ x: chx - hs / 2, y: chy - hs / 2 });
                     }
                 }
 
@@ -5206,7 +5449,29 @@ export default function HelloEditor() {
                 clearLiveEditMeasurement();
 
                 if (edit) {
+                    restoreHandlesAfterDrag(edit.objectId);
                     useProjectStore.getState().setSegmentBulge(edit.objectId, edit.segmentIndex, edit.workingBulge);
+                }
+
+                requestAnimationFrame(() => {
+                    suppressPlantbedFocusRef.current = false;
+                    const st = stageRef.current;
+                    if (st) st.container().style.cursor = 'default';
+                });
+                return;
+            }
+
+            if (isCornerDraggingRef.current && evt.button === 0) {
+                const edit = cornerEditRef.current;
+                isCornerDraggingRef.current = false;
+                cornerEditRef.current = null;
+                setIsCornerDragging(false);
+                clearCornerDrag(); // Hide HTML overlay
+                clearLiveEditMeasurement(); // Clear live m² label — committed layout will take over
+
+                if (edit) {
+                    restoreHandlesAfterDrag(edit.objectId);
+                    useProjectStore.getState().setCornerRadius(edit.objectId, edit.vertexIndex, edit.workingRadius);
                 }
 
                 requestAnimationFrame(() => {
@@ -5270,6 +5535,7 @@ export default function HelloEditor() {
                 clearLiveEditMeasurement();
 
                 if (edit) {
+                    restoreHandlesAfterDrag(edit.objectId);
                     moveObjectAndMerge(edit.objectId, edit.workingPoints, edit.workingHoles);
                 }
 
@@ -6635,6 +6901,8 @@ export default function HelloEditor() {
                     >
                         {/* ✅ BOGEN — HTML overlay for live bulge drag label + snap ring */}
                         <BulgeDragOverlay />
+                        {/* ✅ HOEKAFRONDING — HTML overlay for live corner drag label */}
+                        <CornerDragOverlay />
 
                         <div className="absolute inset-0 overflow-hidden">
                             <Stage
@@ -6899,6 +7167,11 @@ export default function HelloEditor() {
                                                 setIsBulgeDragging={setIsBulgeDragging}
                                                 bulgeEditRef={bulgeEditRef}
                                                 bulgeHandleRefs={bulgeHandleRefs}
+                                                isCornerDraggingRef={isCornerDraggingRef}
+                                                isCornerDragging={isCornerDragging}
+                                                setIsCornerDragging={setIsCornerDragging}
+                                                cornerEditRef={cornerEditRef}
+                                                cornerHandleRefs={cornerHandleRefs}
                                                 pendingPlantbedClickRef={pendingPlantbedClickRef}
                                                 plantbedClickMovedRef={plantbedClickMovedRef}
                                                 startTreebedRotate={startTreebedRotate}
@@ -6922,6 +7195,8 @@ export default function HelloEditor() {
                                                 draftSecondaryGuideLineRef={draftSecondaryGuideLineRef}
                                                 draftPreviewLineRef={draftPreviewLineRef}
                                                 applyViewportWheel={applyViewportWheel}
+                                                dimHandlesForDrag={dimHandlesForDrag}
+                                                restoreHandlesAfterDrag={restoreHandlesAfterDrag}
                                             />
 
                                             {/* ── Crosshair: imperative Konva refs, zero React re-renders on cursor movement ── */}

@@ -540,7 +540,11 @@ function buildAreaLabelRenderData(
         return null;
     }
     
-    const bbox = getBoundingBoxFromPoints(object.points);
+    const hasBulges = object.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+    const bboxPoints = hasBulges && object.bulges
+        ? densifyBulgedRing(object.points, normalizeBulges(object.points, object.bulges), 24)
+        : object.points;
+    const bbox = getBoundingBoxFromPoints(bboxPoints);
     const holes = object.holes ?? [];
     const areaText = formatSquareMeters(getObjectAreaInSquareMeters(object));
     const isBuildingType = BUILDING_TYPES.has(object.type);

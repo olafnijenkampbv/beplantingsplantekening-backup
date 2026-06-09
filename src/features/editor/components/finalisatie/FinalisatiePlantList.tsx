@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { PlantImg } from "@/features/editor/components/PlantImg";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 import type { ApiPlant } from "@/lib/db/plantTypes";
 import {
@@ -1190,18 +1191,10 @@ export default function FinalisatiePlantList() {
                                                             backgroundColor: "#F1F1EE",
                                                         }}
                                                     >
-                                                        <img
-                                                            src={item.plant.imageUrl || "/images/logo.png"}
+                                                        <PlantImg
+                                                            src={item.plant.imageUrl}
                                                             alt={item.plant.botanicalName}
                                                             className="block h-full w-full"
-                                                            style={item.plant.imageUrl ? {
-                                                                objectFit: "cover",
-                                                                objectPosition: "center",
-                                                            } : {
-                                                                objectFit: "contain",
-                                                                objectPosition: "center",
-                                                                padding: "20%",
-                                                            }}
                                                         />
                                                     </div>
                                                 </div>

@@ -6,6 +6,18 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["serve", "-p", "5500", "--no-clipboard"],
       "port": 5500
+    },
+    {
+      "name": "remotion-studio",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--prefix", "olaf-nijenkamp-demo", "remotion", "studio", "--port", "3333"],
+      "port": 3333
+    },
+    {
+      "name": "promo-studio",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--prefix", "beplantingsplan-promo", "remotion", "studio", "--port", "3334"],
+      "port": 3334
     }
   ]
 }

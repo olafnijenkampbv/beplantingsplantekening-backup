@@ -32,6 +32,8 @@ export type PlantCatalogFilters = {
     inStockOnly: boolean;
     minHeightCm: number | undefined;
     maxHeightCm: number | undefined;
+    keurmerkFilter: "maakt-niet-uit" | "alleen-met-keurmerk" | "alleen-zonder-keurmerk" | undefined;
+    keurmerken: string[];
     sort: "a-z" | "z-a" | undefined;
 };
 
@@ -47,6 +49,8 @@ export const EMPTY_CATALOG_FILTERS: PlantCatalogFilters = {
     inStockOnly: false,
     minHeightCm: undefined,
     maxHeightCm: undefined,
+    keurmerkFilter: undefined,
+    keurmerken: [],
     sort: undefined,
 };
 
@@ -107,6 +111,9 @@ function buildApiUrl(
     if (filters.inStockOnly) params.set("inStockOnly", "true");
     if (filters.minHeightCm !== undefined) params.set("minHeightCm", String(filters.minHeightCm));
     if (filters.maxHeightCm !== undefined) params.set("maxHeightCm", String(filters.maxHeightCm));
+    if (filters.keurmerkFilter && filters.keurmerkFilter !== "maakt-niet-uit")
+        params.set("keurmerkFilter", filters.keurmerkFilter);
+    for (const v of filters.keurmerken) params.append("keurmerk", v);
     if (filters.sort) params.set("sort", filters.sort);
     params.set("page", String(page));
     params.set("limit", String(limit));

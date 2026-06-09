@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { StaffelPopover, StaffelLink } from "@/features/editor/components/StaffelPopover";
+import { PlantImg } from "@/features/editor/components/PlantImg";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 import {
     usePlantSelectionStore,
@@ -384,6 +386,12 @@ export default function PlantSelectionListCard() {
     const [openSpecificationItemIds, setOpenSpecificationItemIds] = useState<string[]>([]);
     const [showIncompleteSizeMessage, setShowIncompleteSizeMessage] = useState(false);
 
+    // Staffel popover state
+    const [staffelState, setStaffelState] = useState<{
+        itemId: string;
+        anchorRect: DOMRect;
+    } | null>(null);
+
     const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
     const plantListDragBoundsRef = useRef<HTMLDivElement | null>(null);
     const dragPreviewNodeRef = useRef<HTMLDivElement | null>(null);
@@ -636,6 +644,21 @@ export default function PlantSelectionListCard() {
             note: value,
         }));
     };
+
+    const handleToggleStaffel = useCallback(
+        (e: React.MouseEvent<HTMLButtonElement>, itemId: string) => {
+            e.stopPropagation();
+            if (staffelState?.itemId === itemId) {
+                setStaffelState(null);
+            } else {
+                setStaffelState({
+                    itemId,
+                    anchorRect: e.currentTarget.getBoundingClientRect(),
+                });
+            }
+        },
+        [staffelState]
+    );
 
     const handleTogglePlantSpecifications = (itemId: string) => {
         setOpenSpecificationItemIds((prev) =>
@@ -1198,18 +1221,10 @@ export default function PlantSelectionListCard() {
                                                                             backgroundColor: "#F1F1EE",
                                                                         }}
                                                                     >
-                                                                        <img
-                                                                            src={item.plant.imageUrl || "/images/logo.png"}
+                                                                        <PlantImg
+                                                                            src={item.plant.imageUrl}
                                                                             alt={item.plant.botanicalName}
                                                                             className="block h-full w-full"
-                                                                            style={item.plant.imageUrl ? {
-                                                                                objectFit: "cover",
-                                                                                objectPosition: "center",
-                                                                            } : {
-                                                                                objectFit: "contain",
-                                                                                objectPosition: "center",
-                                                                                padding: "20%",
-                                                                            }}
                                                                         />
                                                                     </div>
                                                                 </div>
@@ -1321,15 +1336,24 @@ export default function PlantSelectionListCard() {
                                                                     />
                                                                 </div>
 
-                                                                <div
-                                                                    className="pt-2 text-[13px] leading-[1.35]"
-                                                                    style={{ color: "#FF0000" }}
-                                                                >
-                                                                    {selectedVariant
-                                                                        ? formatPricePerPiece(selectedVariant.price)
-                                                                        : item.fixedSize && item.plant.pricePerPiece
-                                                                            ? formatPricePerPiece(item.plant.pricePerPiece)
-                                                                            : null}
+                                                                <div className="pt-2">
+                                                                    <div
+                                                                        className="text-[13px] leading-[1.35]"
+                                                                        style={{ color: "#FF0000" }}
+                                                                    >
+                                                                        {selectedVariant
+                                                                            ? formatPricePerPiece(selectedVariant.price)
+                                                                            : item.fixedSize && item.plant.pricePerPiece
+                                                                                ? formatPricePerPiece(item.plant.pricePerPiece)
+                                                                                : null}
+                                                                    </div>
+                                                                    {/* Staffel-link: toon alleen als geselecteerde variant staffelprijzen heeft */}
+                                                                    {selectedVariant && selectedVariant.bulkPrices && selectedVariant.bulkPrices.length > 0 && (
+                                                                        <StaffelLink
+                                                                            isOpen={staffelState?.itemId === item.id}
+                                                                            onClick={(e) => handleToggleStaffel(e, item.id)}
+                                                                        />
+                                                                    )}
                                                                 </div>
 
                                                                 <div className="flex h-full items-center justify-center pt-2">
@@ -1492,6 +1516,27 @@ export default function PlantSelectionListCard() {
                         </div>
                 </>
             )}
+            {/* Staffel popover — portal, zweeft boven de tabel */}
+            {staffelState && (() => {
+                // Zoek de variant op voor het open item om basePrice + bulkPrices te krijgen
+                const openItem = items.find((it) => it.id === staffelState.itemId);
+                if (!openItem) return null;
+                const variants = getVariants(openItem.plant.id);
+                const variant = openItem.size && openItem.size !== "Geen maat geselecteerd"
+                    ? variants.find((v) => v.sizeLabel === openItem.size) ?? null
+                    : null;
+                if (!variant || !variant.bulkPrices?.length) return null;
+                return (
+                    <StaffelPopover
+                        isOpen
+                        onClose={() => setStaffelState(null)}
+                        anchorRect={staffelState.anchorRect}
+                        basePrice={variant.price}
+                        bulkPrices={variant.bulkPrices}
+                    />
+                );
+            })()}
+
             <ConfirmModal
                 open={isRemoveConfirmOpen}
                 title={selectedItems.length === 1 ? "Product regel verwijderen" : "Product regels verwijderen"}

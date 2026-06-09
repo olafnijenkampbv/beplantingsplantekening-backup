@@ -122,6 +122,24 @@ export function densifyBulgedRing(
   return out;
 }
 
+/**
+ * Middelpunt en straal van de cirkelboog die bij een bulge-segment hoort.
+ * Geeft null terug als x1==x2 en y1==y2 (nulkoorde).
+ */
+export function arcCenterRadius(
+  x1: number, y1: number,
+  x2: number, y2: number,
+  bulge: number
+): { cx: number; cy: number; r: number } | null {
+  if (Math.abs(bulge) < STRAIGHT_THRESHOLD) return null;
+  const [ax, ay] = apexPoint(x1, y1, x2, y2, bulge);
+  const c = circumcenter(x1, y1, ax, ay, x2, y2);
+  if (!c) return null;
+  const [cx, cy] = c;
+  const r = Math.sqrt((x1 - cx) ** 2 + (y1 - cy) ** 2);
+  return { cx, cy, r };
+}
+
 /** Shoelace-oppervlakte (absoluut) van een gebogen polygoon, in editor-units². */
 export function bulgedPolygonArea(points: number[], bulges: number[]): number {
   const b = densifyBulgedRing(points, bulges, 48);

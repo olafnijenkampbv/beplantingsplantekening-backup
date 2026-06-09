@@ -524,7 +524,8 @@ function buildPlantbedLayoutSignature(
     holes: number[][],
     plantbedNo: number | string,
     areaText: string,
-    treebedBlockersSignature: string
+    treebedBlockersSignature: string,
+    bulges?: number[]
 ) {
     return [
         String(plantbedNo),
@@ -532,6 +533,7 @@ function buildPlantbedLayoutSignature(
         buildFlatPointsSignature(points),
         buildHolesSignature(holes),
         treebedBlockersSignature,
+        bulges ? buildFlatPointsSignature(bulges) : "",
     ].join("::");
 }
 function buildTreebedLabelBlockers(objects: PolyObject[]) {
@@ -712,10 +714,15 @@ function getPlantbedNumberLayout(
     holes: number[][] = [],
     plantbedNo: number | string,
     areaText: string,
-    treebedBlockers: TreebedLabelBlocker[]
+    treebedBlockers: TreebedLabelBlocker[],
+    bulges?: number[]
 ): PlantbedNumberLayout {
     const text = String(plantbedNo);
-    const bb = bboxFromPoints(points);
+    const hasBulges = bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+    const bboxPts = hasBulges && bulges
+        ? densifyBulgedRing(points, normalizeBulges(points, bulges), 24)
+        : points;
+    const bb = bboxFromPoints(bboxPts);
     const relevantTreebedBlockers = getTreebedLabelBlockersForPlantbed(points, treebedBlockers);
 
     const safeWidth = Math.max(bb.w - GRID_SIZE * 0.45, GRID_SIZE * 0.55);
@@ -2206,7 +2213,8 @@ export default function HelloEditor() {
                 obj.holes ?? [],
                 obj.plantbedNo ?? 0,
                 areaText,
-                obj.type === "treebed" ? "" : treebedLabelBlockersSignature
+                obj.type === "treebed" ? "" : treebedLabelBlockersSignature,
+                obj.bulges
             );
 
             const cached = cache.get(obj.id);
@@ -2221,7 +2229,8 @@ export default function HelloEditor() {
                 obj.holes ?? [],
                 obj.plantbedNo ?? 0,
                 areaText,
-                blockersForLayout
+                blockersForLayout,
+                obj.bulges
             );
 
             cache.set(obj.id, {
@@ -3719,13 +3728,19 @@ export default function HelloEditor() {
         };
 
         const getVisiblePlantDropTargets = (sourceObjects: PolyObject[]) => {
-            return sourceObjects.filter(
-                (object) =>
-                    (object.type === "plantbed" ||
-                        object.type === "hedge" ||
-                        object.type === "treebed") &&
-                    isPlantDropTargetVisible(object)
-            );
+            return sourceObjects
+                .filter(
+                    (object) =>
+                        (object.type === "plantbed" ||
+                            object.type === "hedge" ||
+                            object.type === "treebed") &&
+                        isPlantDropTargetVisible(object)
+                )
+                .sort((a, b) => {
+                    if (a.type === "treebed" && b.type !== "treebed") return -1;
+                    if (a.type !== "treebed" && b.type === "treebed") return 1;
+                    return 0;
+                });
         };
 
         const onDragOver = (e: DragEvent) => {
@@ -3823,7 +3838,7 @@ export default function HelloEditor() {
 
                 if (existingLinkedPlantId === plantId) {
                     clearDragOverPlantbed();
-                    notify(APP_NOTIFICATIONS.plantAlreadyLinkedToPlantbed(objectNo));
+                    notify(APP_NOTIFICATIONS.plantAlreadyLinkedToPlantbed(objectNo, "boomvak"));
                     return;
                 }
 
@@ -3849,7 +3864,7 @@ export default function HelloEditor() {
                 linkPlantToPlantbed(plantId, plantbedId);
 
                 clearDragOverPlantbed();
-                notify(APP_NOTIFICATIONS.plantLinkedToPlantbed(plantName, objectNo));
+                notify(APP_NOTIFICATIONS.plantLinkedToPlantbed(plantName, objectNo, "boomvak"));
                 return;
             }
 
@@ -5996,6 +6011,8 @@ export default function HelloEditor() {
                 if (confirmModal.kind === "delete-plantbed") {
                     const plantbedNo = confirmModal.plantbedNo ?? "[nr]";
                     const plantIds = confirmModal.plantIds ?? [];
+                    const objectLabel = confirmModal.objectLabel ?? "plantvak";
+                    const objectLabelCapital = objectLabel.charAt(0).toUpperCase() + objectLabel.slice(1);
 
                     const items = plantIds
                         .map((pid: string) => {
@@ -6015,20 +6032,20 @@ export default function HelloEditor() {
                     const description =
                         count === 1 ? (
                             <>
-                                Aan dit plantvak is <strong>1 plant gekoppeld</strong>.<br />
-                                Als u dit plantvak verwijdert, wordt deze koppeling ook verwijderd.
+                                Aan dit {objectLabel} is <strong>1 plant gekoppeld</strong>.<br />
+                                Als u dit {objectLabel} verwijdert, wordt deze koppeling ook verwijderd.
                             </>
                         ) : (
                             <>
-                                Aan dit plantvak zijn <strong>{count} planten gekoppeld</strong>.<br />
-                                Als u dit plantvak verwijdert, worden deze koppelingen ook verwijderd.
+                                Aan dit {objectLabel} zijn <strong>{count} planten gekoppeld</strong>.<br />
+                                Als u dit {objectLabel} verwijdert, worden deze koppelingen ook verwijderd.
                             </>
                         );
 
                     return (
                         <ConfirmModal
                             open={true}
-                            title={`Plantvak ${plantbedNo} verwijderen?`}
+                            title={`${objectLabelCapital} ${plantbedNo} verwijderen?`}
                             description={description}
                             items={items}
                             maxPreviewItems={3}
@@ -6039,13 +6056,12 @@ export default function HelloEditor() {
                             onCancel={closeConfirmModal}
                             onConfirm={() => {
                                 confirmModalPrimaryAction();
-                                closeConfirmModal(); // ✅ popup sluiten
+                                closeConfirmModal();
                                 notify({
                                     kind: "success",
                                     placement: "bottom-center",
-                                    message: `Plantvak ${plantbedNo} verwijderd`,
+                                    message: `${objectLabelCapital} ${plantbedNo} verwijderd`,
                                 });
-
                             }}
                         />
                     );

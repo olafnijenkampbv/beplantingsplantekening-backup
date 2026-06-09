@@ -164,12 +164,52 @@ export default function PlantSelectionPage() {
             },
         });
 
-        loadPlantSelectionSnapshot(
-            getPlantSelectionSnapshotForDrawing(
-                restoredDrawingId,
-                plantSelectionSnapshotsByDrawingId
-            )
+        const plantSelectionSnapshot = getPlantSelectionSnapshotForDrawing(
+            restoredDrawingId,
+            plantSelectionSnapshotsByDrawingId
         );
+        // "zoek-zelf" toont geen wizard-filters — altijd op een categorietab landen
+        if (plantSelectionSnapshot && plantSelectionSnapshot.selectedGroup === "zoek-zelf") {
+            plantSelectionSnapshot.selectedGroup = "bodembedekkers";
+        }
+        loadPlantSelectionSnapshot(plantSelectionSnapshot);
+
+        // Direct catalog filters toepassen op basis van de wizard-waarden die we
+        // net uit localStorage gelezen hebben. Dit voorkomt dat de filter sync
+        // useEffect te vroeg runt (vóórdat de Zustand state geüpdatet is) en
+        // daardoor de verkeerde resultaten ophaalt.
+        const restoredGroup = plantSelectionSnapshot?.selectedGroup ?? "bodembedekkers";
+        if (restoredGroup !== "zoek-zelf" && restoredGroup !== "tuinmaterialen") {
+            const standplaatsenTerms = rightStepSnapshot.step2.standplaatsen
+                .filter((s) => s !== "wisselend-onbekend")
+                .map((s) => s.toLowerCase());
+            const grondsoortTerms = rightStepSnapshot.step2.groundTypes
+                .map((g) => STEP2_GRONDSOORT_TO_FILTER_OPTION[g] ?? "")
+                .filter(Boolean)
+                .map((g) => g.toLowerCase());
+            const { minHeightCm, maxHeightCm } = heightStyleToRange(rightStepSnapshot.step4.heightStyle);
+            const certPref = rightStepSnapshot.step2.certificationPreference;
+            const keurmerkFilter =
+                certPref === "alleen-met-keurmerk" || certPref === "alleen-zonder-keurmerk"
+                    ? (certPref as "alleen-met-keurmerk" | "alleen-zonder-keurmerk")
+                    : undefined;
+
+            usePlantCatalogStore.getState().setMultipleFilters({
+                q: "",
+                appGroup: restoredGroup as PlantAppGroup,
+                standplaatsen: standplaatsenTerms,
+                grondsoorten: grondsoortTerms,
+                bloeiperiodes: [],
+                kleuren: [],
+                categories: [],
+                inStockOnly: false,
+                inheems: undefined,
+                minHeightCm,
+                maxHeightCm,
+                keurmerkFilter,
+                keurmerken: [],
+            });
+        }
 
         setActiveDrawingId(restoredDrawingId);
         setHasHydratedDrawingContext(true);
@@ -228,10 +268,15 @@ export default function PlantSelectionPage() {
                 bloeiperiodes: advancedFilters.bloeiperiodes.map((b) => b.toLowerCase()),
                 kleuren: advancedFilters.kleuren,
                 categories: advancedFilters.plantgroepen,
-                inStockOnly: filters.opVoorraad,
+                // In zoek-zelf tonen we altijd ALLE planten, ook uitverkochte.
+                // De beschikbaarheidsstatus ("Op voorraad" / "Binnen een week leverbaar")
+                // is zichtbaar op elke variantkaart — de gebruiker beslist zelf.
+                inStockOnly: false,
                 inheems: filters.inheems ? true : undefined,
                 minHeightCm: undefined,
                 maxHeightCm: undefined,
+                keurmerkFilter: undefined,
+                keurmerken: advancedFilters.keurmerken,
             });
         } else {
             // Build step-2 terms directly — never touch advancedFilters for categories
@@ -243,6 +288,12 @@ export default function PlantSelectionPage() {
                 .filter(Boolean)
                 .map((g) => g.toLowerCase());
 
+            const keurmerkFilter =
+                step2.certificationPreference === "alleen-met-keurmerk" ||
+                step2.certificationPreference === "alleen-zonder-keurmerk"
+                    ? step2.certificationPreference
+                    : undefined;
+
             setMultipleCatalogFilters({
                 q: "",  // always clear any text search on category tabs
                 appGroup: selectedGroup as PlantAppGroup,
@@ -251,10 +302,13 @@ export default function PlantSelectionPage() {
                 bloeiperiodes: advancedFilters.bloeiperiodes.map((b) => b.toLowerCase()),
                 kleuren: advancedFilters.kleuren,
                 categories: [],
-                inStockOnly: filters.opVoorraad,
+                // Altijd alle planten tonen, ook uitverkochte — beschikbaarheidsstatus
+                // is zichtbaar op de kaart ("Op voorraad" / "Binnen een week leverbaar").
+                inStockOnly: false,
                 inheems: filters.inheems ? true : undefined,
                 minHeightCm,
                 maxHeightCm,
+                keurmerkFilter,
             });
         }
     }, [
@@ -262,13 +316,14 @@ export default function PlantSelectionPage() {
         selectedGroup,
         step2.standplaatsen,
         step2.groundTypes,
+        step2.certificationPreference,
         step4.heightStyle,
         advancedFilters.standplaatsen,
         advancedFilters.grondsoorten,
         advancedFilters.bloeiperiodes,
         advancedFilters.kleuren,
         advancedFilters.plantgroepen,
-        filters.opVoorraad,
+        advancedFilters.keurmerken,
         filters.inheems,
         setMultipleCatalogFilters,
     ]);
@@ -483,6 +538,7 @@ export default function PlantSelectionPage() {
                                                     imageUrl: material.imageUrl,
                                                     pricePerPiece: variant.price,
                                                     inStock: variant.availability === "in_stock",
+                                                    keurmerken: [],
                                                 },
                                                 variant.sizeLabel,
                                                 true

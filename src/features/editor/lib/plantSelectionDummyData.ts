@@ -14,7 +14,8 @@ export type PlantSelectionAdvancedArrayFilterKey =
     | "kleuren"
     | "standplaatsen"
     | "grondsoorten"
-    | "bloeiperiodes";
+    | "bloeiperiodes"
+    | "keurmerken";
 
 export type PlantSelectionAdvancedFilters = Record<
     PlantSelectionAdvancedArrayFilterKey,
@@ -27,6 +28,7 @@ export const EMPTY_ADVANCED_PLANT_SELECTION_FILTERS: PlantSelectionAdvancedFilte
     standplaatsen: [],
     grondsoorten: [],
     bloeiperiodes: [],
+    keurmerken: [],
 };
 
 export const PLANT_SELECTION_COLOR_OPTIONS = [
@@ -74,6 +76,21 @@ export const PLANT_SELECTION_PLANTGROUP_OPTIONS = [
     "Bonsai",
     "Kant en klaar haag",
     "Tuinmaterialen",
+];
+
+export const PLANT_SELECTION_KEURMERK_OPTIONS = [
+    "Biologisch",
+    "MPS",
+    "MPS-A",
+    "MPS-A+",
+    "MPS-ABC",
+    "MPS-C",
+    "MPS-GAP",
+    "MPS-S",
+    "NL greenlabel",
+    "PP GK",
+    "PlanetProof",
+    "Skal",
 ];
 
 export const PLANT_SELECTION_STANDPLAATS_OPTIONS = [
@@ -132,6 +149,7 @@ const SEARCH_VISIBLE_FILTER_SECTIONS: PlantSelectionVisibleFilterSection[] = [
     { key: "standplaatsen", label: "Standplaats", kind: "expandable" },
     { key: "grondsoorten", label: "Grondsoort", kind: "expandable" },
     { key: "bloeiperiodes", label: "Bloeiperiode", kind: "expandable" },
+    { key: "keurmerken", label: "Keurmerk", kind: "expandable" },
 ];
 
 export function getVisiblePlantSelectionFilterSections(

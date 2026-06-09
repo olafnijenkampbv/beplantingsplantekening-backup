@@ -89,6 +89,7 @@ function initialiseSchema(db: Database.Database): void {
             image_url               TEXT    NOT NULL DEFAULT '',
             min_price               REAL    NOT NULL DEFAULT 0,   -- cheapest in-stock variant
             in_stock                INTEGER NOT NULL DEFAULT 0,   -- 1 if any variant is in_stock
+            keurmerken              TEXT    NOT NULL DEFAULT '',   -- comma-separated certifications, e.g. "MPS-A"
             updated_at              TEXT    NOT NULL               -- ISO-8601 timestamp
         );
 
@@ -103,6 +104,7 @@ function initialiseSchema(db: Database.Database): void {
             size_label   TEXT    NOT NULL DEFAULT '',       -- e.g. "80-100 cm met kluit boskwaliteit"
             price        REAL    NOT NULL DEFAULT 0,
             availability TEXT    NOT NULL DEFAULT 'out_of_stock',  -- "in_stock" | "out_of_stock"
+            bulk_prices  TEXT    NOT NULL DEFAULT '[]',    -- JSON: [{minQty, price}] staffelprijzen
             updated_at   TEXT    NOT NULL
         );
 
@@ -169,6 +171,15 @@ function initialiseSchema(db: Database.Database): void {
     }
     if (!columns.some((c) => c.name === "toelichting")) {
         db.exec("ALTER TABLE plants ADD COLUMN toelichting TEXT NOT NULL DEFAULT ''");
+    }
+    if (!columns.some((c) => c.name === "keurmerken")) {
+        db.exec("ALTER TABLE plants ADD COLUMN keurmerken TEXT NOT NULL DEFAULT ''");
+    }
+
+    // Migratie: bulk_prices kolom voor staffelprijzen per variant
+    const variantColumns = db.prepare("PRAGMA table_info(plant_variants)").all() as { name: string }[];
+    if (!variantColumns.some((c) => c.name === "bulk_prices")) {
+        db.exec("ALTER TABLE plant_variants ADD COLUMN bulk_prices TEXT NOT NULL DEFAULT '[]'");
     }
 }
 

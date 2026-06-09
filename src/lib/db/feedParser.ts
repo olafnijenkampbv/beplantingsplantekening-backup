@@ -21,6 +21,7 @@
  */
 
 import { XMLParser } from "fast-xml-parser";
+import type { BulkPriceTier } from "./plantTypes";
 
 // ---------------------------------------------------------------------------
 // Internal type: the JSON embedded in <kenmerken>
@@ -71,6 +72,12 @@ export type ParsedFeedItem = {
     standplaats: string;                // Standplaats
     grondsoort: string;                 // Grondsoort
     toelichting: string;                // Toelichting
+
+    // ---- from <keurmerken> XML field ----
+    keurmerken: string;                 // e.g. "MPS-A" | "" (single value per variant)
+
+    // ---- from <g:bulk_price> blokken ----
+    bulkPrices: BulkPriceTier[];        // staffelprijzen, gesorteerd op minQty
 };
 
 // ---------------------------------------------------------------------------
@@ -82,8 +89,11 @@ const XML_PARSER = new XMLParser({
     ignoreAttributes: true,     // no XML attributes needed
     parseTagValue: false,       // keep all values as raw strings (we parse manually)
     trimValues: true,           // strip leading/trailing whitespace from values
-    // Ensure <item> is always an array even when there is only 1 product
-    isArray: (_name: string, jpath: unknown) => jpath === "rss.channel.item",
+    // Ensure <item> is always an array even when there is only 1 product.
+    // Ensure <g:bulk_price> is always an array so multiple staffeltiers per item werken.
+    isArray: (_name: string, jpath: unknown) =>
+        jpath === "rss.channel.item" ||
+        jpath === "rss.channel.item.g:bulk_price",
 });
 
 // ---------------------------------------------------------------------------
@@ -151,6 +161,29 @@ function parsePlanthoeveelheid(raw: string | undefined): number {
     if (!raw) return 1;
     const n = parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: parse <g:bulk_price> blokken naar staffeltiers
+//
+// De parser levert een array van objecten:
+//   [{ min_quantity: "25", price: "0.32 EUR" }, ...]
+// Lege of ongeldige elementen worden overgeslagen.
+// ---------------------------------------------------------------------------
+
+function parseBulkPrices(raw: unknown): BulkPriceTier[] {
+    if (!Array.isArray(raw)) return [];
+    const tiers: BulkPriceTier[] = [];
+    for (const bp of raw) {
+        if (typeof bp !== "object" || bp === null) continue;
+        const bpObj = bp as Record<string, unknown>;
+        const minQty = parseInt(str(bpObj["min_quantity"]), 10);
+        const price = parsePrice(str(bpObj["price"]));
+        if (Number.isFinite(minQty) && minQty > 0 && price > 0) {
+            tiers.push({ minQty, price });
+        }
+    }
+    return tiers.sort((a, b) => a.minQty - b.minQty);
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +261,12 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
             standplaats: kenmerken.Standplaats ?? "",
             grondsoort: kenmerken.Grondsoort ?? "",
             toelichting: kenmerken.Toelichting ?? "",
+
+            // From <keurmerken> XML field
+            keurmerken: str(item["keurmerken"]),
+
+            // Staffelprijzen uit <g:bulk_price> blokken
+            bulkPrices: parseBulkPrices(item["g:bulk_price"]),
         });
     }
 

@@ -1,5 +1,7 @@
 "use client";
 
+import type { BulkPriceTier } from "@/lib/db/plantTypes";
+
 /**
  * plantVariantStore.ts
  *
@@ -26,7 +28,11 @@ export type ApiPlantVariant = {
     sizeLabel: string;
     price: number;
     availability: string;
+    bulkPrices: BulkPriceTier[];  // staffelprijzen, gesorteerd op minQty
 };
+
+// Re-export zodat importers BulkPriceTier niet apart hoeven te importeren
+export type { BulkPriceTier };
 
 type VariantFetchState = {
     status: "idle" | "loading" | "success" | "error";
@@ -85,7 +91,12 @@ export const usePlantVariantStore = create<PlantVariantState>((set, get) => ({
                 throw new Error(`API error ${response.status}: ${response.statusText}`);
             }
 
-            const variants: ApiPlantVariant[] = await response.json();
+            const raw: ApiPlantVariant[] = await response.json();
+            // Zorg dat bulkPrices altijd een array is (defensieve fallback)
+            const variants: ApiPlantVariant[] = raw.map((v) => ({
+                ...v,
+                bulkPrices: Array.isArray(v.bulkPrices) ? v.bulkPrices : [],
+            }));
 
             set((state) => ({
                 cache: {

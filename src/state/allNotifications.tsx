@@ -56,10 +56,10 @@ export const APP_NOTIFICATION_PRESETS = {
 } as const;
 
 export const APP_NOTIFICATIONS = {
-    plantLinkedToPlantbed: (plantName: string, plantbedNo: number | string): AppNotificationDefinition => ({
+    plantLinkedToPlantbed: (plantName: string, plantbedNo: number | string, objectLabel = "plantvak"): AppNotificationDefinition => ({
         kind: "success",
         placement: "bottom-center",
-        message: `${plantName} gekoppeld aan plantvak ${plantbedNo}`,
+        message: `${plantName} gekoppeld aan ${objectLabel} ${plantbedNo}`,
     }),
 
     plantReplacedInSingleSlotObject: (
@@ -83,10 +83,10 @@ export const APP_NOTIFICATIONS = {
         message: `${plantName} verwijderd uit ${objectLabel} ${objectNo}`,
     }),
 
-    plantAlreadyLinkedToPlantbed: (plantbedNo: number | string): AppNotificationDefinition => ({
+    plantAlreadyLinkedToPlantbed: (plantbedNo: number | string, objectLabel = "plantvak"): AppNotificationDefinition => ({
         kind: "warning",
         placement: "bottom-center",
-        message: `Je hebt deze plant al gekoppeld aan plantvak ${plantbedNo}`,
+        message: `Je hebt deze plant al gekoppeld aan ${objectLabel} ${plantbedNo}`,
     }),
 
     plantsOnlyInPlantbeds: (): AppNotificationDefinition => ({

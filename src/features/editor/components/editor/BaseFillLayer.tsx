@@ -1,6 +1,6 @@
 import React from "react";
 import { Group, Layer, Line, Text } from "react-konva";
-import { PolyObject, OBJECT_STYLES, ObjectType } from "@/state/projectStore";
+import { PolyObject, OBJECT_STYLES, ObjectType, normalizeBulges } from "@/state/projectStore";
 import { renderObjectPattern } from "@/features/editor/lib/objectPatterns";
 import { isUnifiedBoundaryType, getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
 import { bboxFromPoints, estimateTextWidth } from "@/features/editor/lib/editorCanvasMath";
@@ -9,6 +9,7 @@ import {
     isBuildingType,
     getBuildingPatternCanvas,
 } from "@/features/editor/lib/editorCanvasPrimitives";
+import { densifyBulgedRing, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
 
 type PlantbedNumberLayout = {
     text: string;
@@ -222,13 +223,16 @@ export default React.memo(function BaseFillLayer({
                 }
 
                 if (hasHoles) {
+                    const hasBulgesHoles = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                    const outerRing = hasBulgesHoles && obj.bulges
+                        ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48)
+                        : obj.points;
                     return (
                         <React.Fragment key={`fill-${obj.id}`}>
                             <PolygonWithHoles
                                 {...common}
-                                points={obj.points}
+                                points={outerRing}
                                 holes={obj.holes}
-                                bulges={obj.bulges}
                                 fill={patternImage ? undefined : objectStyle.fill}
                                 fillPriority={patternImage ? "pattern" : "color"}
                                 fillPatternImage={patternImage as unknown as HTMLImageElement | undefined}
@@ -240,7 +244,7 @@ export default React.memo(function BaseFillLayer({
                                 obj,
                                 `fill-pattern-${obj.id}`,
                                 stageScale,
-                                obj.points,
+                                outerRing,
                                 obj.holes
                             )}
                         </React.Fragment>
@@ -252,70 +256,48 @@ export default React.memo(function BaseFillLayer({
                 }
 
                 if (isBuildingType(obj.type)) {
-                    const hasBulges = obj.bulges?.some((b) => Math.abs(b) > 0.004);
+                    const hasBulges = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                    // Densify arc to straight polygon so Konva's native pattern fill
+                    // covers the full arc area (PolygonWithHoles sceneFunc doesn't clip patterns correctly).
+                    const buildingPoints = hasBulges && obj.bulges
+                        ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48)
+                        : obj.points;
                     return (
                         <React.Fragment key={`fill-${obj.id}`}>
-                            {hasBulges ? (
-                                <PolygonWithHoles
-                                    {...common}
-                                    points={obj.points}
-                                    holes={[]}
-                                    bulges={obj.bulges}
-                                    fill={undefined}
-                                    fillPriority="pattern"
-                                    fillPatternImage={
-                                        getBuildingPatternCanvas(obj.type) as unknown as HTMLImageElement | undefined
-                                    }
-                                    fillPatternRepeat="repeat"
-                                    stroke={undefined}
-                                    strokeWidth={0}
-                                />
-                            ) : (
-                                <Line
-                                    {...common}
-                                    points={obj.points}
-                                    closed
-                                    fill={undefined}
-                                    fillEnabled
-                                    fillPriority="pattern"
-                                    fillPatternImage={
-                                        getBuildingPatternCanvas(obj.type) as unknown as HTMLImageElement | undefined
-                                    }
-                                    fillPatternRepeat="repeat"
-                                    strokeEnabled={false}
-                                />
-                            )}
+                            <Line
+                                {...common}
+                                points={buildingPoints}
+                                closed
+                                fill={undefined}
+                                fillEnabled
+                                fillPriority="pattern"
+                                fillPatternImage={
+                                    getBuildingPatternCanvas(obj.type) as unknown as HTMLImageElement | undefined
+                                }
+                                fillPatternRepeat="repeat"
+                                strokeEnabled={false}
+                            />
                             {renderObjectPattern(obj, `fill-pattern-${obj.id}`, stageScale)}
                         </React.Fragment>
                     );
                 }
 
-                // ✅ BOGEN — gebruik PolygonWithHoles als het object bogen heeft
-                const hasBulges = obj.bulges?.some((b) => Math.abs(b) > 0.004);
+                // Densify arc to straight polygon so fill always covers the full arc area.
+                const hasBulges = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                const fillPoints = hasBulges && obj.bulges
+                    ? densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48)
+                    : obj.points;
                 return (
                     <React.Fragment key={`fill-${obj.id}`}>
-                        {hasBulges ? (
-                            <PolygonWithHoles
-                                {...common}
-                                points={obj.points}
-                                holes={[]}
-                                bulges={obj.bulges}
-                                fill={objectStyle.fill}
-                                fillPriority="color"
-                                stroke={undefined}
-                                strokeWidth={0}
-                            />
-                        ) : (
-                            <Line
-                                {...common}
-                                points={obj.points}
-                                closed
-                                fill={objectStyle.fill}
-                                fillEnabled
-                                fillPriority="color"
-                                strokeEnabled={false}
-                            />
-                        )}
+                        <Line
+                            {...common}
+                            points={fillPoints}
+                            closed
+                            fill={objectStyle.fill}
+                            fillEnabled
+                            fillPriority="color"
+                            strokeEnabled={false}
+                        />
                         {renderObjectPattern(obj, `fill-pattern-${obj.id}`, stageScale)}
                     </React.Fragment>
                 );
@@ -429,7 +411,11 @@ export default React.memo(function BaseFillLayer({
                             };
                             const labelColor = getReadablePlantbedLabelColor(plantbedStyle.fill);
 
-                            const bbox = bboxFromPoints(pb.points);
+                            const pbHasBulgesForBbox = pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+                            const bboxPts = pbHasBulgesForBbox && pb.bulges
+                                ? densifyBulgedRing(pb.points, normalizeBulges(pb.points, pb.bulges), 24)
+                                : pb.points;
+                            const bbox = bboxFromPoints(bboxPts);
                             const numberTextWidth = showPlantNumber
                                 ? estimateTextWidth(label.text, label.fontSize)
                                 : 0;

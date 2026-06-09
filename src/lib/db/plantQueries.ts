@@ -56,6 +56,7 @@ function rowToApiPlant(row: PlantRow): ApiPlant {
         imageUrl: row.image_url,
         pricePerPiece: row.min_price,
         inStock: row.in_stock === 1,
+        keurmerken: splitValues(row.keurmerken),
     };
 }
 
@@ -152,6 +153,19 @@ function buildWhereClause(params: PlantQueryParams): WhereClause {
         // No binding needed — literal value in SQL
     }
 
+    // --- Keurmerk filter (wizard: met/zonder) ---
+    if (params.keurmerkFilter === "alleen-met-keurmerk") {
+        conditions.push("keurmerken != ''");
+    } else if (params.keurmerkFilter === "alleen-zonder-keurmerk") {
+        conditions.push("keurmerken = ''");
+    }
+
+    // --- Keurmerk filter (zoek-zelf: specifieke keurmerken, OR-logica) ---
+    if (params.keurmerken && params.keurmerken.length > 0) {
+        conditions.push(`(${params.keurmerken.map(() => "keurmerken LIKE ?").join(" OR ")})`);
+        for (const k of params.keurmerken) bindings.push(`%${k}%`);
+    }
+
     // --- Height filters ---
     // Plants where max_height_cm = 0 (unknown) are always included as a safe fallback,
     // so the list doesn't empty out before the next sync populates heights.
@@ -162,6 +176,12 @@ function buildWhereClause(params: PlantQueryParams): WhereClause {
     if (params.minHeightCm !== undefined) {
         conditions.push("(max_height_cm = 0 OR max_height_cm >= ?)");
         bindings.push(params.minHeightCm);
+    }
+
+    // --- Initial letter filter ---
+    if (params.initialLetter && params.initialLetter.length === 1) {
+        conditions.push("UPPER(SUBSTR(botanical_name, 1, 1)) = ?");
+        bindings.push(params.initialLetter.toUpperCase());
     }
 
     const sql =
@@ -223,6 +243,32 @@ export function queryPlants(params: PlantQueryParams): ApiPlantsResponse {
         limit,
         totalPages: Math.max(1, Math.ceil(total / limit)),
     };
+}
+
+// ---------------------------------------------------------------------------
+// Initials query: distinct first letters of botanical_name matching the filters
+// Used by the alphabet filter bar in the plant catalogue
+// ---------------------------------------------------------------------------
+
+export type PlantInitialCount = { letter: string; count: number };
+
+export function queryPlantInitials(params: PlantQueryParams): PlantInitialCount[] {
+    if (!isDatabasePopulated()) return [];
+
+    const db = getPlantDb();
+    const { sql: whereSql, bindings } = buildWhereClause(params);
+
+    const rows = db
+        .prepare(
+            `SELECT UPPER(SUBSTR(botanical_name, 1, 1)) AS letter, COUNT(*) AS count
+             FROM plants
+             ${whereSql}
+             GROUP BY letter
+             ORDER BY letter ASC`
+        )
+        .all(...bindings) as { letter: string; count: number }[];
+
+    return rows.filter((r) => r.letter >= "A" && r.letter <= "Z");
 }
 
 // ---------------------------------------------------------------------------

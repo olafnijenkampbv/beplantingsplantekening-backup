@@ -10,6 +10,7 @@ import {
     PLANT_SELECTION_BLOEIPERIODE_OPTIONS,
     PLANT_SELECTION_COLOR_OPTIONS,
     PLANT_SELECTION_GRONDSOORT_OPTIONS,
+    PLANT_SELECTION_KEURMERK_OPTIONS,
     PLANT_SELECTION_PLANTGROUP_OPTIONS,
     PLANT_SELECTION_STANDPLAATS_OPTIONS,
     getVisiblePlantSelectionFilterSections,
@@ -177,6 +178,7 @@ export default function PlantSelectionFiltersCard(props: PlantSelectionFiltersCa
         standplaatsen: false,
         grondsoorten: false,
         bloeiperiodes: false,
+        keurmerken: false,
     });
 
     const visibleSections = useMemo(
@@ -192,7 +194,8 @@ export default function PlantSelectionFiltersCard(props: PlantSelectionFiltersCa
             advancedFilters.kleuren.length > 0 ||
             advancedFilters.standplaatsen.length > 0 ||
             advancedFilters.grondsoorten.length > 0 ||
-            advancedFilters.bloeiperiodes.length > 0
+            advancedFilters.bloeiperiodes.length > 0 ||
+            advancedFilters.keurmerken.length > 0
         );
     }, [advancedFilters, filters.inheems, filters.opVoorraad]);
 
@@ -210,6 +213,8 @@ export default function PlantSelectionFiltersCard(props: PlantSelectionFiltersCa
                 return PLANT_SELECTION_GRONDSOORT_OPTIONS;
             case "bloeiperiodes":
                 return PLANT_SELECTION_BLOEIPERIODE_OPTIONS;
+            case "keurmerken":
+                return PLANT_SELECTION_KEURMERK_OPTIONS;
         }
     };
 

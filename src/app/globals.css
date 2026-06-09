@@ -103,3 +103,8 @@ body {
   z-index: 40 !important;
   position: relative !important;
 }
+
+/* Spinner animatie voor laad-indicator in PlantProposalGrid */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

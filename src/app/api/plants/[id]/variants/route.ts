@@ -19,18 +19,25 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { queryVariantsForPlant } from "@/lib/db/plantQueries";
-import type { PlantVariantRow } from "@/lib/db/plantTypes";
+import type { PlantVariantRow, BulkPriceTier } from "@/lib/db/plantTypes";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
 // Map PlantVariantRow to a clean API shape
 function variantToApiShape(row: PlantVariantRow) {
+    let bulkPrices: BulkPriceTier[] = [];
+    try {
+        bulkPrices = JSON.parse(row.bulk_prices ?? "[]");
+    } catch {
+        bulkPrices = [];
+    }
     return {
         id: row.id,
         plantId: row.plant_id,
         sizeLabel: row.size_label,
         price: row.price,
         availability: row.availability,
+        bulkPrices,
     };
 }
 

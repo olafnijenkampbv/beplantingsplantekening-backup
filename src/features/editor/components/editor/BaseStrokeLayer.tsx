@@ -199,52 +199,68 @@ export default React.memo(function BaseStrokeLayer({
             })}
 
             {/* Plantbed dashed outline bovenop — arc-bewust */}
-            {unselectedPlantbeds
-                .filter((pb) => dragOverPlantbedId !== pb.id)
-                .map((pb) => {
-                    const hasBulges = pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-                    if (hasBulges && pb.bulges) {
-                        const capturePts = pb.points;
-                        const captureBulges = pb.bulges;
-                        const strokeColor = getObjectRenderStyle(pb).stroke;
-                        return (
-                            <Shape
-                                key={`pb-dash-${pb.id}`}
-                                listening={false}
-                                perfectDrawEnabled={false}
-                                opacity={1}
-                                sceneFunc={(ctx) => {
-                                    if (!capturePts || capturePts.length < 6) return;
-                                    ctx.beginPath();
-                                    traceBulgedPath(ctx as any, capturePts, captureBulges, true);
-                                    ctx.closePath();
-                                    (ctx as any).strokeStyle = strokeColor;
-                                    (ctx as any).lineWidth = 2;
-                                    (ctx as any).setLineDash([6, 4]);
-                                    (ctx as any).stroke();
-                                    (ctx as any).setLineDash([]);
-                                }}
-                            />
-                        );
-                    }
-                    return getPlantbedOutlineSegments([pb]).map((seg, index) => (
-                        <Line
-                            key={`pb-dash-seg-${pb.id}-${index}`}
-                            points={seg}
-                            closed={false}
-                            fillEnabled={false}
-                            stroke={getObjectRenderStyle(pb).stroke}
-                            strokeWidth={2}
-                            dash={[6, 4]}
-                            dashEnabled
-                            lineCap="butt"
-                            lineJoin="miter"
-                            listening={false}
-                            perfectDrawEnabled={false}
-                            opacity={1}
-                        />
-                    ));
-                })}
+            {(() => {
+                const visiblePbs = unselectedPlantbeds.filter((pb) => dragOverPlantbedId !== pb.id);
+                const bulgedPbs = visiblePbs.filter((pb) => pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD));
+                const straightPbs = visiblePbs.filter((pb) => !pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD));
+
+                // Group straight plantbeds by stroke color so shared edges are drawn exactly once per group.
+                // Drawing each plantbed separately causes phase-misaligned overlapping dashes that look solid.
+                const byColor = new Map<string, PolyObject[]>();
+                for (const pb of straightPbs) {
+                    const color = getObjectRenderStyle(pb).stroke;
+                    if (!byColor.has(color)) byColor.set(color, []);
+                    byColor.get(color)!.push(pb);
+                }
+
+                return (
+                    <>
+                        {bulgedPbs.map((pb) => {
+                            const capturePts = pb.points;
+                            const captureBulges = pb.bulges!;
+                            const strokeColor = getObjectRenderStyle(pb).stroke;
+                            return (
+                                <Shape
+                                    key={`pb-dash-${pb.id}`}
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                    opacity={1}
+                                    sceneFunc={(ctx) => {
+                                        if (!capturePts || capturePts.length < 6) return;
+                                        ctx.beginPath();
+                                        traceBulgedPath(ctx as any, capturePts, captureBulges, true);
+                                        ctx.closePath();
+                                        (ctx as any).strokeStyle = strokeColor;
+                                        (ctx as any).lineWidth = 2;
+                                        (ctx as any).setLineDash([6, 4]);
+                                        (ctx as any).stroke();
+                                        (ctx as any).setLineDash([]);
+                                    }}
+                                />
+                            );
+                        })}
+                        {[...byColor.entries()].flatMap(([color, pbs], groupIndex) =>
+                            getPlantbedOutlineSegments(pbs).map((seg, index) => (
+                                <Line
+                                    key={`pb-dash-straight-${groupIndex}-${index}`}
+                                    points={seg}
+                                    closed={false}
+                                    fillEnabled={false}
+                                    stroke={color}
+                                    strokeWidth={2}
+                                    dash={[6, 4]}
+                                    dashEnabled
+                                    lineCap="butt"
+                                    lineJoin="miter"
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                    opacity={1}
+                                />
+                            ))
+                        )}
+                    </>
+                );
+            })()}
 
             {null}
         </Layer>

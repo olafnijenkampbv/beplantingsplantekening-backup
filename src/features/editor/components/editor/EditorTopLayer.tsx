@@ -2333,6 +2333,9 @@ function EditorTopLayerInner(props: any) {
                                                 const bx = ringPoints[bIdx];
                                                 const by = ringPoints[bIdx + 1];
 
+                                                // Boog-segmenten zijn geen rechte kanten en kunnen niet worden geresized
+                                                if (holeIndex === null && Math.abs(liveBulges[edgeIndex] ?? 0) > STRAIGHT_THRESHOLD) return null;
+
                                                 const orientation = getOrthogonalEdgeOrientation(ax, ay, bx, by);
                                                 if (!orientation) return null;
 
@@ -2726,6 +2729,9 @@ function EditorTopLayerInner(props: any) {
                                                         const bx = livePolygonPoints[bIdx];
                                                         const by = livePolygonPoints[bIdx + 1];
 
+                                                        // Boog-segmenten zijn geen rechte kanten
+                                                        if (Math.abs(liveBulges[edgeIndex] ?? 0) > STRAIGHT_THRESHOLD) return null;
+
                                                         const orientation = getOrthogonalEdgeOrientation(ax, ay, bx, by);
                                                         if (!orientation) return null;
 
@@ -2881,7 +2887,8 @@ function EditorTopLayerInner(props: any) {
                                             liveHoles,
                                             no,
                                             areaText,
-                                            obj.type === "treebed" ? [] : treebedLabelBlockers
+                                            obj.type === "treebed" ? [] : treebedLabelBlockers,
+                                            liveBulges
                                         )
                                         : plantbedNumberLayouts.get(obj.id);
 

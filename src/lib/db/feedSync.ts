@@ -63,6 +63,7 @@ type PlantGroup = {
     variants: ParsedFeedItem[];      // every size / partij for this plant
     minPrice: number;                // cheapest in-stock price (fallback: cheapest overall)
     inStock: boolean;                // true if at least one variant is in_stock
+    keurmerken: Set<string>;         // unique certifications found across all variants
 };
 
 // ---------------------------------------------------------------------------
@@ -195,11 +196,14 @@ function groupByTrefnaam(items: ParsedFeedItem[]): Map<string, PlantGroup> {
 
         if (!existing) {
             // First time we see this trefnaam — create the group
+            const keurmerken = new Set<string>();
+            if (item.keurmerken) keurmerken.add(item.keurmerken);
             groups.set(item.trefnaam, {
                 representative: item,
                 variants: [item],
                 minPrice: item.price > 0 ? item.price : Infinity,
                 inStock: item.availability === "in_stock",
+                keurmerken,
             });
         } else {
             // Add this variant to the existing group
@@ -213,6 +217,9 @@ function groupByTrefnaam(items: ParsedFeedItem[]): Map<string, PlantGroup> {
             if (!existing.representative.imageUrl && item.imageUrl) {
                 existing.representative = item;
             }
+
+            // Collect all unique keurmerken across variants
+            if (item.keurmerken) existing.keurmerken.add(item.keurmerken);
         }
     }
 
@@ -327,21 +334,21 @@ function writeToDatabase(
             standplaats, grondsoort, bloeiperiode, kleur_bloem, kleur_blad,
             volwassen_hoogte, max_height_cm, planthoeveelheid_per_m2,
             inheems, stikstofbehoefte, toelichting, image_url,
-            min_price, in_stock, updated_at
+            min_price, in_stock, keurmerken, updated_at
         ) VALUES (
             @id, @botanical_name, @dutch_name, @category, @app_group,
             @standplaats, @grondsoort, @bloeiperiode, @kleur_bloem, @kleur_blad,
             @volwassen_hoogte, @max_height_cm, @planthoeveelheid_per_m2,
             @inheems, @stikstofbehoefte, @toelichting, @image_url,
-            @min_price, @in_stock, @updated_at
+            @min_price, @in_stock, @keurmerken, @updated_at
         )
     `);
 
     const insertVariant = db.prepare(`
         INSERT OR REPLACE INTO plant_variants (
-            id, plant_id, size_label, price, availability, updated_at
+            id, plant_id, size_label, price, availability, bulk_prices, updated_at
         ) VALUES (
-            @id, @plant_id, @size_label, @price, @availability, @updated_at
+            @id, @plant_id, @size_label, @price, @availability, @bulk_prices, @updated_at
         )
     `);
 
@@ -421,6 +428,7 @@ function writeToDatabase(
                     image_url: rep.imageUrl,
                     min_price: group.minPrice,
                     in_stock: group.inStock ? 1 : 0,
+                    keurmerken: [...group.keurmerken].join(", "),
                     updated_at: nowIso,
                 });
                 plantsImported++;
@@ -432,6 +440,7 @@ function writeToDatabase(
                         size_label: variant.sizeLabel,
                         price: variant.price,
                         availability: variant.availability,
+                        bulk_prices: JSON.stringify(variant.bulkPrices),
                         updated_at: nowIso,
                     });
                     variantsImported++;

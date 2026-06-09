@@ -33,7 +33,13 @@ export type PlantRow = {
     image_url: string;
     min_price: number;
     in_stock: number;          // 0 | 1
+    keurmerken: string;        // comma-separated, e.g. "MPS-A" or ""
     updated_at: string;
+};
+
+export type BulkPriceTier = {
+    minQty: number;   // minimum aantal voor deze prijs
+    price: number;    // prijs excl. BTW
 };
 
 export type PlantVariantRow = {
@@ -42,6 +48,7 @@ export type PlantVariantRow = {
     size_label: string;
     price: number;
     availability: "in_stock" | "out_of_stock";
+    bulk_prices: string;   // JSON: BulkPriceTier[] — staffelprijzen
     updated_at: string;
 };
 
@@ -85,6 +92,7 @@ export type ApiPlant = {
     imageUrl: string;
     pricePerPiece: number;       // min_price — used in cost estimates
     inStock: boolean;
+    keurmerken: string[];        // e.g. ["MPS-A"] or []
 };
 
 // ---------------------------------------------------------------------------
@@ -105,9 +113,12 @@ export type PlantQueryParams = {
     categories?: string[];       // multi-value OR — matches the category column
     inheems?: boolean;
     inStockOnly?: boolean;
+    keurmerkFilter?: "alleen-met-keurmerk" | "alleen-zonder-keurmerk";
+    keurmerken?: string[];
     minHeightCm?: number;        // max_height_cm >= minHeightCm (0 = unknown excluded)
     maxHeightCm?: number;        // max_height_cm <= maxHeightCm (0 = unknown allowed)
     sort?: "a-z" | "z-a";        // alphabetical sort on botanical_name
+    initialLetter?: string;     // filter to botanical_name starting with this letter (A-Z)
     page?: number;               // 1-based
     limit?: number;              // items per page, default 48
 };

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { PlantImg } from "@/features/editor/components/PlantImg";
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import type { ApiGardenMaterial, ApiGardenMaterialVariant } from "@/lib/db/gardenMaterialTypes";
 import type { ViewMode } from "@/features/editor/lib/plantSelectionDummyData";
@@ -54,18 +55,10 @@ function GardenMaterialGridCard(props: {
                 className="relative overflow-hidden bg-[#F1F1EE]"
                 style={{ aspectRatio: "1 / 0.82" }}
             >
-                <img
-                    src={material.imageUrl || "/images/logo.png"}
+                <PlantImg
+                    src={material.imageUrl}
                     alt={material.name}
                     className="block h-full w-full"
-                    style={material.imageUrl ? {
-                        objectFit: "cover",
-                        objectPosition: "center",
-                    } : {
-                        objectFit: "contain",
-                        objectPosition: "center",
-                        padding: "20%",
-                    }}
                 />
                 <div className="absolute right-2 top-2">
                     <span
@@ -171,18 +164,10 @@ function GardenMaterialListCard(props: {
                 className="shrink-0 overflow-hidden rounded-[6px] bg-[#F1F1EE]"
                 style={{ width: 168, height: 168 }}
             >
-                <img
-                    src={material.imageUrl || "/images/logo.png"}
+                <PlantImg
+                    src={material.imageUrl}
                     alt={material.name}
                     className="block h-full w-full"
-                    style={material.imageUrl ? {
-                        objectFit: "cover",
-                        objectPosition: "center",
-                    } : {
-                        objectFit: "contain",
-                        objectPosition: "center",
-                        padding: "20%",
-                    }}
                 />
             </div>
 

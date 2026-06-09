@@ -72,9 +72,23 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         const minHeightCm = rawMinHeight ? (parseInt(rawMinHeight, 10) || undefined) : undefined;
         const maxHeightCm = rawMaxHeight ? (parseInt(rawMaxHeight, 10) || undefined) : undefined;
 
+        const keurmerken = searchParams.getAll("keurmerk");
+
+        const rawKeurmerkFilter = searchParams.get("keurmerkFilter");
+        const keurmerkFilter: "alleen-met-keurmerk" | "alleen-zonder-keurmerk" | undefined =
+            rawKeurmerkFilter === "alleen-met-keurmerk" || rawKeurmerkFilter === "alleen-zonder-keurmerk"
+                ? rawKeurmerkFilter
+                : undefined;
+
         const rawSort = searchParams.get("sort");
         const sort: "a-z" | "z-a" | undefined =
             rawSort === "a-z" || rawSort === "z-a" ? rawSort : undefined;
+
+        const rawInitialLetter = searchParams.get("initialLetter") ?? undefined;
+        const initialLetter =
+            rawInitialLetter && /^[A-Za-z]$/.test(rawInitialLetter)
+                ? rawInitialLetter.toUpperCase()
+                : undefined;
 
         const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10) || 1);
         const limit = Math.min(
@@ -92,9 +106,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             categories: categories.length > 0 ? categories : undefined,
             inheems,
             inStockOnly,
+            keurmerkFilter,
+            keurmerken: keurmerken.length > 0 ? keurmerken : undefined,
             minHeightCm,
             maxHeightCm,
             sort,
+            initialLetter,
             page,
             limit,
         };

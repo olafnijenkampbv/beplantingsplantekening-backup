@@ -1,0 +1,175 @@
+====================================================
+  PRIJSANALYSE - BEPLANTINGSPLAN APPLICATIE
+  Bevindingen voor teamoverleg
+====================================================
+
+HOEWERKT DE PRIJSKETEN?
+-----------------------
+De applicatie haalt zijn prijzen NIET rechtstreeks van de website.
+De keten werkt als volgt:
+
+  Website --> Shopping feed (XML) --> Database --> App
+
+De website exporteert elke 24 uur een "shopping feed": een groot XML-bestand
+met alle producten en hun prijzen. De app leest die feed in, slaat de prijzen
+op in de database, en toont ze vervolgens aan de gebruiker.
+
+De app past daarna zelf nog een berekening toe:
+hij deelt ALLE prijzen uit de feed door 1,09 (= BTW van 9% eraf halen),
+zodat de app altijd prijzen exclusief BTW toont.
+
+
+====================================================
+  WAT GAAT ER GOED?
+====================================================
+
+VOORBEELD 1 - Acer 'Keithsform' | 12-14 HO draadkluit
+------------------------------------------------------
+  Shopping feed:   € 185,30  (dit is de prijs inclusief 9% BTW)
+  App (÷ 1,09):    € 170,00  (BTW eraf = prijs exclusief BTW)
+  Website:         € 170,00
+
+  --> KLOPT. De app toont hetzelfde als de website. ✓
+
+VOORBEELD 2 - Achillea 'Credo' | GM P11
+-----------------------------------------
+  Shopping feed:   €   3,04  (inclusief 9% BTW)
+  App (÷ 1,09):    €   2,79  (BTW eraf)
+  Website:         €   2,79
+
+  --> KLOPT. De app toont hetzelfde als de website. ✓
+
+
+====================================================
+  WAT GAAT ER FOUT?
+====================================================
+
+VOORBEELD 3 - Rosa 'Alba Maxima' | A kwaliteit wortelgoed vanaf 2 tak
+----------------------------------------------------------------------
+  Shopping feed:   €   8,14
+  App (÷ 1,09):    €   7,47  <-- dit toont de app als basisprijs
+  Website:
+    - Hoofdprijs:             € 7,91
+    - Staffel  1 -  9 stuks:  € 8,14
+    - Staffel 10 - 29 stuks:  € 7,09
+    - Staffel 30+    stuks:   € 6,74
+
+  WAT VALT OP?
+  De staffelprijzen op de website (8,14 / 7,09 / 6,74) zijn exact
+  dezelfde getallen als in de shopping feed. Er is dus geen BTW
+  opgeteld in de feed voor dit product — de feed bevat hier al
+  de prijs exclusief BTW.
+
+  Maar de app deelt die prijs toch door 1,09, waardoor hij
+  € 7,47 toont in plaats van € 7,91 / € 8,14.
+
+  EXTRA OPMERKING OVER DE HOOFDPRIJS:
+  Op de website staat als hoofdprijs € 7,91, maar de staffel
+  voor 1-9 stuks is € 8,14. Dat is tegenstrijdig: als je
+  1 stuk bestelt val je in de "1-9 stuks" staffel en betaal
+  je € 8,14, niet € 7,91. Dit lijkt een losse prijsinstelling
+  in het webshopsysteem die niet meer klopt met de staffels.
+  Dit is een aandachtspunt voor op de website zelf.
+
+  --> KLOPT NIET. App toont € 7,47, website toont € 7,91. ✗
+
+
+VOORBEELD 4 - Rosa 'Aimée Vibert' | A kwaliteit wortelgoed vanaf 2 tak
+-----------------------------------------------------------------------
+  Shopping feed:   €   9,36
+  App (÷ 1,09):    €   8,59  <-- dit toont de app als basisprijs
+  Website:
+    - Hoofdprijs:             € 9,10
+    - Staffel  1 -  9 stuks:  € 9,36
+    - Staffel 10 - 29 stuks:  € 8,31
+    - Staffel 30+    stuks:   € 7,96
+
+  WAT VALT OP?
+  Zelfde patroon als bij de Rosa 'Alba Maxima' hierboven.
+  De staffelprijzen in de feed (9,36 / 8,31 / 7,96) staan
+  ook letterlijk zo op de website — geen BTW erbij.
+  De app deelt er toch door 1,09 en toont daardoor te weinig.
+
+  Ook hier: hoofdprijs op website (€ 9,10) is lager dan de
+  "1-9 stuks" staffelprijs (€ 9,36). Dat klopt niet logisch.
+
+  --> KLOPT NIET. App toont € 8,59, website toont € 9,10. ✗
+
+
+VOORBEELD 5 - Abies alba | 20-30 cm wortelgoed 2/2
+---------------------------------------------------
+  Shopping feed:   €   2,41  (voor 1-24 stuks)
+  App (÷ 1,09):    €   2,21  <-- dit toont de app
+  Website:
+    - Hoofdprijs:              € 2,45
+    - Staffel   1 -  24 stuks: € 2,41
+    - Staffel  25 -  99 stuks: € 2,15
+    - Staffel 100+     stuks:  € 1,98
+
+  WAT VALT OP?
+  De staffelprijzen in de feed (2,41 / 2,15 / 1,98) staan
+  ook letterlijk zo op de website — wederom geen BTW erbij
+  in de feed. De app deelt er toch door 1,09 → toont te weinig.
+
+  Hier staat de hoofdprijs (€ 2,45) wél logisch boven de
+  eerste staffelprijs (€ 2,41): je betaalt normaal € 2,45,
+  maar bij een staffelafname begint het al bij € 2,41.
+
+  --> KLOPT NIET. App toont € 2,21, website toont € 2,45. ✗
+
+
+====================================================
+  WAT IS DE VERMOEDELIJKE OORZAAK?
+====================================================
+
+De app past voor ALLE producten dezelfde rekenregel toe:
+"Prijs in feed ÷ 1,09 = prijs in app"
+
+Dit klopt voor pot- en containerplanten (zoals de Acer boom),
+want daarin zit 9% BTW verwerkt in de feedprijs.
+
+Maar voor WORTELGOED-producten (Rosa wortelgoed, Abies wortelgoed,
+en vermoedelijk alle andere producten met "wortelgoed" in de
+maatvoering) lijkt de website de prijzen al ZONDER BTW naar de
+feed te exporteren. De feedprijs is voor die producten dus
+al de netto/excl.BTW-prijs.
+
+Doordat de app dan nóg een keer door 1,09 deelt, zijn de
+getoonde prijzen ~8% te laag voor alle wortelgoed-producten.
+
+  Container/pot-planten:  feed = prijs inclusief BTW  --> ÷ 1,09 = JUIST
+  Wortelgoed-producten:   feed = prijs exclusief BTW  --> ÷ 1,09 = FOUT
+
+
+====================================================
+  WAT MOET BESPROKEN WORDEN MET HET TEAM?
+====================================================
+
+1. WEBSHOP/FEED INSTELLING
+   Kloppen de bovenstaande bevindingen? Worden wortelgoed-producten
+   inderdaad zonder BTW geëxporteerd naar de shopping feed,
+   en container/potplanten met BTW?
+
+2. HOOFDPRIJS VS. STAFFELPRIJS OP DE WEBSITE
+   Bij Rosa 'Alba Maxima' en Rosa 'Aimée Vibert' staat de hoofdprijs
+   op de website LAGER dan de staffelprijs voor 1-9 stuks.
+   Dat is tegenstrijdig. Klopt dit bewust, of is dit een fout
+   in de website-instellingen?
+
+3. NA HET OVERLEG
+   Als de bevindingen kloppen, kan de applicatie worden aangepast
+   zodat wortelgoed-producten niet meer door 1,09 worden gedeeld.
+   Daarna is een nieuwe database-sync nodig en zijn de prijzen
+   in de app correct.
+
+
+====================================================
+  SAMENVATTING IN ÉÉN ZIN
+====================================================
+
+De app denkt dat alle prijzen in de feed inclusief BTW zijn,
+maar voor wortelgoed-producten is dat niet zo — die staan al
+zonder BTW in de feed, waardoor de app er onterecht nóg een
+keer BTW van afhaalt en de prijs te laag weergeeft.
+
+====================================================

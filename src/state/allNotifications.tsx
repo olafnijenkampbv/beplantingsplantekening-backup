@@ -266,6 +266,18 @@ export const APP_NOTIFICATIONS = {
         placement: "bottom-center",
         message: "Meerdere planten gedupliceerd",
     }),
+
+    drawingDeleted: (drawingName: string): AppNotificationDefinition => ({
+        kind: "success",
+        placement: "bottom-center",
+        message: `Tekening "${drawingName}" verwijderd`,
+    }),
+
+    drawingDuplicated: (drawingName: string): AppNotificationDefinition => ({
+        kind: "success",
+        placement: "bottom-center",
+        message: `Tekening "${drawingName}" gedupliceerd.`,
+    }),
 } as const;
 
 export type AppNotificationKey = keyof typeof APP_NOTIFICATIONS;
@@ -487,7 +499,7 @@ export function AppNotificationsRenderer(props?: {
         <>
             {topLeftItems.length > 0 && (
                 <div
-                    className="fixed top-[72px] z-[140] pointer-events-none flex flex-col items-start gap-2"
+                    className="fixed top-[72px] z-[10050] pointer-events-none flex flex-col items-start gap-2"
                     style={{
                         left: resolvedTopLeftOffset,
                         maxWidth: TOP_LEFT_HINT_MAX_WIDTH,
@@ -618,7 +630,7 @@ export function AppNotificationsRenderer(props?: {
 
             {bottomCenterItems.length > 0 && (
                 <div
-                    className="fixed left-1/2 z-[140] -translate-x-1/2 pointer-events-none w-full flex justify-center"
+                    className="fixed left-1/2 z-[10050] -translate-x-1/2 pointer-events-none w-full flex justify-center"
                     style={{ bottom: "var(--app-bottom-center-offset, 24px)" }}
                 >
                     <div className="flex flex-col items-center gap-2 max-w-[800px]">

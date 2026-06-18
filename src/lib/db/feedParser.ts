@@ -76,9 +76,89 @@ export type ParsedFeedItem = {
     // ---- from <keurmerken> XML field ----
     keurmerken: string;                 // e.g. "MPS-A" | "" (single value per variant)
 
+    // ---- from <g:additional_image_link> tags ----
+    additionalImageUrls: string[];      // extra productfoto's (naast de hoofdfoto)
+
     // ---- from <g:bulk_price> blokken ----
     bulkPrices: BulkPriceTier[];        // staffelprijzen, gesorteerd op minQty
+
+    // ---- alleen voor tuinmaterialen: afgeleide subcategorie voor UI-filters ----
+    subcategory: string;                // "Potgrond" | "Daktuinen" | "Gazon" | "Meststoffen" | "Overig" | ""
 };
+
+// ---------------------------------------------------------------------------
+// Tuinmaterialen-detectie en subcategorisering
+//
+// De feed tagt tuinmaterialen meestal met plant_groepen "Tuinmaterialen",
+// maar een deel (potgrond, tuinaarde, daktuinsubstraat, meststoffen, gereedschap)
+// staat in de feed met plant_groepen "Dealers" of leeg. Zonder kenmerken.Nederlandse_naam
+// zouden die anders volledig overgeslagen worden.
+//
+// De feed heeft daarnaast een los <dealer_groepen> veld met merknamen
+// (Culvita, Innogreen, Potgronden, Dungking, Straightcurve, Daktuinen,
+// Meststoffen, Graszoden) die vrijwel uitsluitend bij niet-plant-producten
+// voorkomen — een veel betrouwbaarder signaal dan trefwoorden in de titel.
+// We gebruiken dit als primair signaal, met trefwoorden in de titel als
+// vangnet voor producten zonder dealer_groepen-tag.
+//
+// Let op: sommige van deze producten (bv. "Bordermest Dungking") hebben in
+// de feed per ongeluk een placeholder-plantomschrijving ("Nog geen
+// Nederlandse naam" met verzonnen kenmerken) — de dealer_groepen-match
+// overschrijft dat bewust, zodat ze als tuinmateriaal worden geïmporteerd
+// in plaats van als nepplant.
+// ---------------------------------------------------------------------------
+
+const DAKTUINEN_KEYWORDS = /daktuin|sedumdak|groendak|greenroof|sedum/i;
+const POTGROND_KEYWORDS = /potgrond|tuinaarde|substraat/i;
+const GAZON_KEYWORDS = /\bgazon|graszaad|gazonzaad|graszo(de|den)/i;
+const MESTSTOFFEN_KEYWORDS = /mest|strooiwagen/i;
+
+// dealer_groepen-waarden (lowercase) die vrijwel uitsluitend tuinmaterialen bevatten
+const MATERIAL_DEALER_GROUPS = new Set([
+    "culvita",
+    "innogreen",
+    "potgronden",
+    "dungking",
+    "straightcurve",
+    "daktuinen",
+    "meststoffen",
+    "graszoden",
+]);
+
+// Onmiskenbare 1-op-1 mapping van dealer_groepen naar subcategorie
+const DEALER_GROUP_SUBCATEGORY: Record<string, string> = {
+    potgronden: "Potgrond",
+    daktuinen: "Daktuinen",
+    graszoden: "Gazon",
+    meststoffen: "Meststoffen",
+};
+
+function hasMaterialDealerGroup(dealerGroepen: string): boolean {
+    return dealerGroepen
+        .split(",")
+        .some((g) => MATERIAL_DEALER_GROUPS.has(g.trim().toLowerCase()));
+}
+
+function isLikelyGardenMaterialTitle(title: string): boolean {
+    return (
+        DAKTUINEN_KEYWORDS.test(title) ||
+        POTGROND_KEYWORDS.test(title) ||
+        GAZON_KEYWORDS.test(title) ||
+        MESTSTOFFEN_KEYWORDS.test(title)
+    );
+}
+
+function detectGardenMaterialSubcategory(title: string, dealerGroepen: string): string {
+    for (const g of dealerGroepen.split(",")) {
+        const mapped = DEALER_GROUP_SUBCATEGORY[g.trim().toLowerCase()];
+        if (mapped) return mapped;
+    }
+    if (DAKTUINEN_KEYWORDS.test(title)) return "Daktuinen";
+    if (POTGROND_KEYWORDS.test(title)) return "Potgrond";
+    if (GAZON_KEYWORDS.test(title)) return "Gazon";
+    if (MESTSTOFFEN_KEYWORDS.test(title)) return "Meststoffen";
+    return "Overig";
+}
 
 // ---------------------------------------------------------------------------
 // XML parser instance
@@ -90,10 +170,11 @@ const XML_PARSER = new XMLParser({
     parseTagValue: false,       // keep all values as raw strings (we parse manually)
     trimValues: true,           // strip leading/trailing whitespace from values
     // Ensure <item> is always an array even when there is only 1 product.
-    // Ensure <g:bulk_price> is always an array so multiple staffeltiers per item werken.
+    // Ensure <g:bulk_price> and <g:additional_image_link> are always arrays.
     isArray: (_name: string, jpath: unknown) =>
         jpath === "rss.channel.item" ||
-        jpath === "rss.channel.item.g:bulk_price",
+        jpath === "rss.channel.item.g:bulk_price" ||
+        jpath === "rss.channel.item.g:additional_image_link",
 });
 
 // ---------------------------------------------------------------------------
@@ -110,17 +191,26 @@ function str(value: unknown): string {
 // Controle: €127,53 ÷ 1,09 = €117,00 ✓
 const BTW_DIVISOR = 1.09;
 
+// Per-trefnaam uitzondering: bij dit specifieke product staat de inkoopprijs in de
+// feed (vermoedelijk per ongeluk bij de bron) inclusief 21% BTW i.p.v. 9%, terwijl
+// vrijwel alle andere producten (incl. vergelijkbare DCM Vivimus-varianten) wel
+// gewoon 9% gebruiken. Geverifieerd tegen de live website-prijs: €12,44 ÷ 1,21 = €10,28.
+const PRICE_DIVISOR_OVERRIDE: Record<string, number> = {
+    VIVIUNIV: 1.21, // Dcm Vivimus universeel
+};
+
 // ---------------------------------------------------------------------------
-// Helper: parse "127.53 EUR" → 117.00 (excl. 9% BTW)
+// Helper: parse "127.53 EUR" → 117.00 (excl. BTW, met optionele per-product divisor)
 // ---------------------------------------------------------------------------
 
-function parsePrice(raw: string): number {
+function parsePrice(raw: string, trefnaam?: string): number {
     // Strip everything that is not a digit or decimal point
     const numeric = raw.replace(/[^\d.]/g, "");
     const value = parseFloat(numeric);
     if (!Number.isFinite(value) || value < 0) return 0;
+    const divisor = (trefnaam && PRICE_DIVISOR_OVERRIDE[trefnaam]) || BTW_DIVISOR;
     // Round to 2 decimals to avoid floating-point drift
-    return Math.round((value / BTW_DIVISOR) * 100) / 100;
+    return Math.round((value / divisor) * 100) / 100;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,14 +261,14 @@ function parsePlanthoeveelheid(raw: string | undefined): number {
 // Lege of ongeldige elementen worden overgeslagen.
 // ---------------------------------------------------------------------------
 
-function parseBulkPrices(raw: unknown): BulkPriceTier[] {
+function parseBulkPrices(raw: unknown, trefnaam?: string): BulkPriceTier[] {
     if (!Array.isArray(raw)) return [];
     const tiers: BulkPriceTier[] = [];
     for (const bp of raw) {
         if (typeof bp !== "object" || bp === null) continue;
         const bpObj = bp as Record<string, unknown>;
         const minQty = parseInt(str(bpObj["min_quantity"]), 10);
-        const price = parsePrice(str(bpObj["price"]));
+        const price = parsePrice(str(bpObj["price"]), trefnaam);
         if (Number.isFinite(minQty) && minQty > 0 && price > 0) {
             tiers.push({ minQty, price });
         }
@@ -212,16 +302,28 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
 
         // --- Categories ---
         const allCategories = str(item["plant_groepen"]);
+        const dealerGroepen = str(item["dealer_groepen"]);
+        const title = str(item["g:title"]);
 
-        // Tuinmaterialen worden herkend via plant_groepen (ook als secundaire categorie)
-        const isTuinmateriaal = allCategories.split(",").some(
+        // Tuinmaterialen worden meestal herkend via plant_groepen (ook als secundaire
+        // categorie). Een deel staat in de feed echter met plant_groepen "Dealers" of
+        // leeg — die herkennen we via het dealer_groepen-merkveld (betrouwbaarst) of,
+        // als vangnet, via trefwoorden in de titel.
+        const isTaggedAsTuinmateriaal = allCategories.split(",").some(
             (c) => c.trim().toLowerCase() === "tuinmaterialen"
         );
+        const isKnownMaterialBrand = hasMaterialDealerGroup(dealerGroepen);
 
         // --- Parse plant characteristics ---
         const kenmerken = parseKenmerken(str(item["kenmerken"]));
 
-        // Skip non-plant products that are not explicitly tuinmaterialen
+        const isTuinmateriaal =
+            isTaggedAsTuinmateriaal ||
+            isKnownMaterialBrand ||
+            (!kenmerken.Nederlandse_naam && isLikelyGardenMaterialTitle(title));
+
+        // Skip non-plant products that are not (explicitly, via dealer_groepen of via
+        // trefwoord) tuinmateriaal
         if (!kenmerken.Nederlandse_naam && !isTuinmateriaal) continue;
 
         // --- Availability ---
@@ -230,15 +332,12 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
                 ? "in_stock"
                 : "out_of_stock";
 
-        // Tuinmaterialen gebruiken g:title als naam (geen Nederlandse_naam in kenmerken)
-        const title = str(item["g:title"]);
-
         results.push({
             // Variant level
             productId,
             trefnaam,
             sizeLabel: str(item["maatomschrijving"]),
-            price: parsePrice(str(item["g:price"])),
+            price: parsePrice(str(item["g:price"]), trefnaam),
             availability,
 
             // Plant level
@@ -265,8 +364,16 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
             // From <keurmerken> XML field
             keurmerken: str(item["keurmerken"]),
 
+            // Extra productfoto's uit <g:additional_image_link> tags
+            additionalImageUrls: Array.isArray(item["g:additional_image_link"])
+                ? (item["g:additional_image_link"] as unknown[]).map((v) => str(v)).filter(Boolean)
+                : [],
+
             // Staffelprijzen uit <g:bulk_price> blokken
-            bulkPrices: parseBulkPrices(item["g:bulk_price"]),
+            bulkPrices: parseBulkPrices(item["g:bulk_price"], trefnaam),
+
+            // Subcategorie voor UI-filters (alleen relevant voor tuinmaterialen)
+            subcategory: isTuinmateriaal ? detectGardenMaterialSubcategory(title, dealerGroepen) : "",
         });
     }
 

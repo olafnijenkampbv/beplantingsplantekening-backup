@@ -2,6 +2,7 @@
 
 import React, { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { useScrollLock } from "@/hooks/useScrollLock";
 import {
     RIGHT_STEP_STEP1_FOLLOW_UP_BY_LOCATION,
     RIGHT_STEP_STEP1_LOCATION_OPTIONS,
@@ -322,6 +323,7 @@ export default function RightStepMenuSummaryOverlay(
     } = props;
 
     const [expandedSectionIds, setExpandedSectionIds] = useState<Array<1 | 2 | 3 | 4>>([]);
+    useScrollLock();
 
     const sections = useMemo<SummarySection[]>(() => {
         const selectedLocationLabel = mapValueToLabel(

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect, useImperativeHandle } from "react";
+import React, { useMemo, useRef, useLayoutEffect, useImperativeHandle } from "react";
 import { Shape } from "react-konva";
 import { traceBulgedPath } from "@/features/editor/lib/bulgeMath";
 import {
@@ -95,17 +95,20 @@ export const PolygonWithHoles = React.forwardRef<
     const bulgesRef = useRef<number[] | undefined>(bulges);
     const cornersRef = useRef<number[] | undefined>(corners);
 
-    useEffect(() => { pointsRef.current = points; }, [points]);
-    useEffect(() => { holesRef.current = holes; }, [holes]);
-    useEffect(() => { bulgesRef.current = bulges; }, [bulges]);
-    useEffect(() => { cornersRef.current = corners; }, [corners]);
+    useLayoutEffect(() => {
+        pointsRef.current = points;
+        holesRef.current = holes;
+        bulgesRef.current = bulges;
+        cornersRef.current = corners;
+        shapeRef.current?.getLayer()?.batchDraw();
+    }, [points, holes, bulges, corners]);
 
     useImperativeHandle(ref, () => ({
         setPointsAndHoles(newPoints: number[], newHoles: number[][], newBulges?: number[], newCorners?: number[]) {
             pointsRef.current = newPoints;
             holesRef.current = newHoles;
             bulgesRef.current = newBulges;
-            if (newCorners !== undefined) cornersRef.current = newCorners;
+            cornersRef.current = newCorners;
             shapeRef.current?.getLayer()?.batchDraw();
         },
     }));

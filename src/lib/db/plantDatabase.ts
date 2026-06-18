@@ -87,6 +87,7 @@ function initialiseSchema(db: Database.Database): void {
             stikstofbehoefte        TEXT    NOT NULL DEFAULT '',
             toelichting             TEXT    NOT NULL DEFAULT '',
             image_url               TEXT    NOT NULL DEFAULT '',
+            additional_image_urls   TEXT    NOT NULL DEFAULT '[]', -- JSON: extra productfoto's
             min_price               REAL    NOT NULL DEFAULT 0,   -- cheapest in-stock variant
             in_stock                INTEGER NOT NULL DEFAULT 0,   -- 1 if any variant is in_stock
             keurmerken              TEXT    NOT NULL DEFAULT '',   -- comma-separated certifications, e.g. "MPS-A"
@@ -131,12 +132,13 @@ function initialiseSchema(db: Database.Database): void {
         -- Completely separate from plants — materials have no botanical data.
         -- ----------------------------------------------------------------
         CREATE TABLE IF NOT EXISTS garden_materials (
-            id         TEXT PRIMARY KEY,               -- trefnaam (SKU base)
-            name       TEXT NOT NULL,                  -- g:title from the feed
-            image_url  TEXT NOT NULL DEFAULT '',
-            min_price  REAL NOT NULL DEFAULT 0,
-            in_stock   INTEGER NOT NULL DEFAULT 0,     -- 1 if any variant is in_stock
-            updated_at TEXT NOT NULL
+            id          TEXT PRIMARY KEY,               -- trefnaam (SKU base)
+            name        TEXT NOT NULL,                  -- g:title from the feed
+            image_url   TEXT NOT NULL DEFAULT '',
+            min_price   REAL NOT NULL DEFAULT 0,
+            in_stock    INTEGER NOT NULL DEFAULT 0,     -- 1 if any variant is in_stock
+            subcategory TEXT NOT NULL DEFAULT 'Overig', -- Potgrond | Daktuinen | Gazon | Meststoffen | Overig
+            updated_at  TEXT NOT NULL
         );
 
         -- ----------------------------------------------------------------
@@ -176,10 +178,21 @@ function initialiseSchema(db: Database.Database): void {
         db.exec("ALTER TABLE plants ADD COLUMN keurmerken TEXT NOT NULL DEFAULT ''");
     }
 
+    // Migratie: additional_image_urls kolom voor extra productfoto's
+    if (!columns.some((c) => c.name === "additional_image_urls")) {
+        db.exec("ALTER TABLE plants ADD COLUMN additional_image_urls TEXT NOT NULL DEFAULT '[]'");
+    }
+
     // Migratie: bulk_prices kolom voor staffelprijzen per variant
     const variantColumns = db.prepare("PRAGMA table_info(plant_variants)").all() as { name: string }[];
     if (!variantColumns.some((c) => c.name === "bulk_prices")) {
         db.exec("ALTER TABLE plant_variants ADD COLUMN bulk_prices TEXT NOT NULL DEFAULT '[]'");
+    }
+
+    // Migratie: subcategory kolom voor tuinmaterialen-filtertabs
+    const gardenMaterialColumns = db.prepare("PRAGMA table_info(garden_materials)").all() as { name: string }[];
+    if (!gardenMaterialColumns.some((c) => c.name === "subcategory")) {
+        db.exec("ALTER TABLE garden_materials ADD COLUMN subcategory TEXT NOT NULL DEFAULT 'Overig'");
     }
 }
 

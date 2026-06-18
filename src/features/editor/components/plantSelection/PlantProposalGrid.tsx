@@ -17,6 +17,7 @@ import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 import { usePlantVariantStore, type ApiPlantVariant } from "@/features/editor/state/plantVariantStore";
 import { scorePlant, getLabelForScore, type ScoringInput, type SuitabilityLabel } from "@/features/editor/lib/plantScoring";
 import { usePlantCatalogStore } from "@/features/editor/state/plantCatalogStore";
+import ProductVariantSelectionModal from "@/features/editor/components/plantSelection/ProductVariantSelectionModal";
 
 const COLORS = {
     cardBg: "#FFFFFF",
@@ -385,6 +386,11 @@ function formatVariantPrice(price: number): string {
     return `€${price.toFixed(2).replace(".", ",")} p/st`;
 }
 
+function formatFromPrice(price: number): string {
+    if (!price || price <= 0) return "";
+    return `Vanaf €${price.toFixed(2).replace(".", ",")} p/st`;
+}
+
 const SEARCH_ICON_FILTER =
     "brightness(0) saturate(100%) invert(66%) sepia(1%) saturate(0%) hue-rotate(179deg) brightness(91%) contrast(86%)";
 
@@ -507,7 +513,7 @@ function SearchModeGridCard(props: {
     variantPrice: number;
     variantInStock: boolean;
     bulkPrices: BulkPriceTier[];
-    onAddToPlantList: (plant: ApiPlant, size: string) => void;
+    onAddToPlantList: (plant: ApiPlant, size: string, fixedSize?: boolean, bulkPrices?: BulkPriceTier[]) => void;
 }) {
     const { plant, sizeLabel, variantPrice, variantInStock, bulkPrices, onAddToPlantList } = props;
     const notify = useAppNotify();
@@ -523,7 +529,7 @@ function SearchModeGridCard(props: {
     const stockLabel = variantInStock ? "Op voorraad" : "Binnen een week leverbaar";
 
     const handleAddToPlantList = () => {
-        onAddToPlantList(plant, sizeLabel);
+        onAddToPlantList({ ...plant, pricePerPiece: variantPrice }, sizeLabel, true, bulkPrices);
         notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.botanicalName));
         setIsAdded(true);
 
@@ -647,7 +653,7 @@ function SearchModeListCard(props: {
     variantPrice: number;
     variantInStock: boolean;
     bulkPrices: BulkPriceTier[];
-    onAddToPlantList: (plant: ApiPlant, size: string) => void;
+    onAddToPlantList: (plant: ApiPlant, size: string, fixedSize?: boolean, bulkPrices?: BulkPriceTier[]) => void;
 }) {
     const { plant, sizeLabel, variantPrice, variantInStock, bulkPrices, onAddToPlantList } = props;
     const notify = useAppNotify();
@@ -663,7 +669,7 @@ function SearchModeListCard(props: {
     const stockLabel = variantInStock ? "Op voorraad" : "Binnen een week leverbaar";
 
     const handleAddToPlantList = () => {
-        onAddToPlantList(plant, sizeLabel);
+        onAddToPlantList({ ...plant, pricePerPiece: variantPrice }, sizeLabel, true, bulkPrices);
         notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.botanicalName));
         setIsAdded(true);
 
@@ -791,91 +797,273 @@ function DefaultPlantCard(props: {
     plant: ApiPlant;
     viewMode: ViewMode;
     suitabilityLabel: SuitabilityLabel | null;
-    onAddToPlantList: (plant: ApiPlant) => void;
+    onAddToPlantList: (plant: ApiPlant, size?: string, fixedSize?: boolean, bulkPrices?: BulkPriceTier[]) => void;
 }) {
     const { plant, viewMode, suitabilityLabel, onAddToPlantList } = props;
     const notify = useAppNotify();
     const [isAdded, setIsAdded] = useState(false);
     const [isCartHovered, setIsCartHovered] = useState(false);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+
+    // Haal varianten op voor deze plant (pre-fetch zodra de kaart verschijnt)
+    const variantState = usePlantVariantStore((s) => s.cache[plant.id]);
+    const fetchVariants = usePlantVariantStore((s) => s.fetchVariants);
+
+    useEffect(() => {
+        fetchVariants(plant.id);
+    }, [plant.id, fetchVariants]);
+
+    const variantsLoaded = variantState?.status === "success";
+    const variants = variantsLoaded ? variantState.variants : [];
+    const isVariantsLoading = variantState?.status === "loading" || variantState?.status === "idle" || !variantState;
+    const isSingleVariant = variantsLoaded && variants.length === 1;
+    const isMultiVariant  = variantsLoaded && variants.length > 1;
+    const hasNoVariants   = variantsLoaded && variants.length === 0;
+    const minPrice = isMultiVariant
+        ? Math.min(...variants.map((v) => v.price))
+        : variants[0]?.price ?? plant.pricePerPiece;
+
     const stockLabel = plant.inStock ? "Op voorraad" : "Binnen een week leverbaar";
 
-    const handleAddToPlantList = () => {
-        onAddToPlantList(plant);
+    // Direct toevoegen — alleen voor single-variant plants
+    const handleDirectAdd = () => {
+        if (!isSingleVariant && !hasNoVariants) return;
+        const variant = variants[0] ?? null;
+        const updatedPlant = variant ? { ...plant, pricePerPiece: variant.price } : plant;
+        const sizeLabel    = variant?.sizeLabel ?? "";
+        onAddToPlantList(updatedPlant, sizeLabel || undefined, !!sizeLabel, variant?.bulkPrices ?? []);
         notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.botanicalName));
         setIsAdded(true);
-
-        window.setTimeout(() => {
-            setIsAdded(false);
-        }, 3200);
+        window.setTimeout(() => setIsAdded(false), 3200);
     };
 
+    // Toevoegen vanuit de modal — voor multi-variant plants
+    // selectedImageUrl = de foto die de gebruiker in de carousel heeft gekozen
+    const handleModalAdd = (sizeLabel: string, price: number, selectedImageUrl: string, bulkPrices: BulkPriceTier[]) => {
+        const updatedPlant = { ...plant, pricePerPiece: price, imageUrl: selectedImageUrl };
+        onAddToPlantList(updatedPlant, sizeLabel, false, bulkPrices); // fixedSize=false: dropdown blijft beschikbaar
+        notify(APP_NOTIFICATIONS.plantAddedToPlantList(plant.botanicalName));
+        setIsAdded(true);
+        window.setTimeout(() => setIsAdded(false), 3200);
+        // Modal sluit zichzelf na zijn eigen feedback-animatie
+    };
+
+    const handleCartClick = () => {
+        if (isSingleVariant || hasNoVariants) {
+            handleDirectAdd();
+        } else {
+            // Multi-variant OF nog laden: open de modal
+            setIsModalOpen(true);
+        }
+    };
+
+    // ── Maatvoering-blok (boven keurmerken) ─────────────────────────────────
+    const renderSizeInfo = () => {
+        if (isMultiVariant) {
+            return (
+                <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setIsModalOpen(true); }}
+                    className="cursor-pointer text-[14px] underline underline-offset-2"
+                    style={{ color: COLORS.text, background: "none", border: "none", padding: 0 }}
+                >
+                    Bekijk de {variants.length} maten
+                </button>
+            );
+        }
+        if (isSingleVariant && variants[0].sizeLabel) {
+            return (
+                <div className="text-[13px]" style={{ color: COLORS.text }}>
+                    {variants[0].sizeLabel}
+                </div>
+            );
+        }
+        return null;
+    };
+
+    // ── Prijs-blok (onder keurmerken) ────────────────────────────────────────
+    const renderPrice = () => {
+        if (isMultiVariant) {
+            return (
+                <div className="text-[13px]" style={{ color: "#FF0000" }}>
+                    {formatFromPrice(minPrice)}
+                </div>
+            );
+        }
+        if (isSingleVariant) {
+            return (
+                <div className="text-[13px]" style={{ color: "#FF0000" }}>
+                    {formatVariantPrice(variants[0].price)}
+                </div>
+            );
+        }
+        // Laden / geen varianten: voorraadstatus als fallback
+        return (
+            <div className="text-[12px]" style={{ color: COLORS.orange }}>
+                {stockLabel}
+            </div>
+        );
+    };
+
+    // ── LISTWEERGAVE ─────────────────────────────────────────────────────────
     if (viewMode === "list") {
         return (
+            <>
+                <div
+                    className="flex items-stretch gap-4 rounded-[8px] border p-3"
+                    style={{
+                        backgroundColor: "#FFFFFF",
+                        borderColor: COLORS.border,
+                        boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+                        minHeight: 166,
+                    }}
+                >
+                    <div
+                        className="relative shrink-0 overflow-hidden rounded-[6px] bg-[#F1F1EE]"
+                        style={{ width: 140, height: 140 }}
+                    >
+                        <PlantImg
+                            src={plant.imageUrl}
+                            alt={plant.botanicalName}
+                            className="block h-full w-full"
+                        />
+                    </div>
+
+                    <div className="flex min-w-0 flex-1 items-stretch justify-between gap-4">
+                        <div className="flex min-w-0 flex-1 flex-col">
+                            <div
+                                className="text-[16px] font-semibold leading-[1.35]"
+                                style={{ color: COLORS.text }}
+                            >
+                                {plant.botanicalName}
+                            </div>
+                            <div className="mt-1 text-[13px]" style={{ color: COLORS.muted }}>
+                                {plant.dutchName}
+                            </div>
+                            {renderSizeInfo() && (
+                                <div className="mt-2">{renderSizeInfo()}</div>
+                            )}
+                            <div className="mt-auto flex flex-col gap-1 pt-2">
+                                <KeurmerkLogos images={getKeurmerkImages(plant.keurmerken)} />
+                                {renderPrice()}
+                            </div>
+                        </div>
+
+                        <div className="flex shrink-0 flex-col items-end justify-center gap-3">
+                            {suitabilityLabel ? (
+                                <SuitabilityBadge label={suitabilityLabel} />
+                            ) : null}
+                            <button
+                                type="button"
+                                className="flex cursor-pointer items-center gap-2 rounded-[6px] px-4"
+                                style={{
+                                    height: 44,
+                                    backgroundColor: isAdded ? "#008000" : isCartHovered ? "#BF3D12" : COLORS.orange,
+                                    color: "#FFFFFF",
+                                    transition: "background-color 220ms ease, transform 220ms ease",
+                                    transform: isAdded ? "scale(1.03)" : "scale(1)",
+                                }}
+                                onClick={handleCartClick}
+                                onMouseEnter={() => setIsCartHovered(true)}
+                                onMouseLeave={() => setIsCartHovered(false)}
+                            >
+                                <img
+                                    src={isAdded ? "/icons/check.svg" : "/icons/add-to-cart.svg"}
+                                    alt=""
+                                    style={{
+                                        width: isAdded ? 22 : 18,
+                                        height: isAdded ? 22 : 18,
+                                        display: "block",
+                                        filter: "brightness(0) invert(1)",
+                                    }}
+                                />
+                                <span className="whitespace-nowrap text-[13px] font-semibold text-white">
+                                    {isAdded ? "Toegevoegd" : "Toevoegen aan plantenlijst"}
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {isModalOpen && (
+                    <ProductVariantSelectionModal
+                        name={plant.botanicalName}
+                        dutchName={plant.dutchName}
+                        imageUrl={plant.imageUrl}
+                        additionalImageUrls={plant.additionalImageUrls}
+                        keurmerken={plant.keurmerken}
+                        variants={variants}
+                        isLoading={isVariantsLoading}
+                        onAdd={handleModalAdd}
+                        onClose={() => setIsModalOpen(false)}
+                    />
+                )}
+            </>
+        );
+    }
+
+    // ── GRIDWEERGAVE ─────────────────────────────────────────────────────────
+    return (
+        <>
             <div
-                className="flex items-stretch gap-4 rounded-[8px] border p-3"
+                className="overflow-hidden rounded-[8px] border"
                 style={{
                     backgroundColor: "#FFFFFF",
                     borderColor: COLORS.border,
                     boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
-                    minHeight: 166,
                 }}
             >
                 <div
-                    className="relative shrink-0 overflow-hidden rounded-[6px] bg-[#F1F1EE]"
-                    style={{
-                        width: 140,
-                        height: 140,
-                    }}
+                    className="relative overflow-hidden bg-[#F1F1EE]"
+                    style={{ aspectRatio: "1 / 0.82" }}
                 >
                     <PlantImg
                         src={plant.imageUrl}
                         alt={plant.botanicalName}
                         className="block h-full w-full"
                     />
+                    {suitabilityLabel ? (
+                        <div className="absolute right-2 top-2">
+                            <SuitabilityBadge label={suitabilityLabel} />
+                        </div>
+                    ) : null}
                 </div>
 
-                <div className="flex min-w-0 flex-1 items-stretch justify-between gap-4">
-                    <div className="flex min-w-0 flex-1 flex-col">
-                        <div
-                            className="text-[16px] font-semibold leading-[1.35]"
-                            style={{ color: COLORS.text }}
-                        >
-                            {plant.botanicalName}
-                        </div>
-
-                        <div
-                            className="mt-1 text-[13px]"
-                            style={{ color: COLORS.muted }}
-                        >
-                            {plant.dutchName}
-                        </div>
-
-                        <div className="mt-auto flex flex-col gap-1">
-                            <KeurmerkLogos images={getKeurmerkImages(plant.keurmerken)} />
-                            <div
-                                className="text-[12px]"
-                                style={{ color: COLORS.orange }}
-                            >
-                                {stockLabel}
-                            </div>
-                        </div>
+                <div className="p-3">
+                    <div
+                        className="text-[15px] font-semibold leading-[1.2]"
+                        style={{ color: COLORS.text }}
+                    >
+                        {plant.botanicalName}
+                    </div>
+                    <div className="mt-[2px] text-[13px]" style={{ color: COLORS.muted }}>
+                        {plant.dutchName}
                     </div>
 
-                    <div className="flex shrink-0 flex-col items-end justify-center gap-3">
-                        {suitabilityLabel ? (
-                            <SuitabilityBadge label={suitabilityLabel} />
-                        ) : null}
+                    {renderSizeInfo() && (
+                        <div className="mt-2">{renderSizeInfo()}</div>
+                    )}
+
+                    <div className="mt-2">
+                        <KeurmerkLogos images={getKeurmerkImages(plant.keurmerken)} />
+                    </div>
+
+                    <div className="mt-2 flex items-end justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                            {renderPrice()}
+                        </div>
+
                         <button
                             type="button"
-                            className="flex cursor-pointer items-center gap-2 rounded-[6px] px-4"
+                            className="flex shrink-0 cursor-pointer items-center justify-center rounded-[6px]"
                             style={{
-                                height: 44,
+                                width: 40,
+                                height: 40,
                                 backgroundColor: isAdded ? "#008000" : isCartHovered ? "#BF3D12" : COLORS.orange,
-                                color: "#FFFFFF",
                                 transition: "background-color 220ms ease, transform 220ms ease",
-                                transform: isAdded ? "scale(1.03)" : "scale(1)",
+                                transform: isAdded ? "scale(1.06)" : "scale(1)",
                             }}
-                            onClick={handleAddToPlantList}
+                            onClick={handleCartClick}
                             onMouseEnter={() => setIsCartHovered(true)}
                             onMouseLeave={() => setIsCartHovered(false)}
                         >
@@ -883,98 +1071,31 @@ function DefaultPlantCard(props: {
                                 src={isAdded ? "/icons/check.svg" : "/icons/add-to-cart.svg"}
                                 alt=""
                                 style={{
-                                    width: isAdded ? 22 : 18,
-                                    height: isAdded ? 22 : 18,
+                                    width: isAdded ? 20 : 16,
+                                    height: isAdded ? 20 : 16,
                                     display: "block",
                                     filter: "brightness(0) invert(1)",
                                 }}
                             />
-                            <span className="whitespace-nowrap text-[13px] font-semibold text-white">
-                                {isAdded ? "Toegevoegd" : "Toevoegen aan plantenlijst"}
-                            </span>
                         </button>
                     </div>
                 </div>
             </div>
-        );
-    }
 
-    return (
-        <div
-            className="overflow-hidden rounded-[8px] border"
-            style={{
-                backgroundColor: "#FFFFFF",
-                borderColor: COLORS.border,
-                boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
-            }}
-        >
-            <div
-                className="relative overflow-hidden bg-[#F1F1EE]"
-                style={{
-                    aspectRatio: "1 / 0.82",
-                }}
-            >
-                <PlantImg
-                    src={plant.imageUrl}
-                    alt={plant.botanicalName}
-                    className="block h-full w-full"
+            {isModalOpen && (
+                <ProductVariantSelectionModal
+                    name={plant.botanicalName}
+                    dutchName={plant.dutchName}
+                    imageUrl={plant.imageUrl}
+                    additionalImageUrls={plant.additionalImageUrls}
+                    keurmerken={plant.keurmerken}
+                    variants={variants}
+                    isLoading={isVariantsLoading}
+                    onAdd={handleModalAdd}
+                    onClose={() => setIsModalOpen(false)}
                 />
-                {suitabilityLabel ? (
-                    <div className="absolute right-2 top-2">
-                        <SuitabilityBadge label={suitabilityLabel} />
-                    </div>
-                ) : null}
-            </div>
-
-            <div className="p-3">
-                <div
-                    className="text-[15px] font-semibold leading-[1.2]"
-                    style={{ color: COLORS.text }}
-                >
-                    {plant.botanicalName}
-                </div>
-
-                <div className="mt-[2px] text-[13px]" style={{ color: COLORS.muted }}>
-                    {plant.dutchName}
-                </div>
-
-                <div className="mt-2">
-                    <KeurmerkLogos images={getKeurmerkImages(plant.keurmerken)} />
-                </div>
-
-                <div className="mt-2 flex items-center justify-between">
-                    <div className="text-[12px]" style={{ color: COLORS.orange }}>
-                        {stockLabel}
-                    </div>
-
-                    <button
-                        type="button"
-                        className="flex shrink-0 cursor-pointer items-center justify-center rounded-[6px]"
-                        style={{
-                            width: 40,
-                            height: 40,
-                            backgroundColor: isAdded ? "#008000" : isCartHovered ? "#BF3D12" : COLORS.orange,
-                            transition: "background-color 220ms ease, transform 220ms ease",
-                            transform: isAdded ? "scale(1.06)" : "scale(1)",
-                        }}
-                        onClick={handleAddToPlantList}
-                        onMouseEnter={() => setIsCartHovered(true)}
-                        onMouseLeave={() => setIsCartHovered(false)}
-                    >
-                        <img
-                            src={isAdded ? "/icons/check.svg" : "/icons/add-to-cart.svg"}
-                            alt=""
-                            style={{
-                                width: isAdded ? 20 : 16,
-                                height: isAdded ? 20 : 16,
-                                display: "block",
-                                filter: "brightness(0) invert(1)",
-                            }}
-                        />
-                    </button>
-                </div>
-            </div>
-        </div>
+            )}
+        </>
     );
 }
 
@@ -992,7 +1113,7 @@ type PlantProposalGridProps = {
     scoringInput: ScoringInput;
     onChangeSort: (value: string) => void;
     onChangeViewMode: (mode: ViewMode) => void;
-    onAddToPlantList: (plant: ApiPlant, size?: string) => void;
+    onAddToPlantList: (plant: ApiPlant, size?: string, fixedSize?: boolean, bulkPrices?: BulkPriceTier[]) => void;
     onRemoveFilterChip: (
         key: PlantSelectionAdvancedArrayFilterKey | keyof PlantSelectionFiltersState,
         value?: string
@@ -1398,7 +1519,7 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
             }}
         >
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div>
+                <div className="min-w-0 flex-1">
                     <h2
                         className="text-[28px] font-semibold leading-[1.2]"
                         style={{ color: COLORS.text }}
@@ -1414,7 +1535,7 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
 
                     <p
                         className="mt-3 text-[14px]"
-                        style={{ color: COLORS.text, whiteSpace: isSearchMode ? "nowrap" : undefined }}
+                        style={{ color: COLORS.text }}
                     >
                         {isSearchMode
                             ? "Doorzoek onze volledige plantendatabase en voeg zelf planten of bomen toe aan je plantenlijst"
@@ -1422,7 +1543,7 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
                     </p>
                 </div>
 
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:flex-shrink-0">
                     <div className="flex items-center gap-3">
                         <label
                             htmlFor="plant-sort"
@@ -1709,7 +1830,7 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
                                         plant={plant}
                                         viewMode={viewMode}
                                         suitabilityLabel={scoringResults?.labels.get(plant.id) ?? null}
-                                        onAddToPlantList={onAddToPlantList}
+                                        onAddToPlantList={(p, size, fixedSize, bulkPrices) => onAddToPlantList(p, size, fixedSize, bulkPrices)}
                                     />
                                 ))
                             }

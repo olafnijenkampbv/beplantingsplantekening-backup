@@ -1,13 +1,24 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useScrollLock } from "@/hooks/useScrollLock";
 import { OBJECT_STYLES, type ObjectType } from "@/state/projectStore";
 import type { PolyObject } from "@/state/projectStore";
 import { isBoundaryObjectType, OBJECT_LIBRARY } from "@/features/editor/components/editor/objectMenuConfig";
 import { getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
+import {
+    getObjectBoundsRenderPoints,
+    makeSvgPathForObject,
+    makeSvgPathFromRings,
+} from "@/features/editor/lib/svgObjectPath";
+import ConfirmModal from "@/features/editor/components/ConfirmModal";
+import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 
 type DrawingPreviewObject = {
     id: string;
     type: ObjectType;
     points: number[];
+    holes?: number[][];
+    bulges?: number[];
+    corners?: number[];
     boundarySegments?: number[][];
     customStyle?: {
         fill?: string;
@@ -66,9 +77,11 @@ function bboxFromPreviewObjects(objects: DrawingPreviewObject[]) {
     let maxY = -Infinity;
 
     for (const obj of objects) {
-        for (let i = 0; i < obj.points.length; i += 2) {
-            const x = obj.points[i];
-            const y = obj.points[i + 1];
+        const boundsPoints = getObjectBoundsRenderPoints(obj as PolyObject);
+
+        for (let i = 0; i < boundsPoints.length; i += 2) {
+            const x = boundsPoints[i];
+            const y = boundsPoints[i + 1];
 
             if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
 
@@ -224,18 +237,6 @@ const DrawingCardPreview: React.FC<{ objects: DrawingPreviewObject[] }> = ({ obj
     const offsetX = (PREVIEW_WIDTH - contentWidth * scale) / 2;
     const offsetY = (previewHeight - contentHeight * scale) / 2;
 
-    const toSvgPoints = (points: number[]) => {
-        const transformed: string[] = [];
-
-        for (let i = 0; i < points.length; i += 2) {
-            const x = offsetX + (points[i] - bounds.minX) * scale;
-            const y = offsetY + (points[i + 1] - bounds.minY) * scale;
-            transformed.push(`${x},${y}`);
-        }
-
-        return transformed.join(" ");
-    };
-
     const toSvgX = (x: number) => offsetX + (x - bounds.minX) * scale;
     const toSvgY = (y: number) => offsetY + (y - bounds.minY) * scale;
 
@@ -263,25 +264,17 @@ const DrawingCardPreview: React.FC<{ objects: DrawingPreviewObject[] }> = ({ obj
             >
                 {objects.map((obj) => {
                     const previewStyle = getPreviewStyle(obj);
-                    const points = toSvgPoints(obj.points);
 
                     if (isLineOnlyType(obj.type)) {
                         // Render as filled band polygon using all boundary segments
                         const band = getBoundaryBandShapeForObject(obj as unknown as PolyObject);
                         if (!band || band.outer.length < 6) return null;
                         // Transform raw canvas coords → SVG preview coords
-                        const toPairs = (pts: number[]) => {
-                            const out: string[] = [];
-                            for (let i = 0; i + 1 < pts.length; i += 2) {
-                                out.push(`${toSvgX(pts[i])},${toSvgY(pts[i + 1])}`);
-                            }
-                            return out;
-                        };
-                        let d = `M ${toPairs(band.outer).join(" L ")} Z`;
-                        for (const hole of band.holes) {
-                            if (hole.length < 6) continue;
-                            d += ` M ${toPairs(hole).join(" L ")} Z`;
-                        }
+                        const d = makeSvgPathFromRings(
+                            band.outer,
+                            band.holes,
+                            (x, y) => [toSvgX(x), toSvgY(y)]
+                        );
                         return (
                             <path
                                 key={obj.id}
@@ -295,11 +288,16 @@ const DrawingCardPreview: React.FC<{ objects: DrawingPreviewObject[] }> = ({ obj
 
                     if (obj.type === "treebed") {
                         const trunks = getTreebedPreviewTrunks(obj);
+                        const d = makeSvgPathForObject(
+                            obj as PolyObject,
+                            (x, y) => [toSvgX(x), toSvgY(y)]
+                        );
 
                         return (
                             <g key={obj.id}>
-                                <polygon
-                                    points={points}
+                                <path
+                                    d={d}
+                                    fillRule="evenodd"
                                     fill={previewStyle.fill}
                                     fillOpacity={previewStyle.opacity ?? 1}
                                     stroke={previewStyle.stroke}
@@ -321,9 +319,13 @@ const DrawingCardPreview: React.FC<{ objects: DrawingPreviewObject[] }> = ({ obj
                     }
 
                     return (
-                        <polygon
+                        <path
                             key={obj.id}
-                            points={points}
+                            d={makeSvgPathForObject(
+                                obj as PolyObject,
+                                (x, y) => [toSvgX(x), toSvgY(y)]
+                            )}
+                            fillRule="evenodd"
                             fill={previewStyle.fill}
                             fillOpacity={previewStyle.opacity ?? 1}
                             stroke={previewStyle.stroke}
@@ -353,6 +355,9 @@ const DrawingsDashboardModal: React.FC<Props> = ({
     const [searchValue, setSearchValue] = useState("");
     const [currentPage, setCurrentPage] = useState(1);
     const [hoveredDrawingId, setHoveredDrawingId] = useState<string | null>(null);
+    const [deleteCandidate, setDeleteCandidate] = useState<DrawingDashboardItem | null>(null);
+    const notify = useAppNotify();
+    useScrollLock(isOpen);
     useEffect(() => {
         if (!isOpen) return;
 
@@ -395,6 +400,27 @@ const DrawingsDashboardModal: React.FC<Props> = ({
         const start = (safePage - 1) * ITEMS_PER_PAGE;
         return filteredDrawings.slice(start, start + ITEMS_PER_PAGE);
     }, [filteredDrawings, safePage]);
+
+    const handleDuplicateDrawing = (drawing: DrawingDashboardItem) => {
+        onDuplicateDrawing(drawing.id);
+        notify(APP_NOTIFICATIONS.drawingDuplicated(drawing.name));
+    };
+
+    const handleRequestDeleteDrawing = (drawing: DrawingDashboardItem) => {
+        setDeleteCandidate(drawing);
+    };
+
+    const handleCancelDeleteDrawing = () => {
+        setDeleteCandidate(null);
+    };
+
+    const handleConfirmDeleteDrawing = () => {
+        if (!deleteCandidate) return;
+        const deletedName = deleteCandidate.name;
+        onDeleteDrawing(deleteCandidate.id);
+        setDeleteCandidate(null);
+        notify(APP_NOTIFICATIONS.drawingDeleted(deletedName));
+    };
 
     if (!isOpen) return null;
 
@@ -660,7 +686,7 @@ const DrawingsDashboardModal: React.FC<Props> = ({
                                             type="button"
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                onDuplicateDrawing(drawing.id);
+                                                handleDuplicateDrawing(drawing);
                                             }}
                                             style={{
                                                 border: "none",
@@ -698,7 +724,7 @@ const DrawingsDashboardModal: React.FC<Props> = ({
                                             type="button"
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                onDeleteDrawing(drawing.id);
+                                                handleRequestDeleteDrawing(drawing);
                                             }}
                                             style={{
                                                 border: "none",
@@ -884,6 +910,19 @@ const DrawingsDashboardModal: React.FC<Props> = ({
                     </div>
                 </div>
             </div>
+            <ConfirmModal
+                open={deleteCandidate !== null}
+                title="Tekening verwijderen"
+                description={
+                    deleteCandidate
+                        ? `Weet je zeker dat je de tekening "${deleteCandidate.name}" wilt verwijderen? Deze actie kan niet ongedaan worden gemaakt.`
+                        : ""
+                }
+                cancelText="Nee, behouden"
+                confirmText="Ja, verwijder"
+                onCancel={handleCancelDeleteDrawing}
+                onConfirm={handleConfirmDeleteDrawing}
+            />
         </div>
     );
 };

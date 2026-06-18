@@ -54,6 +54,10 @@ function rowToApiPlant(row: PlantRow): ApiPlant {
         stikstofbehoefte: row.stikstofbehoefte,
         toelichting: row.toelichting,
         imageUrl: row.image_url,
+        additionalImageUrls: (() => {
+            try { return JSON.parse(row.additional_image_urls ?? "[]") as string[]; }
+            catch { return []; }
+        })(),
         pricePerPiece: row.min_price,
         inStock: row.in_stock === 1,
         keurmerken: splitValues(row.keurmerken),

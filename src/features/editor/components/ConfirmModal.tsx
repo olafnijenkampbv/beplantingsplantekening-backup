@@ -2,10 +2,14 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { useScrollLock } from "@/hooks/useScrollLock";
 
 type ConfirmModalItem = {
     id: string;
     nr?: number | string;
+    nrBg?: string;
+    nrColor?: string;
+    nrBorder?: string | null;
     title: string;
     subtitle?: string;
 };
@@ -54,6 +58,7 @@ export default function ConfirmModal(props: ConfirmModalProps) {
     } = props;
 
     const [expanded, setExpanded] = useState(false);
+    useScrollLock(open);
 
     useEffect(() => {
         if (!open) {
@@ -182,8 +187,12 @@ export default function ConfirmModal(props: ConfirmModalProps) {
                                                 }}
                                             >
                                                 <div
-                                                    className="h-7 w-7 flex items-center justify-center rounded-md text-white text-[12px] font-bold"
-                                                    style={{ background: COLORS.green }}
+                                                    className="h-7 w-7 flex items-center justify-center rounded-md text-[12px] font-bold"
+                                                    style={{
+                                                        background: it.nrBg ?? COLORS.green,
+                                                        color: it.nrColor ?? "#ffffff",
+                                                        border: it.nrBorder ? `1px solid ${it.nrBorder}` : "none",
+                                                    }}
                                                 >
                                                     {it.nr ?? ""}
                                                 </div>

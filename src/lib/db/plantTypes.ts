@@ -31,6 +31,7 @@ export type PlantRow = {
     stikstofbehoefte: string;
     toelichting: string;
     image_url: string;
+    additional_image_urls: string;  // JSON: string[] — extra productfoto's
     min_price: number;
     in_stock: number;          // 0 | 1
     keurmerken: string;        // comma-separated, e.g. "MPS-A" or ""
@@ -90,6 +91,7 @@ export type ApiPlant = {
     stikstofbehoefte: string;
     toelichting: string;
     imageUrl: string;
+    additionalImageUrls: string[];  // extra productfoto's naast de hoofdfoto
     pricePerPiece: number;       // min_price — used in cost estimates
     inStock: boolean;
     keurmerken: string[];        // e.g. ["MPS-A"] or []

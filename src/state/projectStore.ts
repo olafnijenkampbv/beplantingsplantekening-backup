@@ -9,7 +9,8 @@ import {
     getBoundaryBandShapeForObject,
     mergeConnectedBoundaryPolylines,
 } from "@/features/editor/lib/boundarySystem";
-import { densifyBulgedRing, STRAIGHT_THRESHOLD, arcCenterRadius, bulgeFromDraggedApex, normalizeCorners, cornerMaxRadius, remapCornersToRing } from "@/features/editor/lib/bulgeMath";
+import { densifyBulgedRing, STRAIGHT_THRESHOLD, arcCenterRadius, bulgeFromDraggedApex, normalizeCorners, cornerMaxRadius, remapCornersToRing, cornerFillet, normalizeBulges as normalizeBulgesFromMath } from "@/features/editor/lib/bulgeMath";
+import { extractArcCirclesFromSources, recoverArcsFromOutput } from "@/features/editor/lib/arcBooleanGeometry";
 
 function rectsIntersect(
     a: { x: number; y: number; w: number; h: number },
@@ -135,6 +136,43 @@ function getPolygonIntersectionArea(a: number[], b: number[]) {
     }
 
     return total / (CLIPPER_SCALE * CLIPPER_SCALE);
+}
+
+function getClipperPathsIntersectionArea(a: ClipperPaths, b: ClipperPaths) {
+    if (!a.length || !b.length) return 0;
+
+    const clipper = new ClipperLib.Clipper();
+    clipper.AddPaths(a, ClipperLib.PolyType.ptSubject, true);
+    clipper.AddPaths(b, ClipperLib.PolyType.ptClip, true);
+
+    const solution = new ClipperLib.Paths();
+    const ok = clipper.Execute(
+        ClipperLib.ClipType.ctIntersection,
+        solution,
+        ClipperLib.PolyFillType.pftNonZero,
+        ClipperLib.PolyFillType.pftNonZero
+    );
+
+    if (!ok) return 0;
+
+    let total = 0;
+    for (const path of solution) {
+        total += Math.abs(ClipperLib.Clipper.Area(path));
+    }
+
+    return total / (CLIPPER_SCALE * CLIPPER_SCALE);
+}
+
+function getPolyObjectIntersectionArea(a: PolyObject, b: PolyObject) {
+    return getClipperPathsIntersectionArea(
+        polyObjectToClipperPathsDensified(a),
+        polyObjectToClipperPathsDensified(b)
+    );
+}
+
+function polyObjectsActuallyOverlap(a: PolyObject, b: PolyObject, minArea = 1e-6) {
+    if (!rectsIntersect(bboxFromObject(a), bboxFromObject(b))) return false;
+    return getPolyObjectIntersectionArea(a, b) > minArea;
 }
 
 function polygonsActuallyTouchOrOverlap(a: number[], b: number[]) {
@@ -585,6 +623,23 @@ function clonePlantbedLinks(links: PlantbedLinksMap = {}) {
     ) as PlantbedLinksMap;
 }
 
+function clonePolyObjectForHistory(obj: PolyObject): PolyObject {
+    return {
+        ...obj,
+        points: [...obj.points],
+        holes: obj.holes?.map((hole) => [...hole]),
+        bulges: obj.bulges ? [...obj.bulges] : undefined,
+        corners: obj.corners ? [...obj.corners] : undefined,
+        boundarySegments: obj.boundarySegments?.map((segment) => [...segment]),
+        renderPieces: obj.renderPieces?.map((piece) => [...piece]),
+        customStyle: obj.customStyle ? { ...obj.customStyle } : undefined,
+    };
+}
+
+function clonePolyObjectsForHistory(objects: PolyObject[]): PolyObject[] {
+    return objects.map(clonePolyObjectForHistory);
+}
+
 // -----------------------------
 // ✅ Dummy plants (kan later vervangen worden door echte setPlants(...))
 // -----------------------------
@@ -739,17 +794,9 @@ function isPolylineObject(o: PolyObject) {
     return g === "polyline";
 }
 
-/**
- * ✅ BOGEN — zorg dat bulges-array exact `n` elementen heeft (n = aantal vertices).
- * Ontbrekende slots worden 0. Overtollige slots worden afgekapt.
- */
+/** Zorg dat bulges-array exact `n` elementen heeft (n = aantal vertices). */
 export function normalizeBulges(points: number[], bulges?: number[]): number[] {
-    const n = Math.floor(points.length / 2);
-    if (!bulges || bulges.length === 0) return new Array(n).fill(0);
-    if (bulges.length === n) return bulges;
-    const out = new Array(n).fill(0);
-    for (let i = 0; i < Math.min(n, bulges.length); i++) out[i] = bulges[i];
-    return out;
+    return normalizeBulgesFromMath(points, bulges);
 }
 
 function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | undefined, targetPoints: number[]): number[] | undefined {
@@ -765,6 +812,31 @@ function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | unde
 
     const samePoint = (ax: number, ay: number, bx: number, by: number) =>
         Math.abs(ax - bx) <= eps && Math.abs(ay - by) <= eps;
+
+    const translationDelta = getPureTranslationDelta(sourcePoints, targetPoints);
+    if (translationDelta) {
+        return [...srcBulges];
+    }
+
+    // Bij gewone vertex/edge edits blijft de segment-index de bron van waarheid:
+    // meestal veranderen maar 1 of 2 vertices en staan de overige vertices nog
+    // op dezelfde index. Geometrisch remappen kan een bestaande bulge anders op
+    // een verkeerd segment plakken wanneer andere edges bewegen.
+    const sameIndexVertexCount =
+        srcCount === dstCount
+            ? Array.from({ length: srcCount }).filter((_, idx) =>
+                samePoint(
+                    sourcePoints[idx * 2],
+                    sourcePoints[idx * 2 + 1],
+                    targetPoints[idx * 2],
+                    targetPoints[idx * 2 + 1]
+                )
+            ).length
+            : 0;
+
+    if (srcCount === dstCount && sameIndexVertexCount >= Math.max(2, srcCount - 2)) {
+        return [...srcBulges];
+    }
 
     const dist = (ax: number, ay: number, bx: number, by: number) =>
         Math.hypot(ax - bx, ay - by);
@@ -814,6 +886,7 @@ function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | unde
             const sj2 = (j + 1) % srcCount;
             const sx2 = sourcePoints[sj2 * 2];
             const sy2 = sourcePoints[sj2 * 2 + 1];
+            const sourceLength = dist(sx1, sy1, sx2, sy2);
 
             let bestIdx = -1;
             let bestScore = Number.POSITIVE_INFINITY;
@@ -826,12 +899,19 @@ function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | unde
                 const ti2 = (i + 1) % dstCount;
                 const tx2 = targetPoints[ti2 * 2];
                 const ty2 = targetPoints[ti2 * 2 + 1];
+                const targetLength = dist(tx1, ty1, tx2, ty2);
 
                 const forward = dist(tx1, ty1, sx1, sy1) + dist(tx2, ty2, sx2, sy2);
                 const reverse = dist(tx1, ty1, sx2, sy2) + dist(tx2, ty2, sx1, sy1);
 
                 const score = Math.min(forward, reverse);
                 const sign = forward <= reverse ? 1 : -1;
+                const lengthRatio =
+                    sourceLength > 1e-6 && targetLength > 1e-6
+                        ? Math.max(sourceLength, targetLength) / Math.min(sourceLength, targetLength)
+                        : Number.POSITIVE_INFINITY;
+
+                if (lengthRatio > 1.6) continue;
 
                 if (score < bestScore) {
                     bestScore = score;
@@ -840,7 +920,9 @@ function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | unde
                 }
             }
 
-            if (bestIdx >= 0) {
+            const maxEndpointDrift = Math.max(EDITOR_GRID_SIZE * 1.5, sourceLength * 0.45);
+
+            if (bestIdx >= 0 && bestScore <= maxEndpointDrift) {
                 out[bestIdx] = b * bestSign;
                 matchedTarget[bestIdx] = true;
                 usedSource[j] = true;
@@ -849,8 +931,7 @@ function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | unde
     };
 
     if (srcCount !== dstCount) {
-        applyNearestBulgeFallback();
-        return out;
+        return out.some((value) => Math.abs(value) > bulgeEps) ? out : undefined;
     }
 
     if (matchedTarget.some((m) => !m)) {
@@ -900,8 +981,12 @@ function remapBulgesToRing(sourcePoints: number[], sourceBulges: number[] | unde
             }
         }
 
-        const byIndex = normalizeBulges(targetPoints, sourceBulges);
-        return byIndex;
+        // Cyclische/omgekeerde match mislukt omdat sommige vertices verplaatst zijn
+        // (bijv. edge-resize of vertex-edit). Clipper kan de ring toch cyclisch
+        // verschuiven of omkeren. Gebruik nearest-neighbor zodat de bulge op de
+        // geometrisch dichtstbijzijnde edge terechtkomt, niet blindelings op index.
+        applyNearestBulgeFallback();
+        return out;
     }
 
     return out;
@@ -961,6 +1046,40 @@ function remapBulgesFromSourcesToRing(
     }
 
     return out.some((value) => Math.abs(value) > 1e-9) ? out : undefined;
+}
+
+function remapCornersFromSourcesToRing(
+    sources: Array<Pick<PolyObject, "points" | "corners">>,
+    targetPoints: number[]
+): number[] | undefined {
+    if (!targetPoints || targetPoints.length < 6 || sources.length === 0) return undefined;
+
+    const dstCount = Math.floor(targetPoints.length / 2);
+    const out = new Array(dstCount).fill(0);
+    const eps = 0.5;
+
+    for (let i = 0; i < dstCount; i++) {
+        const tx = targetPoints[i * 2];
+        const ty = targetPoints[i * 2 + 1];
+
+        for (const src of sources) {
+            if (!src.corners || !src.points || src.points.length < 6) continue;
+            const srcNorm = normalizeCorners(src.points, src.corners);
+            if (!srcNorm.some((c) => c > 0)) continue;
+
+            const srcCount = Math.floor(src.points.length / 2);
+            for (let j = 0; j < srcCount; j++) {
+                const d = Math.hypot(tx - src.points[j * 2], ty - src.points[j * 2 + 1]);
+                if (d < eps) {
+                    const cv = srcNorm[j] || 0;
+                    if (cv > out[i]) out[i] = cv;
+                    break;
+                }
+            }
+        }
+    }
+
+    return out.some((c) => c > 0) ? out : undefined;
 }
 
 /**
@@ -1830,12 +1949,12 @@ type ProjectState = {
      * ✅ BOGEN — zet de bulge van één segment en commit via history (undo/redo).
      * segmentIndex: index i → segment van vertex i naar vertex (i+1)%n.
      */
-    setSegmentBulge: (objectId: string, segmentIndex: number, bulge: number) => void;
+    setSegmentBulge: (objectId: string, segmentIndex: number, bulge: number, beforeObjects?: PolyObject[]) => void;
 
     /**
      * ✅ HOEKAFRONDING — zet de afrondingsstraal van één hoekpunt en commit via history.
      */
-    setCornerRadius: (objectId: string, vertexIndex: number, radius: number) => void;
+    setCornerRadius: (objectId: string, vertexIndex: number, radius: number, beforeObjects?: PolyObject[]) => void;
 
     confirmModal:
     | null
@@ -1984,7 +2103,9 @@ function applyCommand(state: ProjectState, cmd: Command): PolyObject[] {
             const remaining = state.objects.filter((o) => !removeIds.has(o.id));
 
             const existingIds = new Set(remaining.map((o) => o.id));
-            const toAdd = cmd.after.filter((o) => !existingIds.has(o.id));
+            const toAdd = cmd.after
+                .filter((o) => !existingIds.has(o.id))
+                .map(clonePolyObjectForHistory);
 
             return finalize([...remaining, ...toAdd]);
         }
@@ -1998,7 +2119,9 @@ function applyCommand(state: ProjectState, cmd: Command): PolyObject[] {
             const remaining = state.objects.filter((o) => !removeIds.has(o.id));
 
             const existingIds = new Set(remaining.map((o) => o.id));
-            const toAdd = cmd.after.filter((o) => !existingIds.has(o.id));
+            const toAdd = cmd.after
+                .filter((o) => !existingIds.has(o.id))
+                .map(clonePolyObjectForHistory);
 
             return finalize([...remaining, ...toAdd]);
         }
@@ -2108,10 +2231,16 @@ function bboxFromPoints(points: number[]) {
 
 // Arc-bewuste bounding box: densificeert de ring als het object bogen heeft,
 // zodat de bbox ook de maximale boogextensie meeneemt.
-function bboxFromObject(obj: Pick<PolyObject, "points" | "bulges">): { x: number; y: number; w: number; h: number } {
+function bboxFromObject(obj: Pick<PolyObject, "points" | "bulges" | "corners">): { x: number; y: number; w: number; h: number } {
     const hasBulges = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-    if (!hasBulges || !obj.bulges) return bboxFromPoints(obj.points);
-    const densified = densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 24);
+    const hasCorners = obj.corners?.some((c) => (c || 0) > 0);
+    if (!hasBulges && !hasCorners) return bboxFromPoints(obj.points);
+    const densified = densifyBulgedRing(
+        obj.points,
+        normalizeBulges(obj.points, obj.bulges),
+        24,
+        normalizeCorners(obj.points, obj.corners)
+    );
     return bboxFromPoints(densified);
 }
 
@@ -2214,6 +2343,20 @@ function translateHoles(holes: number[][] | undefined, dx: number, dy: number) {
     return holes.map((h) => translatePoints(h, dx, dy));
 }
 
+function getPureTranslationDelta(fromPoints: number[], toPoints: number[], eps = 0.001): { dx: number; dy: number } | null {
+    if (fromPoints.length !== toPoints.length || fromPoints.length < 2) return null;
+
+    const dx = (toPoints[0] ?? 0) - (fromPoints[0] ?? 0);
+    const dy = (toPoints[1] ?? 0) - (fromPoints[1] ?? 0);
+
+    for (let i = 0; i < fromPoints.length; i += 2) {
+        if (Math.abs(((toPoints[i] ?? 0) - (fromPoints[i] ?? 0)) - dx) > eps) return null;
+        if (Math.abs(((toPoints[i + 1] ?? 0) - (fromPoints[i + 1] ?? 0)) - dy) > eps) return null;
+    }
+
+    return { dx, dy };
+}
+
 function bboxUnion(boxes: { x: number; y: number; w: number; h: number }[]) {
     let minX = Infinity;
     let minY = Infinity;
@@ -2313,7 +2456,7 @@ function findFirstFreeDuplicateDx(
     gap: number,
     step: number
 ) {
-    const sourceBox = bboxUnion(sourceObjects.map((o) => bboxFromPoints(o.points)));
+    const sourceBox = bboxUnion(sourceObjects.map((o) => bboxFromObject(o)));
     let dx = sourceBox.w + gap;
 
     while (true) {
@@ -2683,6 +2826,10 @@ function isOrthogonalPolygon(points: number[], eps = 1e-6) {
 
 function shouldUseCellMerge(polys: PolyObject[]) {
     for (const p of polys) {
+        const hasBulges = p.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+        const hasCorners = p.corners?.some((c) => (c || 0) > STRAIGHT_THRESHOLD);
+        if (hasBulges || hasCorners) return false;
+
         if (!isOrthogonalPolygon(p.points)) return false;
 
         if ((p.holes?.length ?? 0) > 0) {
@@ -2706,12 +2853,18 @@ function normalizeMergePieces(pieces: DiffPiece[] | null): DiffPiece[] | null {
     if (!pieces || pieces.length === 0) return null;
 
     const normalized = pieces
-        .map((piece) => ({
-            outer: normalizeMergeRing(piece.outer),
-            holes: (piece.holes ?? [])
-                .map((h) => normalizeMergeRing(h))
-                .filter((h) => h.length >= 6),
-        }))
+        .map((piece) => {
+            const outer = normalizeMergeRing(piece.outer);
+            return {
+                outer,
+                holes: (piece.holes ?? [])
+                    .map((h) => normalizeMergeRing(h))
+                    .filter((h) => h.length >= 6),
+                bulges: piece.bulges
+                    ? remapBulgesToRing(piece.outer, piece.bulges, outer)
+                    : undefined,
+            };
+        })
         .filter((piece) => piece.outer.length >= 6);
 
     return normalized.length > 0 ? normalized : null;
@@ -2799,17 +2952,23 @@ function polyObjectToClipperPaths(obj: PolyObject): ClipperPaths {
     return out;
 }
 
-// Variant die de buitenring densificeert voor boog-objecten, zodat clipper de
-// arc-geometrie correct meeneemt bij difference-operaties. Alleen gebruiken als
-// CUTTER (niet als subject), want de output-paden worden NIET teruggeschreven als obj.points.
+// Variant die de buitenring densificeert voor boog-/corner-objecten, zodat clipper de
+// visuele geometrie correct meeneemt bij difference-operaties. Alleen gebruiken als
+// CUTTER of voor overlaptests, want de output-paden worden NIET teruggeschreven als obj.points.
 function polyObjectToClipperPathsDensified(obj: PolyObject): ClipperPaths {
     const hasBulges = obj.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-    if (!hasBulges || !obj.bulges) {
+    const hasCorners = obj.corners?.some((c) => (c || 0) > 0);
+    if (!hasBulges && !hasCorners) {
         return polyObjectToClipperPaths(obj);
     }
 
     const out: ClipperPaths = [];
-    const densifiedOuter = densifyBulgedRing(obj.points, normalizeBulges(obj.points, obj.bulges), 48);
+    const densifiedOuter = densifyBulgedRing(
+        obj.points,
+        normalizeBulges(obj.points, obj.bulges),
+        48,
+        normalizeCorners(obj.points, obj.corners)
+    );
     const outer = cleanupPointsKeepCollinear(densifiedOuter);
     if (outer.length >= 6) {
         out.push(ensureClockwise(pointsToPath(outer)));
@@ -2968,7 +3127,15 @@ function getPolyNodeChildren(node: any): any[] {
 function unionSameTypePolygons(polys: PolyObject[]): DiffPiece[] | null {
     if (polys.length < 2) return null;
 
-    const rawPaths: ClipperPaths = polys.flatMap((p) => polyObjectToClipperPaths(p));
+    const hasArcs = polys.some(
+        (p) =>
+            p.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ||
+            p.corners?.some((c) => (c || 0) > STRAIGHT_THRESHOLD)
+    );
+
+    const rawPaths: ClipperPaths = polys.flatMap((p) =>
+        hasArcs ? polyObjectToClipperPathsDensified(p) : polyObjectToClipperPaths(p)
+    );
     const FILL = ClipperLib.PolyFillType.pftNonZero;
 
     const hasHoles = polys.some((p) => (p.holes?.length ?? 0) > 0);
@@ -3001,7 +3168,16 @@ function unionSameTypePolygons(polys: PolyObject[]): DiffPiece[] | null {
     const ok = clip.Execute(ClipperLib.ClipType.ctUnion, polyTree as any, FILL, FILL);
     if (!ok) return null;
 
-    const pieces = extractDiffPiecesFromPolyTree(polyTree);
+    const arcCircles = hasArcs ? extractArcCirclesFromSources(polys) : [];
+    const pieces = extractDiffPiecesFromPolyTree(polyTree).map((piece) => {
+        if (!hasArcs) return piece;
+        const recovered = recoverArcsFromOutput(piece.outer, arcCircles);
+        return {
+            ...piece,
+            outer: recovered.points,
+            bulges: recovered.bulges,
+        };
+    });
     if (!pieces || pieces.length === 0) return null;
 
     return normalizeMergePieces(pieces);
@@ -3300,135 +3476,15 @@ function cellsToRectangles(cells: Set<CellKey>, gridSize: number): number[][] {
 
 type DiffPiece = { outer: number[]; holes: number[][]; bulges?: number[] };
 
-// Minimum aaneengesloten punten om een run als arc te herkennen (bij 48 segments/arc).
-const ARC_RUN_MIN = 4;
-// Max afwijking van arc-straal (canvas units) om een punt als "op de boog" te beschouwen.
-const ARC_MATCH_TOLERANCE = 1.5;
-
-/**
- * Vervangt runs van densified boog-punten in het resultaat door echte bulge-segmenten.
- * Dit zorgt ervoor dat het geklipte object een gladde boog krijgt (2 punten + bulge)
- * in plaats van 48+ rechte segmenten.
- */
-function collapseArcRuns(outerFlat: number[], cutters: PolyObject[]): { points: number[]; bulges: number[] } {
-    // Verzamel alle arc-segmenten van de cutters
-    const arcSegments: Array<{ cx: number; cy: number; r: number }> = [];
-    for (const cutter of cutters) {
-        const bulges = normalizeBulges(cutter.points, cutter.bulges);
-        const n = cutter.points.length / 2;
-        for (let i = 0; i < n; i++) {
-            const b = bulges[i] ?? 0;
-            if (Math.abs(b) <= STRAIGHT_THRESHOLD) continue;
-            const j = (i + 1) % n;
-            const x1 = cutter.points[i * 2], y1 = cutter.points[i * 2 + 1];
-            const x2 = cutter.points[j * 2], y2 = cutter.points[j * 2 + 1];
-            const arc = arcCenterRadius(x1, y1, x2, y2, b);
-            if (arc) arcSegments.push(arc);
-        }
-    }
-
-    if (arcSegments.length === 0) {
-        return { points: outerFlat, bulges: new Array(outerFlat.length / 2).fill(0) };
-    }
-
-    const m = outerFlat.length / 2;
-
-    // Bouw de punt-naar-arc mapping: voor elk punt, welke arc (index) ligt het op?
-    const pointArcIndex = new Int32Array(m).fill(-1);
-    for (let i = 0; i < m; i++) {
-        const px = outerFlat[i * 2], py = outerFlat[i * 2 + 1];
-        for (let a = 0; a < arcSegments.length; a++) {
-            const { cx, cy, r } = arcSegments[a];
-            const d = Math.sqrt((px - cx) ** 2 + (py - cy) ** 2);
-            if (Math.abs(d - r) <= ARC_MATCH_TOLERANCE) {
-                pointArcIndex[i] = a;
-                break;
-            }
-        }
-    }
-
-    // Vind aaneengesloten runs per arc en vervang ze
-    // Werk met een index-gebaseerde representatie zodat we punten kunnen samenvoegen
-    const result: number[] = [];
-    const resultBulges: number[] = [];
-
-    let i = 0;
-    while (i < m) {
-        const arcIdx = pointArcIndex[i];
-        if (arcIdx < 0) {
-            // Gewoon punt, geen boog
-            result.push(outerFlat[i * 2], outerFlat[i * 2 + 1]);
-            resultBulges.push(0);
-            i++;
-            continue;
-        }
-
-        // Start van een arc-run: zoek het einde
-        let runEnd = i + 1;
-        while (runEnd < m && pointArcIndex[runEnd] === arcIdx) {
-            runEnd++;
-        }
-        const runLen = runEnd - i;
-
-        if (runLen < ARC_RUN_MIN) {
-            // Te kort om als echte boog te behandelen, hou ze recht
-            result.push(outerFlat[i * 2], outerFlat[i * 2 + 1]);
-            resultBulges.push(0);
-            i++;
-            continue;
-        }
-
-        // Controleer hoekmonotoniteit: geldige boog-runs hebben hoeken die monotoon toe- of afnemen
-        // rond het middelpunt. Valse positieven (punten die toevallig bij de cirkel liggen) zijn niet monotoon.
-        const { cx: arcCx, cy: arcCy } = arcSegments[arcIdx];
-        const angles: number[] = [];
-        for (let k = i; k < runEnd; k++) {
-            angles.push(Math.atan2(outerFlat[k * 2 + 1] - arcCy, outerFlat[k * 2] - arcCx));
-        }
-        const diffs: number[] = [];
-        for (let k = 1; k < angles.length; k++) {
-            let d = angles[k] - angles[k - 1];
-            while (d > Math.PI) d -= 2 * Math.PI;
-            while (d < -Math.PI) d += 2 * Math.PI;
-            diffs.push(d);
-        }
-        const isMonotone = diffs.every((d) => d > 0) || diffs.every((d) => d < 0);
-        if (!isMonotone) {
-            result.push(outerFlat[i * 2], outerFlat[i * 2 + 1]);
-            resultBulges.push(0);
-            i++;
-            continue;
-        }
-
-        // Vervang de run door: eerste punt + bulge, laatste punt voeg je bij de volgende iteratie toe
-        const x1 = outerFlat[i * 2], y1 = outerFlat[i * 2 + 1];
-        const x2 = outerFlat[(runEnd - 1) * 2], y2 = outerFlat[(runEnd - 1) * 2 + 1];
-
-        // Apex = het middelste punt in de run
-        const midIdx = i + Math.floor(runLen / 2);
-        const ax = outerFlat[midIdx * 2], ay = outerFlat[midIdx * 2 + 1];
-
-        const b = bulgeFromDraggedApex(x1, y1, x2, y2, ax, ay);
-
-        // Voeg het startpunt toe met de berekende bulge (boog naar het eindpunt)
-        result.push(x1, y1);
-        resultBulges.push(Math.abs(b) > STRAIGHT_THRESHOLD ? b : 0);
-
-        // Ga verder met het eindpunt (wordt bij volgende iteratie als start behandeld)
-        i = runEnd - 1;
-    }
-
-    return { points: result, bulges: resultBulges };
-}
-
 function subtractPolygonsPieces(subject: PolyObject, cutters: PolyObject[]): DiffPiece[] | null {
     if (!cutters.length) return null;
 
     const FILL = ClipperLib.PolyFillType.pftNonZero;
 
-    const subjPaths = polyObjectToClipperPaths(subject);
-    // Densified variant voor cutters zodat arc-bogen correct wegsnijden uit het subject.
-    // De output-paden van cutters worden nooit teruggeschreven als obj.points.
+    // Densified variant voor subject én cutters zodat arc-bogen (bulges/corners) correct
+    // worden meegenomen door Clipper. recoverArcsFromOutput herstelt daarna de echte
+    // bulge-segmenten via provenance-based arc-cirkel matching.
+    const subjPaths = polyObjectToClipperPathsDensified(subject);
     const clipPaths = cutters.flatMap((c) => polyObjectToClipperPathsDensified(c));
 
     if (subjPaths.length === 0 || clipPaths.length === 0) return null;
@@ -3460,6 +3516,20 @@ function subtractPolygonsPieces(subject: PolyObject, cutters: PolyObject[]): Dif
 
     const childrenOf = (node: any) => getPolyNodeChildren(node);
 
+    const hasSubjectArcs =
+        subject.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ||
+        subject.corners?.some((r) => (r || 0) > STRAIGHT_THRESHOLD);
+    const hasCutterArcs = cutters.some(
+        (c) =>
+            c.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ||
+            c.corners?.some((r) => (r || 0) > STRAIGHT_THRESHOLD)
+    );
+    const hasArcs = hasCutterArcs || hasSubjectArcs;
+    // Subject meenemen zodat eigen bulges na Clipper correct worden hersteld.
+    const diffArcCircles = hasArcs
+        ? extractArcCirclesFromSources([...cutters, subject])
+        : [];
+
     const pieces: DiffPiece[] = [];
     const stack = childrenOf(polyTree);
 
@@ -3489,13 +3559,9 @@ function subtractPolygonsPieces(subject: PolyObject, cutters: PolyObject[]): Dif
             holes.push(holePts);
         }
 
-        // Vervang densified boog-punten door echte bulge-segmenten als de cutters bogen hebben
-        const hasCutterArcs = cutters.some(
-            (c) => c.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
-        );
-        if (hasCutterArcs) {
-            const collapsed = collapseArcRuns(outerPts, cutters);
-            pieces.push({ outer: collapsed.points, holes, bulges: collapsed.bulges });
+        if (hasArcs) {
+            const recovered = recoverArcsFromOutput(outerPts, diffArcCircles);
+            pieces.push({ outer: recovered.points, holes, bulges: recovered.bulges });
         } else {
             pieces.push({ outer: outerPts, holes });
         }
@@ -3584,6 +3650,44 @@ function subtractPolygons(subject: PolyObject, cutters: PolyObject[]): number[][
         .filter((pts) => Array.isArray(pts) && pts.length >= 6);
 
     return outers.length ? outers : null;
+}
+
+function getDiffPieceBulges(subject: PolyObject, piece: DiffPiece): number[] | undefined {
+    const remapped = remapBulgesToRing(subject.points, subject.bulges, piece.outer);
+    if (piece.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)) {
+        const out = normalizeBulges(piece.outer, remapped);
+        const pieceBulges = normalizeBulges(piece.outer, piece.bulges);
+
+        for (let i = 0; i < pieceBulges.length; i += 1) {
+            if (Math.abs(pieceBulges[i] ?? 0) > STRAIGHT_THRESHOLD) {
+                out[i] = pieceBulges[i] ?? 0;
+            }
+        }
+
+        return out;
+    }
+    return remapped;
+}
+
+function getMergedPieceBulges(
+    sources: Array<Pick<PolyObject, "points" | "bulges">>,
+    piece: DiffPiece
+): number[] | undefined {
+    const remapped = remapBulgesFromSourcesToRing(sources, piece.outer);
+    if (piece.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)) {
+        const out = normalizeBulges(piece.outer, remapped);
+        const pieceBulges = normalizeBulges(piece.outer, piece.bulges);
+
+        for (let i = 0; i < pieceBulges.length; i += 1) {
+            if (Math.abs(pieceBulges[i] ?? 0) > STRAIGHT_THRESHOLD) {
+                out[i] = pieceBulges[i] ?? 0;
+            }
+        }
+
+        return out;
+    }
+
+    return remapped;
 }
 
 function recalcNextPlantbedNo(objects: PolyObject[]) {
@@ -3994,6 +4098,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         ...o,
                         points: cleanedPts,
                         holes: o.holes?.map((h) => cleanupPoints(h)),
+                        bulges: remapBulgesToRing(o.points, o.bulges, cleanedPts),
                         corners: remapCornersToRing(o.points, o.corners, cleanedPts),
                     };
                 }
@@ -4010,8 +4115,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
             const cmd: Command = {
                 kind: "replaceMany",
-                before: state.objects,
-                after: withPieces,
+                before: clonePolyObjectsForHistory(state.objects),
+                after: clonePolyObjectsForHistory(withPieces),
             };
 
             // selectie netjes zetten (optioneel)
@@ -4128,12 +4233,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             if (p.outer.length < 6) continue;
 
                             toAdd.push({
+                                ...lower,
                                 id: idx === 0 ? lower.id : makeId(),
                                 type: lower.type,
+                                geometry: lower.geometry ?? getGeometryForType(lower.type),
                                 points: p.outer,
                                 holes: p.holes,
                                 plantbedNo: lower.plantbedNo,
                                 bulges: p.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ? p.bulges : undefined,
+                                corners: remapCornersToRing(lower.points, lower.corners, p.outer),
+                                customStyle: lower.customStyle,
+                                renderPieces: undefined,
                             });
                         }
                     }
@@ -4266,12 +4376,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     if (p.outer.length < 6) continue;
 
                     toAdd.push({
+                        ...lower,
                         id: idx === 0 ? lower.id : makeId(),
                         type: lower.type,
+                        geometry: lower.geometry ?? getGeometryForType(lower.type),
                         points: p.outer,
                         holes: p.holes,
                         plantbedNo: lower.plantbedNo,
                         bulges: p.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ? p.bulges : undefined,
+                        corners: remapCornersToRing(lower.points, lower.corners, p.outer),
+                        customStyle: lower.customStyle,
+                        renderPieces: undefined,
                     });
                 }
             }
@@ -4499,7 +4614,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         type,
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
-                        bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
+                        bulges: getMergedPieceBulges(mergeInput, piece),
+                        corners: remapCornersFromSourcesToRing(mergeInput, piece.outer),
                     })),
                 ];
             }
@@ -4711,10 +4827,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 points: toPoints,
             };
 
+            const pureTranslation = getPureTranslationDelta(existing.points, toPoints);
+
             if (objectSupportsBulges(existing)) {
                 const remappedForMoved =
-                    remapBulgesToRing(existing.points, existing.bulges, toPoints) ??
-                    normalizeBulges(toPoints, existing.bulges);
+                    pureTranslation
+                        ? normalizeBulges(toPoints, existing.bulges)
+                        : (
+                            remapBulgesToRing(existing.points, existing.bulges, toPoints) ??
+                            normalizeBulges(toPoints, existing.bulges)
+                        );
                 moved = {
                     ...moved,
                     bulges: remappedForMoved,
@@ -4862,6 +4984,48 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 };
             }
 
+            const existingHasCurves =
+                existing.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ||
+                existing.corners?.some((c) => (c || 0) > STRAIGHT_THRESHOLD);
+
+            if (pureTranslation && existingHasCurves && normalizedToHoles === undefined) {
+                const translatedObject: PolyObject = {
+                    ...existing,
+                    geometry: getGeometryForType(existing.type),
+                    points: toPoints,
+                    holes: translateHoles(existing.holes, pureTranslation.dx, pureTranslation.dy),
+                    bulges: existing.bulges ? [...existing.bulges] : undefined,
+                    corners: existing.corners ? [...existing.corners] : undefined,
+                };
+
+                const worldWithout = state.objects.filter((o) => o.id !== id) as PolyObject[];
+                const overlapsOtherPolygon = worldWithout.some((other) => {
+                    if (other.type === "treebed" || isPolylineObject(other)) return false;
+                    return polyObjectsActuallyOverlap(translatedObject, other);
+                });
+
+                if (!overlapsOtherPolygon) {
+                    const afterObjects = [...worldWithout, translatedObject];
+                    const cmd: Command = {
+                        kind: "replaceMany",
+                        before: clonePolyObjectsForHistory(state.objects),
+                        after: clonePolyObjectsForHistory(afterObjects),
+                    };
+
+                    const nextObjectsRaw = applyCommand(state as ProjectState, cmd);
+                    const nextObjects = recalcLinePiecesForWorld(nextObjectsRaw);
+
+                    return {
+                        objects: nextObjects,
+                        selectedObjectId: translatedObject.id,
+                        selectedObjectIds: [translatedObject.id],
+                        nextPlantbedNo: recalcNextPlantbedNo(nextObjects),
+                        undoStack: [...state.undoStack, cmd],
+                        redoStack: [],
+                    };
+                }
+            }
+
             moved = snapPolygonEdgesToLineBoundaries(
                 moved,
                 state.objects.filter((o) => o.id !== id && isPolylineObject(o)) as PolyObject[],
@@ -4907,45 +5071,47 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
             let updatedObjects = state.objects.filter((o) => o.id !== id);
 
-            const toRemoveLower: PolyObject[] = [];
-            const toAddLower: PolyObject[] = [];
+            const toRemoveDominated: PolyObject[] = [];
+            const toAddDominated: PolyObject[] = [];
             const movedBox = bboxFromObject(moved);
 
             for (const obj of updatedObjects) {
                 if (obj.type === "treebed") continue;
                 if (isPolylineObject(obj)) continue;
 
-                const z = TYPE_Z_INDEX[obj.type];
-                if (z >= newZ) continue;
-
                 const objBox = bboxFromObject(obj);
                 if (!rectsOverlap(movedBox, objBox)) continue;
 
                 const pieces = subtractPolygonsPieces(obj, [moved]);
-                if (!pieces || pieces.length === 0) continue;
+                if (!pieces || pieces.length === 0) {
+                    if (polyObjectsActuallyOverlap(obj, moved)) {
+                        toRemoveDominated.push(obj);
+                    }
+                    continue;
+                }
 
-                toRemoveLower.push(obj);
+                toRemoveDominated.push(obj);
 
                 pieces.forEach((p, idx) => {
                     if (p.outer.length < 6) return;
 
-                    toAddLower.push({
+                    toAddDominated.push({
                         id: idx === 0 ? obj.id : makeId(),
                         type: obj.type,
                         points: p.outer,
                         holes: p.holes?.length ? p.holes : undefined,
                         plantbedNo: obj.plantbedNo,
                         customStyle: obj.customStyle,
-                        bulges: p.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ? p.bulges : undefined,
+                        bulges: getDiffPieceBulges(obj, p),
                         corners: remapCornersToRing(obj.points, obj.corners, p.outer),
                     });
                 });
             }
 
-            if (toRemoveLower.length > 0) {
-                const removeIds = new Set(toRemoveLower.map((o) => o.id));
+            if (toRemoveDominated.length > 0) {
+                const removeIds = new Set(toRemoveDominated.map((o) => o.id));
                 updatedObjects = updatedObjects.filter((o) => !removeIds.has(o.id));
-                updatedObjects.push(...toAddLower);
+                updatedObjects.push(...toAddDominated);
             }
 
             const movedHasHoles = (existing.holes?.length ?? 0) > 0;
@@ -5031,7 +5197,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 id: i === 0 ? candidate.id : makeId(),
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
-                                bulges: remapBulgesToRing(candidate.points, candidate.bulges, piece.outer),
+                                bulges: getDiffPieceBulges(candidate, piece),
                                 corners: remapCornersToRing(candidate.points, candidate.corners, piece.outer),
                                 plantbedNo: candidate.plantbedNo,
                                 customStyle: candidate.customStyle,
@@ -5106,8 +5272,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         id: idx === 0 ? existing.id : makeId(),
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
-                        bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
-                        corners: remapCornersToRing(movedWithHoles.points, movedWithHoles.corners, piece.outer),
+                        bulges: getMergedPieceBulges(mergeInput, piece),
+                        corners: remapCornersFromSourcesToRing(mergeInput, piece.outer),
                         plantbedNo: existing.plantbedNo,
                     }));
                 const cmd: Command = {
@@ -5132,13 +5298,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 };
             }
 
-            const higher = updatedObjects.filter(
-                (o) =>
-                    o.type !== "treebed" &&
-                    TYPE_Z_INDEX[o.type] > newZ &&
-                    !isPolylineObject(o)
-            );
-
             // ✅ Also cut moving polygon against existing boundary bands that have
             // higher z-index (boundaries always win over overlapping polygon objects).
             const boundaryCuttersForMove = updatedObjects
@@ -5146,62 +5305,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 .map((o) => createBoundaryDifferenceCutter(o))
                 .filter((c): c is PolyObject => c !== null);
 
-            const effectiveCutters = [...higher, ...boundaryCuttersForMove];
-
-            const movedCut = effectiveCutters.length ? subtractPolygons(moved, effectiveCutters) : null;
-            const movedShapes = movedCut ?? [moved.points];
+            const effectiveCutters = boundaryCuttersForMove;
 
             if (type === "plantbed") {
-                const otherPlantbeds = updatedObjects.filter((o) => o.type === "plantbed");
-
                 const nextLinked = { ...state.plantbedLinkedCount };
                 const nextLinksMap = { ...state.plantbedLinks };
-
-                const pbRemove: PolyObject[] = [];
-                const pbAdd: PolyObject[] = [];
-
-                const cutter = movedShapes[0];
-                const cutterObj: PolyObject = {
-                    ...moved,
-                    points: cutter,
-                    holes: undefined,
-                    type: "plantbed",
-                };
-
-                for (const pb of otherPlantbeds) {
-                    const diffPieces = subtractPolygonsPieces(pb, [cutterObj]);
-                    if (!diffPieces) continue;
-
-                    pbRemove.push(pb);
-
-                    diffPieces.forEach((piece, idx) => {
-                        if (piece.outer.length < 6) return;
-
-                        const idToUse = idx === 0 ? pb.id : makeId();
-
-                        if (idx !== 0) {
-                            nextLinked[idToUse] = 0;
-                            nextLinksMap[idToUse] = [];
-                        }
-
-                        pbAdd.push({
-                            id: idToUse,
-                            type: "plantbed",
-                            points: piece.outer,
-                            holes: piece.holes?.length ? piece.holes : undefined,
-                            bulges: remapBulgesToRing(pb.points, pb.bulges, piece.outer),
-                            corners: remapCornersToRing(pb.points, pb.corners, piece.outer),
-                            plantbedNo: pb.plantbedNo,
-                            customStyle: pb.customStyle,
-                        });
-                    });
-                }
-
-                if (pbRemove.length > 0) {
-                    const removeIds = new Set(pbRemove.map((o) => o.id));
-                    updatedObjects = updatedObjects.filter((o) => !removeIds.has(o.id));
-                    updatedObjects.push(...pbAdd);
-                }
 
                 const movedSeedPlantbeds = normalizeSingleObjectToPieces({
                     id: existing.id,
@@ -5216,7 +5324,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
                     plantbedNo: existing.plantbedNo,
                     customStyle: existing.customStyle,
-                    bulges: existing.bulges,
+                    bulges: moved.bulges,
                     corners: moved.corners,
                 });
 
@@ -5252,6 +5360,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 id: seedIdx === 0 && pieceIdx === 0 ? existing.id : makeId(),
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
+                                bulges: remapBulgesToRing(seed.points, seed.bulges, piece.outer),
                                 plantbedNo: existing.plantbedNo,
                                 corners: remapCornersToRing(seed.points, seed.corners, piece.outer),
                             })
@@ -5266,6 +5375,46 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
                     return pieces;
                 });
+
+                const otherPlantbeds = updatedObjects.filter((o) => o.type === "plantbed");
+                const pbRemove: PolyObject[] = [];
+                const pbAdd: PolyObject[] = [];
+
+                for (const pb of otherPlantbeds) {
+                    if (!movedPlantbeds.some((movedPb) => polyObjectsActuallyOverlap(pb, movedPb))) continue;
+
+                    const diffPieces = subtractPolygonsPieces(pb, movedPlantbeds);
+
+                    pbRemove.push(pb);
+
+                    if (!diffPieces || diffPieces.length === 0) continue;
+
+                    diffPieces.forEach((piece, idx) => {
+                        if (piece.outer.length < 6) return;
+
+                        const idToUse = idx === 0 ? pb.id : makeId();
+
+                        if (idx !== 0) {
+                            nextLinked[idToUse] = 0;
+                            nextLinksMap[idToUse] = [];
+                        }
+
+                        pbAdd.push({
+                            ...pb,
+                            id: idToUse,
+                            points: piece.outer,
+                            holes: piece.holes?.length ? piece.holes : undefined,
+                            bulges: getDiffPieceBulges(pb, piece),
+                            corners: remapCornersToRing(pb.points, pb.corners, piece.outer),
+                        });
+                    });
+                }
+
+                if (pbRemove.length > 0) {
+                    const removeIds = new Set(pbRemove.map((o) => o.id));
+                    updatedObjects = updatedObjects.filter((o) => !removeIds.has(o.id));
+                    updatedObjects.push(...pbAdd);
+                }
 
                 const cmd: Command = {
                     kind: "replaceMany",
@@ -5303,7 +5452,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
                 plantbedNo: existing.plantbedNo,
                 customStyle: existing.customStyle,
-                bulges: existing.bulges,
+                bulges: moved.bulges,
                 corners: moved.corners,
             });
 
@@ -5331,6 +5480,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
                             plantbedNo: existing.plantbedNo,
+                            bulges: remapBulgesToRing(seed.points, seed.bulges, piece.outer),
                             corners: remapCornersToRing(seed.points, seed.corners, piece.outer),
                         })
                     );
@@ -5404,7 +5554,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 type,
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
-                                bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
+                                bulges: getMergedPieceBulges(mergeInput, piece),
                                 corners: remapCornersToRing(moved.points, moved.corners, piece.outer),
                                 plantbedNo: existing.plantbedNo,
                                 customStyle: existing.customStyle,
@@ -5511,78 +5661,116 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         get().moveObjectAndMerge(id, toPoints);
     },
 
-    setSegmentBulge: (objectId, segmentIndex, bulge) => {
-        const state = get();
-        const obj = state.objects.find((o) => o.id === objectId);
-        if (!obj) return;
-        const normalized = normalizeBulges(obj.points, obj.bulges);
-        if (segmentIndex < 0 || segmentIndex >= normalized.length) return;
-        const next = [...normalized];
-        next[segmentIndex] = Math.max(-3, Math.min(3, bulge));
-        const updatedObj: PolyObject = { ...obj, bulges: next };
-        // Preserve the current selection so the object stays selected after the edit
-        const preservedSelectionId = state.selectedObjectId ?? objectId;
+    setSegmentBulge: (objectId, segmentIndex, bulge, beforeObjects?) =>
+        set((state) => {
+            const obj = state.objects.find((o) => o.id === objectId);
+            if (!obj) return state;
+            const normalized = normalizeBulges(obj.points, obj.bulges);
+            if (segmentIndex < 0 || segmentIndex >= normalized.length) return state;
+            const next = [...normalized];
+            next[segmentIndex] = Math.max(-3, Math.min(3, bulge));
+            const updatedObj: PolyObject = { ...obj, bulges: next };
+            const preservedSelectionId = state.selectedObjectId ?? objectId;
 
-        // Na bulge-wijziging: snijd onderliggende objecten bij die door de nieuwe boog overlapt worden.
-        const newZ = TYPE_Z_INDEX[updatedObj.type] ?? 0;
-        const updatedBox = bboxFromObject(updatedObj);
+            // Na bulge-wijziging is het gewijzigde object dominant, net als bij
+            // plantvakken en bij slepen: de nieuwe boog snijdt geraakte objecten weg.
+            const updatedBox = bboxFromObject(updatedObj);
 
-        let nextObjects = state.objects.map((o) => o.id === objectId ? updatedObj : o);
+            let nextObjects = state.objects.map((o) => o.id === objectId ? updatedObj : o);
 
-        if (newZ > 0 && updatedObj.points.length >= 6) {
-            const toRemove: string[] = [];
-            const toAdd: PolyObject[] = [];
+            if (!isPolylineObject(updatedObj) && updatedObj.type !== "treebed" && updatedObj.points.length >= 6) {
+                const toRemove: string[] = [];
+                const toAdd: PolyObject[] = [];
 
-            for (const other of nextObjects) {
-                if (other.id === objectId) continue;
-                if (isPolylineObject(other) || other.type === "treebed") continue;
-                const otherZ = TYPE_Z_INDEX[other.type] ?? 0;
-                if (otherZ >= newZ) continue;
-                if (!rectsOverlap(updatedBox, bboxFromObject(other))) continue;
+                for (const other of nextObjects) {
+                    if (other.id === objectId) continue;
+                    if (isPolylineObject(other) || other.type === "treebed") continue;
+                    if (!rectsOverlap(updatedBox, bboxFromObject(other))) continue;
 
-                const pieces = subtractPolygonsPieces(other, [updatedObj]);
-                if (!pieces || pieces.length === 0) continue;
+                    const pieces = subtractPolygonsPieces(other, [updatedObj]);
+                    if (!pieces || pieces.length === 0) {
+                        if (polyObjectsActuallyOverlap(other, updatedObj)) {
+                            toRemove.push(other.id);
+                        }
+                        continue;
+                    }
 
-                toRemove.push(other.id);
-                pieces.forEach((p, idx) => {
-                    if (p.outer.length < 6) return;
-                    toAdd.push({
-                        id: idx === 0 ? other.id : makeId(),
-                        type: other.type,
-                        points: p.outer,
-                        holes: p.holes?.length ? p.holes : undefined,
-                        plantbedNo: other.plantbedNo,
-                        customStyle: other.customStyle,
-                        bulges: p.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ? p.bulges : undefined,
+                    toRemove.push(other.id);
+                    pieces.forEach((p, idx) => {
+                        if (p.outer.length < 6) return;
+                        toAdd.push({
+                            ...other,
+                            id: idx === 0 ? other.id : makeId(),
+                            points: p.outer,
+                            holes: p.holes?.length ? p.holes : undefined,
+                            plantbedNo: other.plantbedNo,
+                            customStyle: other.customStyle,
+                            bulges: getDiffPieceBulges(other, p),
+                            corners: remapCornersToRing(other.points, other.corners, p.outer),
+                        });
                     });
-                });
+                }
+
+                if (toRemove.length > 0) {
+                    const removeSet = new Set(toRemove);
+                    nextObjects = nextObjects.filter((o) => !removeSet.has(o.id));
+                    nextObjects.push(...toAdd);
+                }
             }
 
-            if (toRemove.length > 0) {
-                const removeSet = new Set(toRemove);
-                nextObjects = nextObjects.filter((o) => !removeSet.has(o.id));
-                nextObjects.push(...toAdd);
-            }
-        }
+            // ✅ beforeObjects wordt vastgelegd bij drag-start (mousedown), zodat we zeker
+            // de state van VÓÓR de bulge-wijziging opslaan — ongeacht batching of timing.
+            const cmd: Command = {
+                kind: "replaceMany",
+                before: clonePolyObjectsForHistory(beforeObjects ?? state.objects),
+                after: clonePolyObjectsForHistory(nextObjects),
+            };
 
-        state.setObjectsWithHistory(nextObjects, preservedSelectionId);
-    },
+            const finalObjects = applyCommand(state as ProjectState, cmd);
+            const selIds = preservedSelectionId ? [preservedSelectionId] : [];
 
-    setCornerRadius: (objectId, vertexIndex, radius) => {
-        const state = get();
-        const obj = state.objects.find((o) => o.id === objectId);
-        if (!obj) return;
-        const normalized = normalizeCorners(obj.points, obj.corners);
-        if (vertexIndex < 0 || vertexIndex >= normalized.length) return;
-        const maxR = cornerMaxRadius(obj.points, vertexIndex);
-        const next = [...normalized];
-        next[vertexIndex] = Math.max(0, Math.min(radius, maxR));
-        const updatedObj: PolyObject = { ...obj, corners: next };
-        const nextObjects = state.objects.map((o) => o.id === objectId ? updatedObj : o);
-        // Preserve the current selection so the object stays selected after the edit
-        const preservedSelectionId = state.selectedObjectId ?? objectId;
-        state.setObjectsWithHistory(nextObjects, preservedSelectionId);
-    },
+            return {
+                objects: finalObjects,
+                selectedObjectId: preservedSelectionId,
+                selectedObjectIds: selIds,
+                nextPlantbedNo: recalcNextPlantbedNo(finalObjects),
+                undoStack: [...state.undoStack, cmd],
+                redoStack: [],
+            };
+        }),
+
+    setCornerRadius: (objectId, vertexIndex, radius, beforeObjects?) =>
+        set((state) => {
+            const obj = state.objects.find((o) => o.id === objectId);
+            if (!obj) return state;
+            const normalized = normalizeCorners(obj.points, obj.corners);
+            if (vertexIndex < 0 || vertexIndex >= normalized.length) return state;
+            const maxR = cornerMaxRadius(obj.points, vertexIndex);
+            const next = [...normalized];
+            next[vertexIndex] = Math.max(0, Math.min(radius, maxR));
+            const updatedObj: PolyObject = { ...obj, corners: next };
+            const nextObjects = state.objects.map((o) => o.id === objectId ? updatedObj : o);
+            const preservedSelectionId = state.selectedObjectId ?? objectId;
+
+            // ✅ beforeObjects wordt vastgelegd bij drag-start (mousedown) — zie setSegmentBulge
+            const cmd: Command = {
+                kind: "replaceMany",
+                before: clonePolyObjectsForHistory(beforeObjects ?? state.objects),
+                after: clonePolyObjectsForHistory(nextObjects),
+            };
+
+            const finalObjects = applyCommand(state as ProjectState, cmd);
+            const selIds = preservedSelectionId ? [preservedSelectionId] : [];
+
+            return {
+                objects: finalObjects,
+                selectedObjectId: preservedSelectionId,
+                selectedObjectIds: selIds,
+                nextPlantbedNo: recalcNextPlantbedNo(finalObjects),
+                undoStack: [...state.undoStack, cmd],
+                redoStack: [],
+            };
+        }),
 
     commitBoundarySegmentsEdit: (objectId, beforeObject, afterBoundarySegments) =>
         set((state) => {
@@ -5995,7 +6183,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         type,
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
-                        bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
+                        bulges: getMergedPieceBulges(mergeInput, piece),
                     }))
                 : drawPieces
                     .filter((piece) => piece.outer.length >= 6)
@@ -6086,6 +6274,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     ...o,
                     points: toPoints,
                     holes: o.holes ? translateHoles(o.holes, dx, dy) : o.holes,
+                    boundarySegments: o.boundarySegments
+                        ? translateBoundarySegments(o.boundarySegments, dx, dy)
+                        : o.boundarySegments,
                 };
             });
 
@@ -6102,14 +6293,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 const relevantMoved = movedObjects.filter(
                     (m) =>
                         !isPolylineObject(m) &&
-                        m.type !== "treebed" &&
-                        TYPE_Z_INDEX[obj.type] < TYPE_Z_INDEX[m.type]
+                        m.type !== "treebed"
                 );
 
                 if (relevantMoved.length === 0) continue;
 
                 const pieces = subtractPolygonsPieces(obj, relevantMoved);
-                if (!pieces || pieces.length === 0) continue;
+                if (!pieces || pieces.length === 0) {
+                    if (relevantMoved.some((moved) => polyObjectsActuallyOverlap(obj, moved))) {
+                        toRemove.add(obj.id);
+                    }
+                    continue;
+                }
 
                 toRemove.add(obj.id);
 
@@ -6122,7 +6317,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                         id: idx === 0 ? obj.id : makeId(),
                         points: piece.outer,
                         holes: piece.holes?.length ? piece.holes : undefined,
-                        bulges: remapBulgesToRing(obj.points, obj.bulges, piece.outer),
+                        bulges: getDiffPieceBulges(obj, piece),
                         corners: remapCornersToRing(obj.points, obj.corners, piece.outer),
                     });
                 }
@@ -6153,17 +6348,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     continue;
                 }
 
-                const higherBlockers = updatedObjects.filter(
-                    (o) =>
-                        o.type !== "treebed" &&
-                        !isPolylineObject(o) &&
-                        TYPE_Z_INDEX[o.type] > TYPE_Z_INDEX[moved.type]
-                );
-
-                const cutPieces =
-                    higherBlockers.length > 0
-                        ? subtractPolygonsPieces(moved, higherBlockers)
-                        : [{ outer: moved.points, holes: moved.holes ?? [] }];
+                const cutPieces = [{ outer: moved.points, holes: moved.holes ?? [] }];
 
                 if (!cutPieces || cutPieces.length === 0) continue;
 
@@ -6198,11 +6383,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     // Alleen bestaande plantvakken die echt geraakt worden mogen worden uitgesneden.
                     // Anders blijven holes van niet-betrokken plantvakken intact.
                     const touchedExistingPlantbeds = existingPlantbeds.filter((existing) =>
-                        movedPieces.some((piece) =>
-                            polygonsActuallyTouchOrOverlap(existing.points, piece.points) ||
-                            polygonContainsPolygon(existing.points, piece.points) ||
-                            polygonContainsPolygon(piece.points, existing.points)
-                        )
+                        movedPieces.some((piece) => polyObjectsActuallyOverlap(existing, piece))
                     );
 
                     for (const existing of touchedExistingPlantbeds) {
@@ -6223,7 +6404,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                                 id: idx === 0 ? existing.id : makeId(),
                                 points: piece.outer,
                                 holes: piece.holes?.length ? piece.holes : undefined,
-                                bulges: remapBulgesToRing(existing.points, existing.bulges, piece.outer),
+                                bulges: getDiffPieceBulges(existing, piece),
                                 corners: remapCornersToRing(existing.points, existing.corners, piece.outer),
                             });
                         });
@@ -6276,8 +6457,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                             id: nextId,
                             points: piece.outer,
                             holes: piece.holes?.length ? piece.holes : undefined,
-                            bulges: remapBulgesFromSourcesToRing(mergeInput, piece.outer),
-                            corners: remapCornersToRing(moved.points, moved.corners, piece.outer),
+                            bulges: getMergedPieceBulges(mergeInput, piece),
+                            corners: remapCornersFromSourcesToRing(mergeInput, piece.outer),
                         });
 
                         if (idx === primaryMergedIdx) {

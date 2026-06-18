@@ -634,6 +634,7 @@ export default function PlantSelectionListCard() {
                     ...item.plant,
                     pricePerPiece: selectedVariant ? selectedVariant.price : item.plant.pricePerPiece,
                 },
+                bulkPrices: selectedVariant?.bulkPrices ?? [],
             };
         });
     };

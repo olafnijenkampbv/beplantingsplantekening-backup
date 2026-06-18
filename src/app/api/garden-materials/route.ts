@@ -7,6 +7,7 @@
  * Query parameters (all optional):
  *   q           string   Free-text search on name
  *   inStockOnly "true"   Only return materials with at least one in_stock variant
+ *   subcategory string   "Potgrond" | "Daktuinen" | "Gazon" | "Meststoffen" | "Overig"
  *   sort        "a-z" | "z-a"
  *
  * Response shape: ApiGardenMaterialsResponse (see gardenMaterialTypes.ts)
@@ -28,6 +29,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
         const q = (searchParams.get("q") ?? "").trim().toLowerCase();
         const inStockOnly = searchParams.get("inStockOnly") === "true";
+        const subcategory = (searchParams.get("subcategory") ?? "").trim();
         const rawSort = searchParams.get("sort");
         const sort: "a-z" | "z-a" | undefined =
             rawSort === "a-z" || rawSort === "z-a" ? rawSort : undefined;
@@ -45,13 +47,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         if (inStockOnly) {
             conditions.push("m.in_stock = 1");
         }
+        if (subcategory) {
+            conditions.push("m.subcategory = ?");
+            bindings.push(subcategory);
+        }
 
         const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
         const orderBy = sort === "z-a" ? "ORDER BY m.name DESC" : "ORDER BY m.name ASC";
 
         const materialRows = db
             .prepare<(string | number)[], GardenMaterialRow>(
-                `SELECT m.id, m.name, m.image_url, m.min_price, m.in_stock, m.updated_at
+                `SELECT m.id, m.name, m.image_url, m.min_price, m.in_stock, m.subcategory, m.updated_at
                  FROM garden_materials m
                  ${where}
                  ${orderBy}`
@@ -94,6 +100,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             imageUrl: m.image_url,
             minPrice: m.min_price,
             inStock: m.in_stock === 1,
+            subcategory: m.subcategory || "Overig",
             variants: variantsByMaterial.get(m.id) ?? [],
         }));
 

@@ -516,7 +516,7 @@ export default function PlantSelectionPage() {
                                         sortValue={sortValue}
                                         onChangeSort={setSortValue}
                                         onChangeViewMode={setViewMode}
-                                        onAddToPlantList={(material, variant) =>
+                                        onAddToPlantList={(material, variant, fixedSize) =>
                                             addPlantToList(
                                                 {
                                                     id: material.id,
@@ -536,12 +536,13 @@ export default function PlantSelectionPage() {
                                                     stikstofbehoefte: "",
                                                     toelichting: "",
                                                     imageUrl: material.imageUrl,
+                                                    additionalImageUrls: [],
                                                     pricePerPiece: variant.price,
                                                     inStock: variant.availability === "in_stock",
                                                     keurmerken: [],
                                                 },
                                                 variant.sizeLabel,
-                                                true
+                                                fixedSize ?? true
                                             )
                                         }
                                     />
@@ -578,7 +579,9 @@ export default function PlantSelectionPage() {
                                         }}
                                         onChangeSort={setSortValue}
                                         onChangeViewMode={setViewMode}
-                                        onAddToPlantList={(plant, size) => addPlantToList(plant, size, !!size)}
+                                        onAddToPlantList={(plant, size, fixedSize, bulkPrices) =>
+                                            addPlantToList(plant, size, fixedSize ?? !!size, bulkPrices)
+                                        }
                                         onRemoveFilterChip={handleRemoveFilterChip}
                                         onClearAllFilters={handleClearAllFilters}
                                         onLoadMoreFromApi={loadMoreCatalogPlants}

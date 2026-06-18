@@ -417,3 +417,18 @@ export function snapRadius(r: number, maxR: number): SnapResult {
   }
   return { value: r, name: null, snapped: false };
 }
+
+// ── Array helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Normaliseert een bulges-array zodat de lengte exact gelijk is aan het aantal
+ * vertices (points.length / 2). Ontbrekende slots → 0, overtollige → afgekapt.
+ */
+export function normalizeBulges(points: number[], bulges?: number[]): number[] {
+  const n = Math.floor(points.length / 2);
+  if (!bulges || bulges.length === 0) return new Array(n).fill(0);
+  if (bulges.length === n) return bulges;
+  const out = new Array(n).fill(0);
+  for (let i = 0; i < Math.min(n, bulges.length); i++) out[i] = bulges[i];
+  return out;
+}

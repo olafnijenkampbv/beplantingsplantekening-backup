@@ -51,6 +51,18 @@ import {
     getBoundaryVertexPoints,
 } from "@/features/editor/lib/boundarySystem";
 
+const cloneObjectsForEditSnapshot = (objects: PolyObject[]): PolyObject[] =>
+    objects.map((object) => ({
+        ...object,
+        points: [...object.points],
+        holes: object.holes?.map((hole) => [...hole]),
+        bulges: object.bulges ? [...object.bulges] : undefined,
+        corners: object.corners ? [...object.corners] : undefined,
+        boundarySegments: object.boundarySegments?.map((segment) => [...segment]),
+        renderPieces: object.renderPieces?.map((piece) => [...piece]),
+        customStyle: object.customStyle ? { ...object.customStyle } : undefined,
+    }));
+
 const getReadablePlantbedLabelColor = (fillColor: string) => {
     const hex = fillColor.trim().replace("#", "");
 
@@ -90,6 +102,36 @@ function getObjectRenderStyle(object: PolyObject) {
         ...OBJECT_STYLES[object.type],
         ...(object.customStyle ?? {}),
     };
+}
+
+function getObjectContourPointsForBounds(object: PolyObject, points: number[]) {
+    if (!points || points.length < 6 || isUnifiedBoundaryType(object.type)) {
+        return points;
+    }
+
+    const pointCount = points.length / 2;
+    const bulges =
+        object.bulges && object.bulges.length === pointCount
+            ? normalizeBulges(points, object.bulges)
+            : Array(pointCount).fill(0);
+    const corners =
+        object.corners && object.corners.length === pointCount
+            ? normalizeCorners(points, object.corners)
+            : Array(pointCount).fill(0);
+
+    const hasBulges = bulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+    const hasCorners = corners.some((c) => (c || 0) > 0);
+
+    if (!hasBulges && !hasCorners) {
+        return points;
+    }
+
+    return densifyBulgedRing(
+        points,
+        bulges,
+        40,
+        hasCorners ? corners : undefined
+    );
 }
 
 function renderNumberAreaLabel(
@@ -1696,20 +1738,45 @@ function EditorTopLayerInner(props: any) {
                     );
                     if (!hoveredObject) return null;
 
+                    const hoverBulges = normalizeBulges(hoveredObject.points, hoveredObject.bulges);
+                    const hoverCorners = normalizeCorners(hoveredObject.points, hoveredObject.corners);
+                    const hoverHasCurves =
+                        hoverBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ||
+                        hoverCorners.some((c) => (c || 0) > STRAIGHT_THRESHOLD);
+
                     return (
                         <>
-                            <Line
-                                points={hoveredObject.points}
-                                closed
-                                fillEnabled={false}
-                                stroke={COLORS.orange}
-                                strokeWidth={4}
-                                dash={[10, 6]}
-                                dashEnabled
-                                listening={false}
-                                perfectDrawEnabled={false}
-                                opacity={1}
-                            />
+                            {hoverHasCurves ? (
+                                <Shape
+                                    sceneFunc={(ctx, shape) => {
+                                        ctx.beginPath();
+                                        traceBulgedPath(ctx, hoveredObject.points, hoverBulges, true, hoverCorners);
+                                        ctx.closePath();
+                                        ctx.strokeShape(shape);
+                                    }}
+                                    fillEnabled={false}
+                                    stroke={COLORS.orange}
+                                    strokeWidth={4}
+                                    dash={[10, 6]}
+                                    dashEnabled
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                    opacity={1}
+                                />
+                            ) : (
+                                <Line
+                                    points={hoveredObject.points}
+                                    closed
+                                    fillEnabled={false}
+                                    stroke={COLORS.orange}
+                                    strokeWidth={4}
+                                    dash={[10, 6]}
+                                    dashEnabled
+                                    listening={false}
+                                    perfectDrawEnabled={false}
+                                    opacity={1}
+                                />
+                            )}
 
                             {(hoveredObject.holes ?? []).map((hole, holeIndex) => (
                                 <Line
@@ -2060,9 +2127,10 @@ function EditorTopLayerInner(props: any) {
                                         const treebedVisual = getTreebedVisual(liveTreebedPoints, obj.treebedVariant);
                                         const { cx, cy, trunkRadius, bbox } = treebedVisual;
                                         const corners = getTreebedResizeCorners(liveTreebedPoints, obj.treebedVariant);
-                                        const handleRadius = 6;
-                                        const handleHitRadius = 14;
-                                        const rotateHotspotRadius = 16;
+                                        const handleRadius = 7 / stageScale;
+                                        const handleStrokeWidth = 2 / stageScale;
+                                        const handleHitRadius = 14 / stageScale;
+                                        const rotateHotspotRadius = 16 / stageScale;
 
                                         const displayRotationDeg =
                                             treebedVisual.shape === "rect"
@@ -2070,6 +2138,7 @@ function EditorTopLayerInner(props: any) {
                                                 : 0;
 
                                         const canRotateTreebed =
+                                            selected.length === 1 &&
                                             obj.treebedVariant === "espalier" &&
                                             treebedVisual.shape === "rect";
 
@@ -2083,7 +2152,7 @@ function EditorTopLayerInner(props: any) {
                                                 const dx = corner.x - cx;
                                                 const dy = corner.y - cy;
                                                 const len = Math.hypot(dx, dy) || 1;
-                                                const outward = handleHitRadius + 12;
+                                                const outward = handleHitRadius + (12 / stageScale);
 
                                                 return {
                                                     x: corner.x + (dx / len) * outward,
@@ -2117,7 +2186,7 @@ function EditorTopLayerInner(props: any) {
                                                 { corner: "bl", point: corners.bl },
                                             ];
 
-                                        const treebedSelectionStrokeWidth = 3;
+                                        const treebedSelectionStrokeWidth = 3 / stageScale;
 
                                         return (
                                             <React.Fragment key={`selected-treebed-${obj.id}`}>
@@ -2297,7 +2366,7 @@ function EditorTopLayerInner(props: any) {
                                                     false
                                                 )}
 
-                                                {treebedHandles.map(({ corner, point }) => {
+                                                {selected.length === 1 && treebedHandles.map(({ corner, point }) => {
                                                     const resizeCursor =
                                                         corner === "tl" || corner === "br"
                                                             ? "nwse-resize"
@@ -2354,7 +2423,7 @@ function EditorTopLayerInner(props: any) {
                                                                 radius={handleRadius}
                                                                 fill="#ffffff"
                                                                 stroke={COLORS.orange}
-                                                                strokeWidth={2}
+                                                                strokeWidth={handleStrokeWidth}
                                                                 draggable={false}
                                                                 listening={false}
                                                                 perfectDrawEnabled={false}
@@ -3292,6 +3361,8 @@ function EditorTopLayerInner(props: any) {
                                                                     x1, y1, x2, y2,
                                                                     workingBulge: bulges[segIdx] ?? 0,
                                                                     snapName: null,
+                                                                    // ✅ Vastgelegd op drag-start zodat undo de juiste before-state heeft
+                                                                    beforeObjects: cloneObjectsForEditSnapshot(useProjectStore.getState().objects),
                                                                 };
 
                                                                 // Fill active handle blue, dim all others
@@ -3425,6 +3496,8 @@ function EditorTopLayerInner(props: any) {
                                                                     nx, ny,
                                                                     workingRadius: r,
                                                                     snapName: null,
+                                                                    // ✅ Vastgelegd op drag-start zodat undo de juiste before-state heeft
+                                                                    beforeObjects: cloneObjectsForEditSnapshot(useProjectStore.getState().objects),
                                                                 };
 
                                                                 // Fill active handle blue, dim all others
@@ -3459,7 +3532,7 @@ function EditorTopLayerInner(props: any) {
 
                                 {/* Active corner drag label is rendered via HelloEditor CornerDragOverlay */}
 
-                                {activeTool === "select" && obj.type !== "treebed" && !isUnifiedBoundaryType(obj.type) && (() => {
+                                {activeTool === "select" && selected.length === 1 && obj.type !== "treebed" && !isUnifiedBoundaryType(obj.type) && (() => {
                                     const isVertexEditingThisPolygon =
                                         isVertexDraggingRef.current &&
                                         vertexEditRef.current?.objectId === obj.id &&
@@ -3797,7 +3870,7 @@ function EditorTopLayerInner(props: any) {
                                                 acc: { x: number; y: number; r: number; b: number },
                                                 obj: PolyObject
                                             ) => {
-                                                const bb = bboxFromPoints(obj.points);
+                                                const bb = bboxFromPoints(getObjectContourPointsForBounds(obj, obj.points));
 
                                                 return {
                                                     x: Math.min(acc.x, bb.x),
@@ -3848,6 +3921,7 @@ function EditorTopLayerInner(props: any) {
                                                         : isEdgeEditingThisPolygon
                                                             ? edgeResizeRef.current!.workingPoints
                                                             : obj.points;
+                                            const labelContourPoints = getObjectContourPointsForBounds(obj, labelPoints);
 
                                             const labelText =
                                                 obj.type === "plantbed"
@@ -3925,7 +3999,7 @@ function EditorTopLayerInner(props: any) {
                                                     preferredLabelX = objectAnchorX + nx * (LABEL_GAP_PX / stageScale);
                                                     preferredLabelY = objectAnchorY + ny * (LABEL_GAP_PX / stageScale);
                                                 } else {
-                                                    const bb = bboxFromPoints(labelPoints);
+                                                    const bb = bboxFromPoints(labelContourPoints);
                                                     objectAnchorX = bb.x + bb.w / 2;
                                                     objectAnchorY = bb.y;
 
@@ -3933,8 +4007,8 @@ function EditorTopLayerInner(props: any) {
                                                     preferredLabelY = objectAnchorY - (LABEL_GAP_PX / stageScale);
                                                 }
                                             } else {
-                                                const bb = bboxFromPoints(labelPoints);
-                                                const pts = labelPoints;
+                                                const bb = bboxFromPoints(labelContourPoints);
+                                                const pts = labelContourPoints;
 
                                                 const eps = 1e-6;
                                                 const topY = bb.y;
@@ -3968,7 +4042,7 @@ function EditorTopLayerInner(props: any) {
                                                 interactive: isPrimary,
                                             });
 
-                                            const objectBounds = bboxFromPoints(labelPoints);
+                                            const objectBounds = bboxFromPoints(labelContourPoints);
 
                                             return {
                                                 obj,
@@ -4311,6 +4385,7 @@ function EditorTopLayerInner(props: any) {
                                                                 showPlantLinkInfo={showPlantLinkInfoInLabels}
                                                                 interactive={item.isPrimary}
                                                                 onColorPanelOpenChange={props.onColorPanelOpenChange}
+                                                                onObjectPanelOpenChange={props.onObjectPanelOpenChange}
                                                                 pointerSide={
                                                                     item.laneSide === "left"
                                                                         ? "right"

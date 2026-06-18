@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
+import { useScrollLock } from "@/hooks/useScrollLock";
 
 type Props = {
     isOpen: boolean;
@@ -31,6 +32,7 @@ const CreateDrawingModal: React.FC<Props> = ({
     const [budget, setBudget] = useState<string>("");
     const [showRequiredError, setShowRequiredError] = useState(false);
     const [showDuplicateError, setShowDuplicateError] = useState(false);
+    useScrollLock(isOpen);
 
     // Sync fields when modal opens (supports switching between different drawings in edit mode)
     useEffect(() => {

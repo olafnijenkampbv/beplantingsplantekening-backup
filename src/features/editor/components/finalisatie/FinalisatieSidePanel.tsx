@@ -3,7 +3,9 @@
 import React, { useMemo } from "react";
 import { useProjectStore } from "@/state/projectStore";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
+import { usePlantVariantStore } from "@/features/editor/state/plantVariantStore";
 import { buildAdviceData, type ProjectPlantLike } from "@/features/editor/lib/plantAdvice";
+import { getPlantUnitPriceForQuantity, withResolvedBulkPrices } from "@/features/editor/lib/plantPricing";
 import type { PolyObject } from "@/state/projectStore";
 
 const COLORS = {
@@ -30,15 +32,33 @@ export default function FinalisatieSidePanel() {
     const plantbedLinks = useProjectStore((s: { plantbedLinks: Record<string, string[]> }) => s.plantbedLinks);
     const distributionOverrides = useProjectStore((s: { distributionOverrides: Record<string, Record<string, number>> }) => s.distributionOverrides);
     const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
+    const variantCache = usePlantVariantStore((s) => s.cache);
+    const fetchVariants = usePlantVariantStore((s) => s.fetchVariants);
+
+    React.useEffect(() => {
+        for (const item of plantListItems) {
+            if (item.plant.category !== "Tuinmaterialen") {
+                fetchVariants(item.plant.id);
+            }
+        }
+    }, [plantListItems, fetchVariants]);
+
+    const pricedPlantListItems = useMemo(
+        () =>
+            plantListItems.map((item) =>
+                withResolvedBulkPrices(item, variantCache[item.plant.id]?.variants ?? [])
+            ),
+        [plantListItems, variantCache]
+    );
 
     // Splits planten en tuinmaterialen — tuinmaterialen nooit via plantbedLinks tellen
     const tuinmaterialenIds = useMemo(
-        () => new Set(plantListItems.filter((i) => i.plant.category === "Tuinmaterialen").map((i) => i.id)),
-        [plantListItems]
+        () => new Set(pricedPlantListItems.filter((i) => i.plant.category === "Tuinmaterialen").map((i) => i.id)),
+        [pricedPlantListItems]
     );
 
     const plants = useMemo<ProjectPlantLike[]>(() => {
-        return plantListItems
+        return pricedPlantListItems
             .filter((item) => !tuinmaterialenIds.has(item.id))
             .map((item) => ({
                 id: item.id,
@@ -46,10 +66,10 @@ export default function FinalisatieSidePanel() {
                 dutch: item.plant.dutchName,
                 planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2,
             }));
-    }, [plantListItems, tuinmaterialenIds]);
+    }, [pricedPlantListItems, tuinmaterialenIds]);
 
     const { subtotal, btw, total } = useMemo(() => {
-        let subtotal = 0;
+        const quantityByItemId = new Map<string, number>();
 
         for (const [objectId, linkedPlantIds] of Object.entries(plantbedLinks)) {
             if (!linkedPlantIds || linkedPlantIds.length === 0) continue;
@@ -72,27 +92,28 @@ export default function FinalisatieSidePanel() {
             for (const row of adviceData.rows) {
                 if (row.adviceCount === null) continue;
 
-                const listItem = plantListItems.find(
-                    (item) => item.id === row.plantId
+                const count = row.adviceCount;
+                quantityByItemId.set(
+                    row.plantId,
+                    (quantityByItemId.get(row.plantId) ?? 0) + count
                 );
-
-                const effectiveCount =
-                    listItem && listItem.quantity > 0
-                        ? listItem.quantity
-                        : row.adviceCount;
-
-                const pricePerPiece = listItem?.plant?.pricePerPiece ?? 0;
-
-                subtotal += effectiveCount * pricePerPiece;
             }
         }
 
+        let subtotal = 0;
+        for (const [itemId, adviceCount] of quantityByItemId) {
+            const item = pricedPlantListItems.find((listItem) => listItem.id === itemId);
+            const effectiveCount = item && item.quantity > 0 ? item.quantity : adviceCount;
+            const pricePerPiece = getPlantUnitPriceForQuantity(item, effectiveCount) ?? 0;
+            subtotal += effectiveCount * pricePerPiece;
+        }
+
         // Tuinmaterialen altijd apart optellen (nooit via plantbedLinks)
-        for (const item of plantListItems) {
+        for (const item of pricedPlantListItems) {
             if (!tuinmaterialenIds.has(item.id)) continue;
-            const price = item.plant.pricePerPiece ?? 0;
-            if (price <= 0) continue;
             const count = item.quantity > 0 ? item.quantity : 1;
+            const price = getPlantUnitPriceForQuantity(item, count) ?? 0;
+            if (price <= 0) continue;
             subtotal += count * price;
         }
 
@@ -100,7 +121,7 @@ export default function FinalisatieSidePanel() {
         const total = subtotal + btw;
 
         return { subtotal, btw, total };
-    }, [objects, plantbedLinks, distributionOverrides, plants, plantListItems, tuinmaterialenIds]);
+    }, [objects, plantbedLinks, distributionOverrides, plants, pricedPlantListItems, tuinmaterialenIds]);
 
     return (
         <div className="flex flex-col gap-4">

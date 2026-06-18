@@ -1,5 +1,11 @@
-import { PolyObject } from "@/state/projectStore";
+import type { PolyObject } from "@/state/projectStore";
 import { bboxFromPoints } from "@/features/editor/lib/editorCanvasMath";
+import {
+    densifyBulgedRing,
+    normalizeCorners,
+    STRAIGHT_THRESHOLD,
+} from "@/features/editor/lib/bulgeMath";
+import { normalizeBulges } from "@/state/projectStore";
 
 export type AlignmentGuide = {
     id: string;
@@ -23,20 +29,59 @@ type AlignmentCandidate = {
     guide: AlignmentGuide;
 };
 
-function getAlignmentBoxForObject(object: PolyObject) {
+function getAlignmentPointsForObject(object: PolyObject, pointsOverride?: number[]) {
+    const points = pointsOverride ?? object.points;
+    const pointCount = points.length / 2;
+
     const boundarySegmentPoints =
         object.boundarySegments?.flatMap((segment) => segment) ?? [];
 
     const holePoints =
         object.holes?.flatMap((hole) => hole) ?? [];
 
-    const allPoints = [
-        ...object.points,
+    const bulges = pointCount >= 3
+        ? normalizeBulges(points, object.bulges)
+        : [];
+    const corners = pointCount >= 3
+        ? normalizeCorners(points, object.corners)
+        : [];
+
+    const hasBulges = bulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+    const hasCorners = corners.some((c) => (c || 0) > 0);
+
+    const outerPoints =
+        pointCount >= 3 && (hasBulges || hasCorners)
+            ? densifyBulgedRing(
+                points,
+                bulges,
+                40,
+                hasCorners ? corners : undefined
+            )
+            : points;
+
+    return [
+        ...outerPoints,
         ...boundarySegmentPoints,
         ...holePoints,
     ];
+}
+
+function getAlignmentBoxForObject(object: PolyObject) {
+    const allPoints = getAlignmentPointsForObject(object);
 
     return bboxFromPoints(allPoints.length >= 4 ? allPoints : object.points);
+}
+
+function getAlignmentBoxForWorkingObject(object: PolyObject, workingPoints: number[]) {
+    const allPoints = getAlignmentPointsForObject(object, workingPoints);
+
+    return bboxFromPoints(allPoints.length >= 4 ? allPoints : workingPoints);
+}
+
+function translateFlatPoints(points: number[], dx: number, dy: number) {
+    return points.map((value, index) =>
+        index % 2 === 0 ? value + dx : value + dy
+    );
 }
 
 function getRangeGap(
@@ -187,29 +232,15 @@ export function calculateAlignmentSnapForSelection(args: {
         return { dx, dy, guides: [] as AlignmentGuide[] };
     }
 
-    const selectedPoints = selectedObjects.flatMap((object) => {
-        const boundarySegmentPoints =
-            object.boundarySegments?.flatMap((segment) => segment) ?? [];
-
-        const holePoints =
-            object.holes?.flatMap((hole) => hole) ?? [];
-
-        return [
-            ...object.points,
-            ...boundarySegmentPoints,
-            ...holePoints,
-        ];
-    });
+    const selectedPoints = selectedObjects.flatMap((object) =>
+        getAlignmentPointsForObject(object)
+    );
 
     if (selectedPoints.length < 4) {
         return { dx, dy, guides: [] as AlignmentGuide[] };
     }
 
-    const sourceBox = bboxFromPoints(
-        selectedPoints.map((value, index) =>
-            index % 2 === 0 ? value + dx : value + dy
-        )
-    );
+    const sourceBox = bboxFromPoints(translateFlatPoints(selectedPoints, dx, dy));
 
     const sourceAnchorsX = [
         { kind: "left", value: sourceBox.x },
@@ -404,7 +435,10 @@ export function calculateAlignmentSnapForEdgeResize(args: {
         return { x, y, guides: [] as AlignmentGuide[] };
     }
 
-    const sourceBox = bboxFromPoints(workingPoints);
+    const sourceObject = objects.find((object) => object.id === objectId);
+    const sourceBox = sourceObject
+        ? getAlignmentBoxForWorkingObject(sourceObject, workingPoints)
+        : bboxFromPoints(workingPoints);
     const snapThreshold = Math.max(4, 10 / Math.max(stageScale, 0.1));
 
     const bestGuideRef: {

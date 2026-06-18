@@ -15,6 +15,7 @@ export type GardenMaterialRow = {
     image_url: string;
     min_price: number;
     in_stock: number;     // 0 | 1
+    subcategory: string;  // Potgrond | Daktuinen | Gazon | Meststoffen | Overig
     updated_at: string;
 };
 
@@ -44,6 +45,7 @@ export type ApiGardenMaterial = {
     imageUrl: string;
     minPrice: number;
     inStock: boolean;
+    subcategory: string;
     variants: ApiGardenMaterialVariant[];
 };
 

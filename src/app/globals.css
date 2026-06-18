@@ -98,6 +98,15 @@ body {
   background-color: #b5b5b5;
 }
 
+.app-hidden-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.app-hidden-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Konva Html label containers moeten boven de PlantSidebar (z-index: 30) uitkomen */
 [data-konva-label="true"] {
   z-index: 40 !important;

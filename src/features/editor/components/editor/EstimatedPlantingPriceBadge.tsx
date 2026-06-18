@@ -7,6 +7,9 @@ import {
     buildAdviceData,
     type ProjectPlantLike,
 } from "@/features/editor/lib/plantAdvice";
+import { getPlantUnitPriceForQuantity, withResolvedBulkPrices } from "@/features/editor/lib/plantPricing";
+import { usePlantVariantStore } from "@/features/editor/state/plantVariantStore";
+import type { BulkPriceTier } from "@/lib/db/plantTypes";
 
 // ---------------------------------------------------------------------------
 // Constanten
@@ -76,13 +79,14 @@ type LinkStatus = {
 // ---------------------------------------------------------------------------
 
 function computePriceData(params: {
-    plantListItems: Array<{ id: string; quantity: number; plant: { id: string; category?: string; pricePerPiece?: number } }>;
+    plantListItems: Array<{ id: string; quantity: number; size?: string; bulkPrices?: BulkPriceTier[]; plant: { id: string; category?: string; pricePerPiece?: number } }>;
     objects: ReturnType<typeof useProjectStore.getState>["objects"];
     plantbedLinks: ReturnType<typeof useProjectStore.getState>["plantbedLinks"];
     projectPlants: ProjectPlantLike[];
     distributionOverrides: Record<string, Record<string, number>>;
+    variantsByPlantId: Record<string, { sizeLabel: string; bulkPrices?: BulkPriceTier[] }[]>;
 }): PriceData {
-    const { plantListItems, objects, plantbedLinks, projectPlants, distributionOverrides } = params;
+    const { plantListItems, objects, plantbedLinks, projectPlants, distributionOverrides, variantsByPlantId } = params;
 
     // Splits plantenlijst in planten en tuinmaterialen
     // Tuinmaterialen worden NOOIT via plantbedLinks geteld — altijd apart
@@ -91,18 +95,15 @@ function computePriceData(params: {
     );
     const tuinmaterialenIds = new Set(tuinmaterialenItems.map((item) => item.id));
 
-    // Bouw een map plantId -> pricePerPiece voor planten (excl. tuinmaterialen)
+    // Bouw een map PlantListItem.id -> lijstregel voor planten (excl. tuinmaterialen)
     // item.id gebruiken (PlantListItem.id) omdat plantbedLinks ook item.id opslaat
-    const priceMap = new Map<string, number>();
+    const itemMap = new Map<string, (typeof plantListItems)[number]>();
     for (const item of plantListItems) {
         if (tuinmaterialenIds.has(item.id)) continue; // tuinmaterialen apart optellen
-        const price = item.plant.pricePerPiece;
-        if (typeof price === "number" && Number.isFinite(price)) {
-            priceMap.set(item.id, price);
-        }
+        itemMap.set(item.id, withResolvedBulkPrices(item, variantsByPlantId[item.plant.id]));
     }
 
-    let subtotal = 0;
+    const quantityByItemId = new Map<string, number>();
     let hasMissingPrices = false;
 
     // Loop over alle objecten die gekoppelde planten hebben (alleen echte planten)
@@ -130,22 +131,37 @@ function computePriceData(params: {
         for (const row of adviceData.rows) {
             if (row.adviceCount === null) continue;
 
-            const price = priceMap.get(row.plantId);
-            if (typeof price !== "number" || !Number.isFinite(price)) {
-                hasMissingPrices = true;
-                continue;
-            }
-
-            subtotal += row.adviceCount * price;
+            quantityByItemId.set(
+                row.plantId,
+                (quantityByItemId.get(row.plantId) ?? 0) + row.adviceCount
+            );
         }
+    }
+
+    let subtotal = 0;
+    for (const [itemId, count] of quantityByItemId) {
+        const item = itemMap.get(itemId);
+        if (!item) {
+            hasMissingPrices = true;
+            continue;
+        }
+        const price = getPlantUnitPriceForQuantity(
+            withResolvedBulkPrices(item, variantsByPlantId[item.plant.id]),
+            count
+        );
+        if (typeof price !== "number" || !Number.isFinite(price)) {
+            hasMissingPrices = true;
+            continue;
+        }
+        subtotal += count * price;
     }
 
     // Tuinmaterialen altijd apart optellen (niet via plantbedLinks)
     // Gebruik item.quantity als handmatig ingesteld, anders 1 als standaard
     for (const item of tuinmaterialenItems) {
-        const price = item.plant.pricePerPiece;
-        if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) continue;
         const count = item.quantity > 0 ? item.quantity : 1;
+        const price = getPlantUnitPriceForQuantity(item, count);
+        if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) continue;
         subtotal += count * price;
     }
 
@@ -205,6 +221,24 @@ export default function EstimatedPlantingPriceBadge({ budget }: { budget?: numbe
     const projectPlants = useProjectStore((s) => s.plants as ProjectPlantLike[]);
     const distributionOverrides = useProjectStore((s) => (s as any).distributionOverrides as Record<string, Record<string, number>>);
     const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
+    const variantCache = usePlantVariantStore((s) => s.cache);
+    const fetchVariants = usePlantVariantStore((s) => s.fetchVariants);
+
+    React.useEffect(() => {
+        for (const item of plantListItems) {
+            if (item.plant.category !== "Tuinmaterialen") {
+                fetchVariants(item.plant.id);
+            }
+        }
+    }, [plantListItems, fetchVariants]);
+
+    const variantsByPlantId = useMemo(() => {
+        const map: Record<string, { sizeLabel: string; bulkPrices?: BulkPriceTier[] }[]> = {};
+        for (const item of plantListItems) {
+            map[item.plant.id] = variantCache[item.plant.id]?.variants ?? [];
+        }
+        return map;
+    }, [plantListItems, variantCache]);
 
     const priceData = useMemo(
         () =>
@@ -214,8 +248,9 @@ export default function EstimatedPlantingPriceBadge({ budget }: { budget?: numbe
                 plantbedLinks,
                 projectPlants,
                 distributionOverrides,
+                variantsByPlantId,
             }),
-        [plantListItems, objects, plantbedLinks, projectPlants, distributionOverrides]
+        [plantListItems, objects, plantbedLinks, projectPlants, distributionOverrides, variantsByPlantId]
     );
 
     const linkStatus = useMemo(

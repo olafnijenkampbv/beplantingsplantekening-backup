@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { StaffelLink, StaffelPopover } from "@/features/editor/components/StaffelPopover";
 import { PlantImg } from "@/features/editor/components/PlantImg";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 import type { ApiPlant } from "@/lib/db/plantTypes";
@@ -8,20 +10,104 @@ import {
     usePlantSelectionStore,
     type PlantListItem,
 } from "@/features/editor/state/plantSelectionStore";
+import { usePlantVariantStore } from "@/features/editor/state/plantVariantStore";
 import { useProjectStore, OBJECT_STYLES } from "@/state/projectStore";
 import { type ObjectType } from "@/features/editor/components/editor/objectMenuConfig";
 import { buildAdviceData, getEstimatedHedgeLengthInMeters, type ProjectPlantLike } from "@/features/editor/lib/plantAdvice";
+import { getResolvedBulkPrices, getPlantTotalPriceForQuantity, getPlantUnitPriceForQuantity, withResolvedBulkPrices } from "@/features/editor/lib/plantPricing";
 import type { PolyObject } from "@/state/projectStore";
 import FinalisatieAdviceCalculation, {
     type PlantAdviceInfo,
     type VakAdviceEntry,
 } from "./FinalisatieAdviceCalculation";
+import ConfirmModal from "@/features/editor/components/ConfirmModal";
+import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 
 type DummyPlantSpecificationRow = {
     label: string;
     value: string;
     iconSrc: string;
 };
+
+type AccessoryAdviceInfo = {
+    name: string;
+    quantity: number;
+    reason: string;
+};
+
+function stuksLabel(quantity: number): string {
+    return quantity === 1 ? "stuk" : "stuks";
+}
+
+function AccessoryAdvicePopup({
+    info,
+    onClose,
+}: {
+    info: AccessoryAdviceInfo | null;
+    onClose: () => void;
+}) {
+    if (!info) return null;
+
+    return createPortal(
+        <div
+            className="fixed inset-0 z-[9999] flex items-center justify-center"
+            style={{
+                background: "rgba(0,0,0,0.33)",
+                backdropFilter: "blur(8px)",
+                WebkitBackdropFilter: "blur(8px)",
+            }}
+            onMouseDown={onClose}
+        >
+            <div
+                className="relative w-[480px] max-w-[calc(100vw-48px)] rounded-md bg-white shadow-lg"
+                style={{ border: "1px solid #E0DEDF" }}
+                onMouseDown={(e) => e.stopPropagation()}
+            >
+                <div className="px-8 pt-7 pb-7">
+                    <div className="text-[20px] font-bold text-black">
+                        Hoe is dit advies berekend?
+                    </div>
+
+                    <div className="mt-4" style={{ height: 1, background: "#E0DEDF" }} />
+
+                    <div className="mt-4 text-[14px] leading-[1.45] text-black">
+                        {"Op basis van je plantenlijst stellen wij voor "}
+                        <span className="font-bold">{info.name}</span>
+                        {" een aantal van "}
+                        <span className="font-bold">{info.quantity} {stuksLabel(info.quantity)}</span>
+                        {" voor."}
+                    </div>
+
+                    {info.reason && (
+                        <div
+                            className="mt-4 rounded-[6px] px-4 py-3 text-[13px] leading-[1.45]"
+                            style={{ backgroundColor: "#EEF0ED", color: "#58694C" }}
+                        >
+                            {info.reason}
+                        </div>
+                    )}
+
+                    <div
+                        className="mt-5 rounded-[6px] px-4 py-3 text-[13px] leading-[1.45]"
+                        style={{ backgroundColor: "#D9EDF7", color: "#31708F" }}
+                    >
+                        Dit is een advies. Je kunt het aantal in de plantenlijst zelf aanpassen.
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="mt-6 h-11 w-full cursor-pointer rounded-md text-[13px] font-semibold text-white"
+                        style={{ backgroundColor: "#E94E1B" }}
+                    >
+                        Sluiten
+                    </button>
+                </div>
+            </div>
+        </div>,
+        document.body
+    );
+}
 
 function buildSpecificationsFromApiPlant(plant: ApiPlant): {
     leftColumn: DummyPlantSpecificationRow[];
@@ -333,6 +419,23 @@ type ObjectLinkGroup = {
     labels: LabelItem[];
 };
 
+function getReadablePlantbedLabelColor(fillColor: string): string {
+    const hex = fillColor.trim().replace("#", "");
+    if (!/^[0-9A-Fa-f]{6}$/.test(hex)) return "#3F6B3F";
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const darken = (v: number) => Math.max(0, Math.round(v * 0.55));
+    const lighten = (v: number) => Math.min(255, Math.round(v + (255 - v) * 0.55));
+    if (hex.toUpperCase() === "F2FDEF") return "#3F6B3F";
+    const rr = luminance > 0.62 ? darken(r) : lighten(r);
+    const gg = luminance > 0.62 ? darken(g) : lighten(g);
+    const bb = luminance > 0.62 ? darken(b) : lighten(b);
+    const toHex = (v: number) => v.toString(16).padStart(2, "0").toUpperCase();
+    return `#${toHex(rr)}${toHex(gg)}${toHex(bb)}`;
+}
+
 function getVakLabelStyle(objectType: string, fill: string, stroke: string): {
     bg: string;
     border: string | null;
@@ -340,7 +443,7 @@ function getVakLabelStyle(objectType: string, fill: string, stroke: string): {
 } {
     if (objectType === "hedge") return { bg: "#95CE86", border: null, text: "#56793E" };
     if (objectType === "treebed") return { bg: "#8FC38E", border: "#476D3C", text: "#476D3C" };
-    return { bg: fill, border: stroke, text: stroke };
+    return { bg: fill, border: stroke, text: getReadablePlantbedLabelColor(fill) };
 }
 
 function buildLinkGroups(
@@ -450,7 +553,7 @@ function buildTotalAdviceCount(
     return total;
 }
 
-function buildPlantAdviceInfoForList(
+export function buildPlantAdviceInfoForList(
     plantId: string,
     plantListItems: PlantListItem[],
     objects: PolyObject[],
@@ -571,6 +674,11 @@ function buildPlantAdviceInfoForList(
 export default function FinalisatiePlantList() {
     const items = usePlantSelectionStore((s) => s.plantListItems);
     const setPlantListItems = usePlantSelectionStore((s) => s.setPlantListItems);
+    const variantCache = usePlantVariantStore((s) => s.cache);
+    const fetchVariants = usePlantVariantStore((s) => s.fetchVariants);
+    const notify = useAppNotify();
+    const [removeItemId, setRemoveItemId] = useState<string | null>(null);
+    const [accessoryAdviceInfo, setAccessoryAdviceInfo] = useState<AccessoryAdviceInfo | null>(null);
 
     const objects = useProjectStore(
         (s: { objects: PolyObject[] }) => s.objects
@@ -582,14 +690,30 @@ export default function FinalisatiePlantList() {
         (s: { distributionOverrides: Record<string, Record<string, number>> }) =>
             s.distributionOverrides
     );
+    useEffect(() => {
+        for (const item of items) {
+            if (item.plant.category !== "Tuinmaterialen") {
+                fetchVariants(item.plant.id);
+            }
+        }
+    }, [items, fetchVariants]);
+
+    const pricedItems = useMemo(
+        () =>
+            items.map((item) =>
+                withResolvedBulkPrices(item, variantCache[item.plant.id]?.variants ?? [])
+            ),
+        [items, variantCache]
+    );
+
     const plants = useMemo<ProjectPlantLike[]>(() => {
-        return items.map((item) => ({
+        return pricedItems.map((item) => ({
             id: item.id,
             latin: item.plant.botanicalName,
             dutch: item.plant.dutchName,
             planthoeveelheidPerM2: item.plant.planthoeveelheidPerM2,
         }));
-    }, [items]);
+    }, [pricedItems]);
 
     const [searchQuery, setSearchQuery] = useState("");
     const [sortValue, setSortValue] = useState("");
@@ -600,6 +724,10 @@ export default function FinalisatiePlantList() {
     const [isDroppingAtTop, setIsDroppingAtTop] = useState(false);
     const [advicePopupInfo, setAdvicePopupInfo] = useState<PlantAdviceInfo | null>(null);
     const [hoveredAdviceId, setHoveredAdviceId] = useState<string | null>(null);
+    const [staffelState, setStaffelState] = useState<{
+        itemId: string;
+        anchorRect: DOMRect;
+    } | null>(null);
 
     const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
     const plantListDragBoundsRef = useRef<HTMLDivElement | null>(null);
@@ -611,7 +739,7 @@ export default function FinalisatiePlantList() {
     const visibleItems = useMemo(() => {
         const normalizedQuery = searchQuery.trim().toLowerCase();
 
-        let nextItems = items.filter((item) => {
+        let nextItems = pricedItems.filter((item) => {
             if (!normalizedQuery) return true;
             return (
                 matchesSearchQuery(item.plant.botanicalName, normalizedQuery) ||
@@ -640,16 +768,16 @@ export default function FinalisatiePlantList() {
             sortValue === "totaalprijs-hoog-laag"
         ) {
             const totalPriceMap = new Map<string, number>();
-            for (const item of items) {
+            for (const item of pricedItems) {
                 const adviceCount = buildTotalAdviceCount(
-                    item.plant.id,
+                    item.id,
                     plantbedLinks,
                     objects,
                     plants,
                     distributionOverrides
                 );
                 const effectiveCount = item.quantity > 0 ? item.quantity : adviceCount;
-                totalPriceMap.set(item.id, effectiveCount * (item.plant.pricePerPiece ?? 0));
+                totalPriceMap.set(item.id, getPlantTotalPriceForQuantity(item, effectiveCount) ?? 0);
             }
             nextItems = [...nextItems].sort((a, b) => {
                 const diff = (totalPriceMap.get(a.id) ?? 0) - (totalPriceMap.get(b.id) ?? 0);
@@ -658,7 +786,7 @@ export default function FinalisatiePlantList() {
         }
 
         return nextItems;
-    }, [items, searchQuery, sortValue, plantbedLinks, objects, plants, distributionOverrides]);
+    }, [pricedItems, searchQuery, sortValue, plantbedLinks, objects, plants, distributionOverrides]);
 
     const firstVisibleItemId = visibleItems[0]?.id ?? null;
 
@@ -930,12 +1058,39 @@ export default function FinalisatiePlantList() {
         updateItem(itemId, (item) => ({ ...item, quantity: nextQuantity }));
     };
 
+    const handleCancelRemove = () => setRemoveItemId(null);
+
+    const handleConfirmRemove = () => {
+        if (!removeItemId) return;
+        const target = items.find((item) => item.id === removeItemId);
+        setPlantListItems(items.filter((item) => item.id !== removeItemId));
+        setRemoveItemId(null);
+        if (target) {
+            notify(APP_NOTIFICATIONS.plantRemovedFromPlantList(target.plant.botanicalName));
+        }
+    };
+
     const handleTogglePlantSpecifications = (itemId: string) => {
         setOpenSpecificationItemIds((prev) =>
             prev.includes(itemId)
                 ? prev.filter((id) => id !== itemId)
                 : [...prev, itemId]
         );
+    };
+
+    const handleToggleStaffel = (
+        event: React.MouseEvent<HTMLButtonElement>,
+        itemId: string
+    ) => {
+        event.stopPropagation();
+        if (staffelState?.itemId === itemId) {
+            setStaffelState(null);
+            return;
+        }
+        setStaffelState({
+            itemId,
+            anchorRect: event.currentTarget.getBoundingClientRect(),
+        });
     };
 
     return (
@@ -1145,13 +1300,20 @@ export default function FinalisatiePlantList() {
                                 );
 
                                 const isGardenMaterial = item.plant.category === "Tuinmaterialen";
+                                const isAccessoryAdvice = item.addedFrom === "accessory-advice";
                                 // Tuinmaterialen hebben geen advies (niet gekoppeld aan vakken)
-                                // — gebruik item.quantity of standaard 1 als minimum
+                                // gebruik item.quantity, of het AI-advies, of standaard 1 als minimum
                                 const effectiveCount =
-                                    item.quantity > 0 ? item.quantity : (isGardenMaterial ? 1 : adviceCount);
+                                    item.quantity > 0
+                                        ? item.quantity
+                                        : isAccessoryAdvice
+                                            ? item.adviceQuantity ?? 1
+                                            : isGardenMaterial
+                                                ? 1
+                                                : adviceCount;
 
-                                const totalPrice =
-                                    effectiveCount * (item.plant.pricePerPiece ?? 0);
+                                const unitPrice = getPlantUnitPriceForQuantity(item, effectiveCount);
+                                const totalPrice = unitPrice !== null ? effectiveCount * unitPrice : 0;
 
                                 return (
                                     <div key={item.id}>
@@ -1331,7 +1493,13 @@ export default function FinalisatiePlantList() {
                                                                     event.target.value
                                                                 )
                                                             }
-                                                            placeholder={isGardenMaterial ? "1" : String(adviceCount)}
+                                                            placeholder={
+                                                                isAccessoryAdvice
+                                                                    ? String(item.adviceQuantity ?? 1)
+                                                                    : isGardenMaterial
+                                                                        ? "1"
+                                                                        : String(adviceCount)
+                                                            }
                                                             className="h-[40px] w-[72px] rounded-[4px] border bg-white px-3 text-[14px] outline-none"
                                                             style={{
                                                                 borderColor: COLORS.borderSoft,
@@ -1394,7 +1562,55 @@ export default function FinalisatiePlantList() {
                                                                 className="mt-0.5 text-[14px]"
                                                                 style={{ color: COLORS.text }}
                                                             >
-                                                                {adviceCount} stuks
+                                                                {adviceCount} {stuksLabel(adviceCount)}
+                                                            </span>
+                                                        </button>
+                                                    ) : isAccessoryAdvice ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setAccessoryAdviceInfo({
+                                                                    name: item.plant.botanicalName,
+                                                                    quantity: item.adviceQuantity ?? 1,
+                                                                    reason: item.adviceReason ?? "",
+                                                                })
+                                                            }
+                                                            className="mt-auto inline-flex flex-col rounded-[4px] px-2 py-1 text-[14px]"
+                                                            onMouseEnter={() => setHoveredAdviceId(item.id)}
+                                                            onMouseLeave={() => setHoveredAdviceId(null)}
+                                                            style={{
+                                                                backgroundColor: "#F0F5EE",
+                                                                border: hoveredAdviceId === item.id
+                                                                    ? `1.5px solid ${COLORS.green}`
+                                                                    : "1.5px solid transparent",
+                                                                cursor: "pointer",
+                                                                textAlign: "left",
+                                                                transition: "border-color 120ms ease",
+                                                            }}
+                                                        >
+                                                            <span className="inline-flex items-center gap-1.5">
+                                                                <img
+                                                                    src="/icons/help.svg"
+                                                                    alt=""
+                                                                    style={{
+                                                                        width: 14,
+                                                                        height: 14,
+                                                                        display: "block",
+                                                                        flexShrink: 0,
+                                                                    }}
+                                                                />
+                                                                <span
+                                                                    className="font-semibold"
+                                                                    style={{ color: COLORS.green }}
+                                                                >
+                                                                    Advies:
+                                                                </span>
+                                                            </span>
+                                                            <span
+                                                                className="mt-0.5 text-[14px]"
+                                                                style={{ color: COLORS.text }}
+                                                            >
+                                                                {item.adviceQuantity ?? 1} {stuksLabel(item.adviceQuantity ?? 1)}
                                                             </span>
                                                         </button>
                                                     ) : null}
@@ -1406,9 +1622,7 @@ export default function FinalisatiePlantList() {
                                                         className="text-[13px]"
                                                         style={{ color: "#FF0000" }}
                                                     >
-                                                        {formatPricePerPiece(
-                                                            item.plant.pricePerPiece
-                                                        )}
+                                                        {formatPricePerPiece(unitPrice ?? undefined)}
                                                     </span>
                                                     <span
                                                         className="text-[14px] font-bold"
@@ -1416,6 +1630,29 @@ export default function FinalisatiePlantList() {
                                                     >
                                                         {formatTotalPrice(totalPrice)}
                                                     </span>
+                                                    {Array.isArray(item.bulkPrices) && item.bulkPrices.length > 0 ? (
+                                                        <StaffelLink
+                                                            isOpen={staffelState?.itemId === item.id}
+                                                            onClick={(event) => handleToggleStaffel(event, item.id)}
+                                                        />
+                                                    ) : null}
+
+                                                    {item.addedFrom === "accessory-advice" ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setRemoveItemId(item.id)}
+                                                            className="mt-1 inline-flex w-fit cursor-pointer items-center gap-1.5 text-[13px]"
+                                                            style={{ color: COLORS.muted }}
+                                                            aria-label={`Verwijder ${item.plant.botanicalName}`}
+                                                        >
+                                                            <img
+                                                                src="/icons/delete-tool.svg"
+                                                                alt=""
+                                                                style={{ width: 14, height: 14, display: "block" }}
+                                                            />
+                                                            <span>Verwijderen</span>
+                                                        </button>
+                                                    ) : null}
                                                 </div>
 
                                                 {/* Drag handle */}
@@ -1528,10 +1765,41 @@ export default function FinalisatiePlantList() {
             )}
 
             {/* ── Advice calculation popup ── */}
+            {staffelState && (() => {
+                const openItem = pricedItems.find((item) => item.id === staffelState.itemId);
+                if (!openItem || !Array.isArray(openItem.bulkPrices) || openItem.bulkPrices.length === 0) {
+                    return null;
+                }
+                return (
+                    <StaffelPopover
+                        isOpen
+                        onClose={() => setStaffelState(null)}
+                        anchorRect={staffelState.anchorRect}
+                        basePrice={openItem.plant.pricePerPiece}
+                        bulkPrices={openItem.bulkPrices}
+                    />
+                );
+            })()}
+
             <FinalisatieAdviceCalculation
                 open={advicePopupInfo != null}
                 onClose={() => setAdvicePopupInfo(null)}
                 plant={advicePopupInfo}
+            />
+
+            <AccessoryAdvicePopup
+                info={accessoryAdviceInfo}
+                onClose={() => setAccessoryAdviceInfo(null)}
+            />
+
+            <ConfirmModal
+                open={removeItemId != null}
+                title="Product regel verwijderen"
+                description="Weet je zeker dat je deze regel wilt verwijderen?"
+                cancelText="Nee, ga terug"
+                confirmText="Ja, verwijder"
+                onCancel={handleCancelRemove}
+                onConfirm={handleConfirmRemove}
             />
         </section>
     );

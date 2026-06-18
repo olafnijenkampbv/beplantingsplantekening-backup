@@ -1,4 +1,10 @@
 import type { PolyObject, ObjectType } from "@/state/projectStore";
+import {
+    densifyBulgedRing,
+    normalizeBulges,
+    normalizeCorners,
+    STRAIGHT_THRESHOLD,
+} from "@/features/editor/lib/bulgeMath";
 
 export function pointInPolygon(px: number, py: number, poly: number[]) {
     let inside = false;
@@ -72,7 +78,19 @@ export function getPlantbedHitAtWorldPoint(
 ) {
     return (
         plantbeds.find((pb) => {
-            if (!pointInPolygonInclusive(worldX, worldY, pb.points)) return false;
+            const hasBulges = pb.bulges?.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+            const hasCorners = pb.corners?.some((c) => (c || 0) > STRAIGHT_THRESHOLD);
+            const hitPoints =
+                hasBulges || hasCorners
+                    ? densifyBulgedRing(
+                        pb.points,
+                        normalizeBulges(pb.points, pb.bulges),
+                        48,
+                        normalizeCorners(pb.points, pb.corners)
+                    )
+                    : pb.points;
+
+            if (!pointInPolygonInclusive(worldX, worldY, hitPoints)) return false;
 
             for (const hole of pb.holes ?? []) {
                 if (pointInPolygonInclusive(worldX, worldY, hole)) return false;

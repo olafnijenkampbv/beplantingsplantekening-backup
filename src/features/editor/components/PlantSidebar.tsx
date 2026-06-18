@@ -9,6 +9,7 @@ import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionSt
 import { usePlantVariantStore } from "@/features/editor/state/plantVariantStore";
 import { goToFinalisatie } from "@/features/editor/lib/editorWorkflowNavigation";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
+import ConfirmModal from "@/features/editor/components/ConfirmModal";
 
 const COLORS = {
     orange: "#E94E1B",
@@ -17,6 +18,23 @@ const COLORS = {
     greenLight: "#EEF0ED",
     border: "#E3E2E2",
 };
+
+function getReadablePlantbedLabelColor(fillColor: string): string {
+    const hex = (fillColor ?? "").trim().replace("#", "");
+    if (!/^[0-9A-Fa-f]{6}$/.test(hex)) return "#3F6B3F";
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    if (hex.toUpperCase() === "F2FDEF") return "#3F6B3F";
+    const darken = (v: number) => Math.max(0, Math.round(v * 0.55));
+    const lighten = (v: number) => Math.min(255, Math.round(v + (255 - v) * 0.55));
+    const rr = luminance > 0.62 ? darken(r) : lighten(r);
+    const gg = luminance > 0.62 ? darken(g) : lighten(g);
+    const bb = luminance > 0.62 ? darken(b) : lighten(b);
+    const toHex = (v: number) => v.toString(16).padStart(2, "0").toUpperCase();
+    return `#${toHex(rr)}${toHex(gg)}${toHex(bb)}`;
+}
 
 const PLANT_LATIN_NAME_FONT_SIZE = 14;
 const PLANT_DUTCH_NAME_FONT_SIZE = 12;
@@ -516,6 +534,7 @@ export default function PlantSidebar(props: {
     const [collapsed, setCollapsed] = React.useState(false);
     const [activeTab, setActiveTab] = React.useState<TabKey>("list");
     const [query, setQuery] = React.useState("");
+    const [showEmptyBedsModal, setShowEmptyBedsModal] = React.useState(false);
     const [openSections, setOpenSections] = React.useState<Record<string, boolean>>({});
     const [openLinkedGroups, setOpenLinkedGroups] = React.useState<Record<"plantbed" | "hedge" | "treebed", boolean>>({
         plantbed: true,
@@ -1311,6 +1330,14 @@ export default function PlantSidebar(props: {
                                                 return;
                                             }
 
+                                            const emptyBeds = plantbeds.filter(
+                                                (pb) => (plantbedLinks?.[pb.id]?.length ?? 0) === 0
+                                            );
+                                            if (emptyBeds.length > 0) {
+                                                setShowEmptyBedsModal(true);
+                                                return;
+                                            }
+
                                             goToFinalisatie();
                                         }}
                                     >
@@ -1430,6 +1457,54 @@ export default function PlantSidebar(props: {
                 }
             `}</style>
         </div>
+        <ConfirmModal
+            open={showEmptyBedsModal}
+            title="Lege vakken in je tekening"
+            description={
+                <>
+                    De volgende plantvakken, boomvakken of haagvakken hebben nog geen planten gekoppeld.
+                    Wil je toch doorgaan naar de afrondpagina?
+                </>
+            }
+            items={plantbeds
+                .filter((pb) => (plantbedLinks?.[pb.id]?.length ?? 0) === 0)
+                .map((pb) => {
+                    let nrBg: string;
+                    let nrColor: string;
+                    let nrBorder: string | null;
+                    if (pb.type === "hedge") {
+                        nrBg = "#95CE86"; nrColor = "#56793E"; nrBorder = null;
+                    } else if (pb.type === "treebed") {
+                        nrBg = "#8FC38E"; nrColor = "#476D3C"; nrBorder = "#476D3C";
+                    } else {
+                        nrBg = pb.swatchFill ?? COLORS.green;
+                        nrColor = getReadablePlantbedLabelColor(pb.swatchFill ?? "");
+                        nrBorder = pb.swatchStroke ?? null;
+                    }
+                    return {
+                        id: pb.id,
+                        nr: pb.type === "hedge" ? `H${pb.no}` : pb.type === "treebed" ? `B${pb.no}` : `P${pb.no}`,
+                        nrBg,
+                        nrColor,
+                        nrBorder,
+                        title: pb.title,
+                        subtitle:
+                            pb.type === "treebed"
+                                ? "Geen bomen gekoppeld"
+                                : pb.type === "hedge"
+                                    ? "Geen haagplanten gekoppeld"
+                                    : "Geen planten gekoppeld",
+                    };
+                })}
+            listVariant="cards"
+            cancelText="Ga terug"
+            confirmText="Toch verder gaan"
+            onCancel={() => setShowEmptyBedsModal(false)}
+            onConfirm={() => {
+                setShowEmptyBedsModal(false);
+                goToFinalisatie();
+            }}
+        />
     </>
     );
 }

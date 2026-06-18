@@ -4,6 +4,7 @@ import type {
     ViewMode,
 } from "@/features/editor/lib/plantSelectionDummyData";
 import type { ApiPlant } from "@/lib/db/plantTypes";
+import type { BulkPriceTier } from "@/lib/db/plantTypes";
 import type {
     PlantListItem,
     PlantSelectionFiltersState,
@@ -57,6 +58,24 @@ function sanitizePlant(value: unknown): ApiPlant | null {
     return value as ApiPlant;
 }
 
+function sanitizeBulkPrices(value: unknown): BulkPriceTier[] {
+    if (!Array.isArray(value)) return [];
+
+    return value
+        .map((tier) => {
+            if (!tier || typeof tier !== "object") return null;
+            const raw = tier as Record<string, unknown>;
+            const minQty = typeof raw.minQty === "number" ? raw.minQty : Number(raw.minQty);
+            const price = typeof raw.price === "number" ? raw.price : Number(raw.price);
+            if (!Number.isFinite(minQty) || minQty <= 0 || !Number.isFinite(price) || price <= 0) {
+                return null;
+            }
+            return { minQty, price };
+        })
+        .filter((tier): tier is BulkPriceTier => tier !== null)
+        .sort((a, b) => a.minQty - b.minQty);
+}
+
 function sanitizePlantListItem(value: unknown): PlantListItem | null {
     if (!value || typeof value !== "object") return null;
 
@@ -69,6 +88,8 @@ function sanitizePlantListItem(value: unknown): PlantListItem | null {
         id: raw.id,
         plant,
         size: sanitizeOptionalString(raw.size, ""),
+        fixedSize: sanitizeBoolean(raw.fixedSize, false),
+        bulkPrices: sanitizeBulkPrices(raw.bulkPrices),
         note: sanitizeOptionalString(raw.note, ""),
         quantity:
             typeof raw.quantity === "number" && Number.isFinite(raw.quantity)

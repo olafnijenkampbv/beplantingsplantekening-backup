@@ -16,6 +16,9 @@ import {
     type AdviceRow,
     type ProjectPlantLike,
 } from "@/features/editor/lib/plantAdvice";
+import { getPlantUnitPriceForQuantity, withResolvedBulkPrices } from "@/features/editor/lib/plantPricing";
+import type { PlantListItem } from "@/features/editor/state/plantSelectionStore";
+import { usePlantVariantStore } from "@/features/editor/state/plantVariantStore";
 const PANEL_UI = {
     minWidth: 820,
     padding: 18,
@@ -308,9 +311,9 @@ function AdviceTable(props: {
     rows: AdviceRow[];
     measurementMode: AdviceMeasurementMode;
     onDistributionChange: (plantId: string, newPercentage: number) => void;
-    priceMap: Map<string, number>;
+    plantItemMap: Map<string, PlantListItem>;
 }) {
-    const { rows, measurementMode, onDistributionChange, priceMap } = props;
+    const { rows, measurementMode, onDistributionChange, plantItemMap } = props;
 
     const [editingPlantId, setEditingPlantId] = React.useState<string | null>(null);
     const [editValue, setEditValue] = React.useState<string>("");
@@ -581,7 +584,10 @@ function AdviceTable(props: {
                             }}
                         >
                             {(() => {
-                                const price = priceMap.get(row.plantId);
+                                const price = getPlantUnitPriceForQuantity(
+                                    plantItemMap.get(row.plantId),
+                                    row.adviceCount ?? 0
+                                );
                                 if (typeof price !== "number") {
                                     return (
                                         <span
@@ -706,17 +712,24 @@ export default function PlantAdviceLabelPanel(props: PlantAdviceLabelPanelProps)
     const plants = useProjectStore((s) => s.plants as ProjectPlantLike[]);
 
 const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
+    const variantCache = usePlantVariantStore((s) => s.cache);
+    const fetchVariants = usePlantVariantStore((s) => s.fetchVariants);
 
-    const priceMap = React.useMemo(() => {
-        const map = new Map<string, number>();
+    React.useEffect(() => {
         for (const item of plantListItems) {
-            const price = item.plant.pricePerPiece;
-            if (typeof price === "number" && Number.isFinite(price)) {
-                map.set(item.id, price);
+            if (item.plant.category !== "Tuinmaterialen") {
+                fetchVariants(item.plant.id);
             }
         }
+    }, [plantListItems, fetchVariants]);
+
+    const plantItemMap = React.useMemo(() => {
+        const map = new Map<string, PlantListItem>();
+        for (const item of plantListItems) {
+            map.set(item.id, withResolvedBulkPrices(item, variantCache[item.plant.id]?.variants ?? []));
+        }
         return map;
-    }, [plantListItems]);
+    }, [plantListItems, variantCache]);
 
     const isSupportedType = currentType === "plantbed" || currentType === "hedge" || currentType === "treebed";
     const adviceData = React.useMemo<AdviceData | null>(() => {
@@ -838,7 +851,7 @@ const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
                             rows={adviceData.rows}
                             measurementMode={adviceData.measurementMode}
                             onDistributionChange={handleDistributionChange}
-                            priceMap={priceMap}
+                            plantItemMap={plantItemMap}
                         />
                         <AdviceInfoBox />
                     </div>

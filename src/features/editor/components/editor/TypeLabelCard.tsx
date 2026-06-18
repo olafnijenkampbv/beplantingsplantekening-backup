@@ -144,6 +144,7 @@ type TypeLabelCardProps = {
     onChangeTreebedVariant?: (variant: TreebedVariant) => void;
     onTreebedVariantChanged?: (fromVariant: TreebedVariant, toVariant: TreebedVariant) => void;
     onColorPanelOpenChange?: (open: boolean) => void;
+    onObjectPanelOpenChange?: (open: boolean) => void;
 };
 
 export default function TypeLabelCard(props: TypeLabelCardProps) {
@@ -161,6 +162,7 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
         onChangeTreebedVariant,
         onTreebedVariantChanged,
         onColorPanelOpenChange,
+        onObjectPanelOpenChange,
     } = props;
 
     const [openPanel, setOpenPanel] = React.useState<"object" | "color" | null>(null);
@@ -170,10 +172,11 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
             setOpenPanel((prev) => {
                 const next = typeof value === "function" ? value(prev) : value;
                 onColorPanelOpenChange?.(next === "color");
+                onObjectPanelOpenChange?.(next === "object");
                 return next;
             });
         },
-        [onColorPanelOpenChange]
+        [onColorPanelOpenChange, onObjectPanelOpenChange]
     );
     const [hoverType, setHoverType] = React.useState<ObjectType | TreebedVariant | null>(null);
 
@@ -218,7 +221,14 @@ export default function TypeLabelCard(props: TypeLabelCardProps) {
         window.addEventListener("mousedown", onDown);
 
         return () => window.removeEventListener("mousedown", onDown);
-    }, [openPanel]);
+    }, [openPanel, setOpenPanelWithCallback]);
+
+    React.useEffect(() => {
+        return () => {
+            onColorPanelOpenChange?.(false);
+            onObjectPanelOpenChange?.(false);
+        };
+    }, [onColorPanelOpenChange, onObjectPanelOpenChange]);
 
     const treebedLabelParts = React.useMemo(() => {
         if (currentType !== "treebed") return null;

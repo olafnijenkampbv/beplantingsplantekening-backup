@@ -64,6 +64,7 @@ type PlantGroup = {
     minPrice: number;                // cheapest in-stock price (fallback: cheapest overall)
     inStock: boolean;                // true if at least one variant is in_stock
     keurmerken: Set<string>;         // unique certifications found across all variants
+    additionalImageUrls: string[];   // extra productfoto's (uniek, zelfde voor alle varianten)
 };
 
 // ---------------------------------------------------------------------------
@@ -204,6 +205,7 @@ function groupByTrefnaam(items: ParsedFeedItem[]): Map<string, PlantGroup> {
                 minPrice: item.price > 0 ? item.price : Infinity,
                 inStock: item.availability === "in_stock",
                 keurmerken,
+                additionalImageUrls: [...item.additionalImageUrls],
             });
         } else {
             // Add this variant to the existing group
@@ -220,6 +222,13 @@ function groupByTrefnaam(items: ParsedFeedItem[]): Map<string, PlantGroup> {
 
             // Collect all unique keurmerken across variants
             if (item.keurmerken) existing.keurmerken.add(item.keurmerken);
+
+            // Merge extra afbeeldingen (dedupliceren op URL)
+            for (const url of item.additionalImageUrls) {
+                if (url && !existing.additionalImageUrls.includes(url)) {
+                    existing.additionalImageUrls.push(url);
+                }
+            }
         }
     }
 
@@ -333,13 +342,13 @@ function writeToDatabase(
             id, botanical_name, dutch_name, category, app_group,
             standplaats, grondsoort, bloeiperiode, kleur_bloem, kleur_blad,
             volwassen_hoogte, max_height_cm, planthoeveelheid_per_m2,
-            inheems, stikstofbehoefte, toelichting, image_url,
+            inheems, stikstofbehoefte, toelichting, image_url, additional_image_urls,
             min_price, in_stock, keurmerken, updated_at
         ) VALUES (
             @id, @botanical_name, @dutch_name, @category, @app_group,
             @standplaats, @grondsoort, @bloeiperiode, @kleur_bloem, @kleur_blad,
             @volwassen_hoogte, @max_height_cm, @planthoeveelheid_per_m2,
-            @inheems, @stikstofbehoefte, @toelichting, @image_url,
+            @inheems, @stikstofbehoefte, @toelichting, @image_url, @additional_image_urls,
             @min_price, @in_stock, @keurmerken, @updated_at
         )
     `);
@@ -354,9 +363,9 @@ function writeToDatabase(
 
     const insertMaterial = db.prepare(`
         INSERT OR REPLACE INTO garden_materials (
-            id, name, image_url, min_price, in_stock, updated_at
+            id, name, image_url, min_price, in_stock, subcategory, updated_at
         ) VALUES (
-            @id, @name, @image_url, @min_price, @in_stock, @updated_at
+            @id, @name, @image_url, @min_price, @in_stock, @subcategory, @updated_at
         )
     `);
 
@@ -392,6 +401,7 @@ function writeToDatabase(
                     image_url: rep.imageUrl,
                     min_price: group.minPrice,
                     in_stock: group.inStock ? 1 : 0,
+                    subcategory: rep.subcategory || "Overig",
                     updated_at: nowIso,
                 });
                 materialsImported++;
@@ -426,6 +436,7 @@ function writeToDatabase(
                     stikstofbehoefte: rep.stikstofbehoefte,
                     toelichting: rep.toelichting,
                     image_url: rep.imageUrl,
+                    additional_image_urls: JSON.stringify(group.additionalImageUrls),
                     min_price: group.minPrice,
                     in_stock: group.inStock ? 1 : 0,
                     keurmerken: [...group.keurmerken].join(", "),

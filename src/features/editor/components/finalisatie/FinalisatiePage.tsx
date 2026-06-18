@@ -18,6 +18,7 @@ import FinalisatieProgress from "@/features/editor/components/finalisatie/Finali
 import FinalisatieContactCard from "@/features/editor/components/finalisatie/FinalisatieContactCard";
 import FinalisatieSidePanel from "@/features/editor/components/finalisatie/FinalisatieSidePanel";
 import FinalisatiePlantList from "@/features/editor/components/finalisatie/FinalisatiePlantList";
+import FinalisatieAccessoryAdvice from "@/features/editor/components/finalisatie/FinalisatieAccessoryAdvice";
 import FinalisatieDrawingBlock from "@/features/editor/components/finalisatie/FinalisatieDrawingBlock";
 
 const COLORS = {
@@ -160,6 +161,7 @@ export default function FinalisatiePage() {
                     <div className="space-y-6">
                         <FinalisatieContactCard />
                         <FinalisatiePlantList />
+                        <FinalisatieAccessoryAdvice />
 
                         <FinalisatieDrawingBlock />
                     </div>

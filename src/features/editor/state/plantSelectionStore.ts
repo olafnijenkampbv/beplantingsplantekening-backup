@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ApiPlant } from "@/lib/db/plantTypes";
+import type { BulkPriceTier } from "@/lib/db/plantTypes";
 import type {
     PlantGroupKey,
     ViewMode,
@@ -15,9 +16,16 @@ export type PlantListItem = {
     plant: ApiPlant;
     size: string;
     fixedSize?: boolean;
+    bulkPrices?: BulkPriceTier[];
     note: string;
     quantity: number;
     isSelected: boolean;
+    /** Markeert items die via het AI-aanplant-hulpmiddelenadvies zijn toegevoegd, zodat ze in stap 7 verwijderbaar zijn. */
+    addedFrom?: "accessory-advice";
+    /** Het door AI aanbevolen aantal voor dit item (alleen bij addedFrom === "accessory-advice"). */
+    adviceQuantity?: number;
+    /** De door AI gegeven reden voor dit aanbevolen aantal (alleen bij addedFrom === "accessory-advice"). */
+    adviceReason?: string;
 };
 
 export type PersistedPlantSelectionSnapshot = {
@@ -44,7 +52,7 @@ type PlantSelectionState = {
     openSummary: () => void;
     closeSummary: () => void;
 
-    addPlantToList: (plant: ApiPlant, size?: string, fixedSize?: boolean) => void;
+    addPlantToList: (plant: ApiPlant, size?: string, fixedSize?: boolean, bulkPrices?: BulkPriceTier[]) => void;
     setPlantListItems: (items: PlantListItem[]) => void;
     clearPlantList: () => void;
 
@@ -83,7 +91,10 @@ function sanitizePlantListItems(value: unknown): PlantListItem[] {
             typeof it.quantity === "number" &&
             typeof it.isSelected === "boolean"
         );
-    });
+    }).map((item) => ({
+        ...item,
+        bulkPrices: Array.isArray(item.bulkPrices) ? item.bulkPrices : [],
+    }));
 }
 
 export function sanitizePlantSelectionSnapshot(
@@ -172,7 +183,7 @@ export const usePlantSelectionStore = create<PlantSelectionState>((set, get) => 
     openSummary: () => set({ isSummaryOpen: true }),
     closeSummary: () => set({ isSummaryOpen: false }),
 
-    addPlantToList: (plant, size?, fixedSize?) =>
+    addPlantToList: (plant, size?, fixedSize?, bulkPrices?) =>
         set((state) => ({
             plantListItems: [
                 ...state.plantListItems,
@@ -181,6 +192,7 @@ export const usePlantSelectionStore = create<PlantSelectionState>((set, get) => 
                     plant,
                     size: size ?? "",
                     fixedSize: fixedSize ?? false,
+                    bulkPrices: Array.isArray(bulkPrices) ? bulkPrices : [],
                     note: "",
                     quantity: 0,
                     isSelected: false,
@@ -204,6 +216,7 @@ export const usePlantSelectionStore = create<PlantSelectionState>((set, get) => 
             plantListItems: state.plantListItems.map((item) => ({
                 ...item,
                 plant: { ...item.plant },
+                bulkPrices: Array.isArray(item.bulkPrices) ? [...item.bulkPrices] : [],
             })),
         };
     },
@@ -221,6 +234,7 @@ export const usePlantSelectionStore = create<PlantSelectionState>((set, get) => 
             plantListItems: safeSnapshot.plantListItems.map((item) => ({
                 ...item,
                 plant: { ...item.plant },
+                bulkPrices: Array.isArray(item.bulkPrices) ? [...item.bulkPrices] : [],
             })),
             isSummaryOpen: false,
         });

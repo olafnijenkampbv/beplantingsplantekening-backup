@@ -177,11 +177,18 @@ function getArcLengthInEditorUnits(
     return total;
 }
 
-function getMeasurementBoundsPoints(points: number[], bulges?: number[]) {
+function getMeasurementBoundsPoints(points: number[], bulges?: number[], corners?: number[]) {
     const normalized = normalizeBulges(points, bulges);
+    const normalizedCorners = normalizeCorners(points, corners);
     const hasBulges = normalized.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
-    if (!hasBulges) return points;
-    return densifyBulgedRing(points, normalized, 36);
+    const hasCorners = normalizedCorners.some((c) => (c || 0) > 0);
+    if (!hasBulges && !hasCorners) return points;
+    return densifyBulgedRing(
+        points,
+        normalized,
+        36,
+        hasCorners ? normalizedCorners : undefined
+    );
 }
 
 function circumcenter(
@@ -1393,7 +1400,7 @@ function SelectedObjectDimensions({
     if (!isAreaMeasurableObject(object)) return null;
     if (!object.points || object.points.length < 6) return null;
 
-    const measurementBoundsPoints = getMeasurementBoundsPoints(object.points, object.bulges);
+    const measurementBoundsPoints = getMeasurementBoundsPoints(object.points, object.bulges, object.corners);
     const bbox = getBoundingBoxFromPoints(measurementBoundsPoints);
     const widthMeters = getMetersFromEditorUnits(bbox.w);
     const heightMeters = getMetersFromEditorUnits(bbox.h);
@@ -1601,7 +1608,9 @@ const MeasurementOverlay = React.memo(function MeasurementOverlay({
         if (!showAreaLabels) return [];
 
         const blockers = selectedObjects.map((object) => {
-            const bbox = getBoundingBoxFromPoints(object.points);
+            const bbox = getBoundingBoxFromPoints(
+                getMeasurementBoundsPoints(object.points, object.bulges, object.corners)
+            );
 
             return {
                 x: bbox.x,
@@ -1612,7 +1621,13 @@ const MeasurementOverlay = React.memo(function MeasurementOverlay({
         });
 
         if (selectedObjects.length === 1 && primarySelectedObject) {
-            const bbox = getBoundingBoxFromPoints(primarySelectedObject.points);
+            const bbox = getBoundingBoxFromPoints(
+                getMeasurementBoundsPoints(
+                    primarySelectedObject.points,
+                    primarySelectedObject.bulges,
+                    primarySelectedObject.corners
+                )
+            );
             const offset = MEASUREMENT_LABEL_LAYOUT.selectionOffset;
 
             blockers.push(
@@ -1650,7 +1665,9 @@ const MeasurementOverlay = React.memo(function MeasurementOverlay({
         };
 
         return unselectedObjects.filter((object) => {
-            const bbox = getBoundingBoxFromPoints(object.points);
+            const bbox = getBoundingBoxFromPoints(
+                getMeasurementBoundsPoints(object.points, object.bulges, object.corners)
+            );
             return !selectedObjectBlockers.some((blocker) => rectsOverlap(bbox, blocker));
         });
     }, [unselectedObjects, selectedObjectBlockers, showAreaLabels]);

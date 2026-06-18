@@ -8,6 +8,7 @@ import React, {
     useState,
 } from "react";
 import { useProjectStore, OBJECT_STYLES } from "@/state/projectStore";
+import { useScrollLock } from "@/hooks/useScrollLock";
 import {
     usePlantSelectionStore,
     type PlantListItem,
@@ -26,6 +27,11 @@ import type { PolyObject } from "@/state/projectStore";
 import { getObjectAreaInSquareMeters, formatSquareMeters } from "@/state/areaMetrics";
 import { EDITOR_GRID_SIZE } from "@/features/editor/constants/editorGeometry";
 import { getBoundaryBandShapeForObject } from "@/features/editor/lib/boundarySystem";
+import {
+    getObjectBoundsRenderPoints,
+    getObjectOuterRenderPoints,
+    makeSvgPathForObject,
+} from "@/features/editor/lib/svgObjectPath";
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 
@@ -54,12 +60,6 @@ type BBox = { minX: number; minY: number; maxX: number; maxY: number; w: number;
 
 // ─── Pure-math helpers ────────────────────────────────────────────────────────
 
-function pointsToSvgString(pts: number[]): string {
-    const pairs: string[] = [];
-    for (let i = 0; i + 1 < pts.length; i += 2) pairs.push(`${pts[i]},${pts[i + 1]}`);
-    return pairs.join(" ");
-}
-
 function makePathD(pts: number[], holes?: number[][]): string {
     if (pts.length < 6) return "";
     const outer: string[] = [];
@@ -80,19 +80,12 @@ function getBoundingBox(objects: PolyObject[]): BBox | null {
     if (!objects.length) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const obj of objects) {
-        for (let i = 0; i + 1 < obj.points.length; i += 2) {
-            if (obj.points[i] < minX) minX = obj.points[i];
-            if (obj.points[i] > maxX) maxX = obj.points[i];
-            if (obj.points[i + 1] < minY) minY = obj.points[i + 1];
-            if (obj.points[i + 1] > maxY) maxY = obj.points[i + 1];
-        }
-        for (const hole of obj.holes ?? []) {
-            for (let i = 0; i + 1 < hole.length; i += 2) {
-                if (hole[i] < minX) minX = hole[i];
-                if (hole[i] > maxX) maxX = hole[i];
-                if (hole[i + 1] < minY) minY = hole[i + 1];
-                if (hole[i + 1] > maxY) maxY = hole[i + 1];
-            }
+        const renderPoints = getObjectBoundsRenderPoints(obj);
+        for (let i = 0; i + 1 < renderPoints.length; i += 2) {
+            if (renderPoints[i] < minX) minX = renderPoints[i];
+            if (renderPoints[i] > maxX) maxX = renderPoints[i];
+            if (renderPoints[i + 1] < minY) minY = renderPoints[i + 1];
+            if (renderPoints[i + 1] > maxY) maxY = renderPoints[i + 1];
         }
     }
     if (!isFinite(minX)) return null;
@@ -127,6 +120,88 @@ function getCentroid(pts: number[]): { x: number; y: number } {
     const n = pts.length / 2;
     for (let i = 0; i + 1 < pts.length; i += 2) { sx += pts[i]; sy += pts[i + 1]; }
     return { x: sx / n, y: sy / n };
+}
+
+function pointInRing(x: number, y: number, ring: number[]): boolean {
+    let inside = false;
+    for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+        const xi = ring[i];
+        const yi = ring[i + 1];
+        const xj = ring[j];
+        const yj = ring[j + 1];
+        const intersects =
+            yi > y !== yj > y &&
+            x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-9) + xi;
+        if (intersects) inside = !inside;
+    }
+    return inside;
+}
+
+function pointInShape(x: number, y: number, outer: number[], holes: number[][] = []): boolean {
+    if (!pointInRing(x, y, outer)) return false;
+    return !holes.some((hole) => hole.length >= 6 && pointInRing(x, y, hole));
+}
+
+function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq <= 1e-9) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+    return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+
+function distanceToRing(px: number, py: number, ring: number[]): number {
+    let best = Infinity;
+    for (let i = 0; i < ring.length; i += 2) {
+        const j = (i + 2) % ring.length;
+        best = Math.min(
+            best,
+            distanceToSegment(px, py, ring[i], ring[i + 1], ring[j], ring[j + 1])
+        );
+    }
+    return best;
+}
+
+function getBestLabelPoint(outer: number[], holes: number[][] = []): { x: number; y: number } | null {
+    if (outer.length < 6) return null;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i + 1 < outer.length; i += 2) {
+        minX = Math.min(minX, outer[i]);
+        maxX = Math.max(maxX, outer[i]);
+        minY = Math.min(minY, outer[i + 1]);
+        maxY = Math.max(maxY, outer[i + 1]);
+    }
+
+    const centroid = getCentroid(outer);
+    const candidates: Array<{ x: number; y: number }> = [centroid];
+    const steps = 9;
+
+    for (let ix = 0; ix < steps; ix += 1) {
+        for (let iy = 0; iy < steps; iy += 1) {
+            candidates.push({
+                x: minX + ((ix + 0.5) / steps) * (maxX - minX),
+                y: minY + ((iy + 0.5) / steps) * (maxY - minY),
+            });
+        }
+    }
+
+    let best: { x: number; y: number; score: number } | null = null;
+    for (const point of candidates) {
+        if (!pointInShape(point.x, point.y, outer, holes)) continue;
+        const outerDistance = distanceToRing(point.x, point.y, outer);
+        const holeDistance = holes.reduce(
+            (min, hole) => hole.length >= 6 ? Math.min(min, distanceToRing(point.x, point.y, hole)) : min,
+            Infinity
+        );
+        const score = Math.min(outerDistance, holeDistance);
+        if (!best || score > best.score) {
+            best = { ...point, score };
+        }
+    }
+
+    return best ? { x: best.x, y: best.y } : null;
 }
 
 // Match editor's contrast-aware label colour for plantbed fills (ported from BaseFillLayer.tsx)
@@ -266,7 +341,7 @@ function getVakLabelStyle(obj: PolyObject): { bg: string; border: string | null;
     // plantbed – derive from the object's actual fill/stroke so custom colours show up
     const fill = obj.customStyle?.fill ?? OBJECT_STYLES["plantbed"]?.fill ?? "#DCE9DC";
     const stroke = obj.customStyle?.stroke ?? OBJECT_STYLES["plantbed"]?.stroke ?? "#4F6B4F";
-    return { bg: fill, border: stroke, text: stroke };
+    return { bg: fill, border: stroke, text: getReadablePlantbedLabelColor(fill) };
 }
 
 type CategoryType = "plantbed" | "hedge" | "treebed";
@@ -712,6 +787,7 @@ export default function FinalisatieDrawingBlock() {
     const [hoveredLegendType, setHoveredLegendType] = useState<ObjectType | null>(null);
     const [hoveredRowObjectId, setHoveredRowObjectId] = useState<string | null>(null);
     const [lightboxImage, setLightboxImage] = useState<{ url: string; name: string } | null>(null);
+    useScrollLock(!!lightboxImage);
 
     // ── Refs ────────────────────────────────────────────────────────────────
     const canvasRef = useRef<HTMLDivElement>(null);
@@ -967,14 +1043,10 @@ export default function FinalisatieDrawingBlock() {
                                         id={`fg-clip-${obj.id}`}
                                         clipPathUnits="userSpaceOnUse"
                                     >
-                                        {obj.holes?.length ? (
-                                            <path
-                                                d={makePathD(obj.points, obj.holes)}
-                                                fillRule="evenodd"
-                                            />
-                                        ) : (
-                                            <polygon points={pointsToSvgString(obj.points)} />
-                                        )}
+                                        <path
+                                            d={makeSvgPathForObject(obj)}
+                                            fillRule="evenodd"
+                                        />
                                     </clipPath>
                                 );
                             })}
@@ -1173,16 +1245,17 @@ export default function FinalisatieDrawingBlock() {
                                 // Fixed font size for every polygon — keeps all labels "even groot".
                                 // clipPath (defined in <defs>) clips text to the object so it can
                                 // never bleed into neighbouring objects.
-                                const polyMinDim = getPolyMinDim(obj.points);
+                                const renderOuterPoints = getObjectOuterRenderPoints(obj);
+                                const objectPathD = makeSvgPathForObject(obj);
+                                const polyMinDim = getPolyMinDim(renderOuterPoints);
                                 const numFontSize = 12;
                                 const areaFontSize = 9;
                                 const labelHalfGap = 8;
                                 const labelColor = isPlantbed
                                     ? getReadablePlantbedLabelColor(fill)
                                     : stroke;
-                                // Only render a centroid when the object is large enough to hold text
-                                const centroid = polyMinDim >= 22 && obj.points.length >= 6
-                                    ? getCentroid(obj.points)
+                                const labelPoint = polyMinDim >= 22 && renderOuterPoints.length >= 6
+                                    ? getBestLabelPoint(renderOuterPoints, obj.holes) ?? getCentroid(renderOuterPoints)
                                     : null;
 
                                 const shapeProps = {
@@ -1198,68 +1271,42 @@ export default function FinalisatieDrawingBlock() {
                                         onMouseEnter={() => setHoveredObjectId(obj.id)}
                                         onMouseLeave={() => setHoveredObjectId(null)}
                                     >
-                                        {obj.holes?.length ? (
-                                            <path d={makePathD(obj.points, obj.holes)} fillRule="evenodd" {...shapeProps} />
-                                        ) : (
-                                            <polygon points={pointsToSvgString(obj.points)} {...shapeProps} />
-                                        )}
+                                        <path d={objectPathD} fillRule="evenodd" {...shapeProps} />
 
                                         {/* Tiles grid overlay — matches renderTilesPattern() in objectPatterns.tsx */}
                                         {obj.type === "tiles" && (
-                                            obj.holes?.length ? (
-                                                <path
-                                                    d={makePathD(obj.points, obj.holes)}
-                                                    fillRule="evenodd"
-                                                    fill="url(#fg-tiles-grid)"
-                                                    stroke="none"
-                                                    style={{ pointerEvents: "none" }}
-                                                />
-                                            ) : (
-                                                <polygon
-                                                    points={pointsToSvgString(obj.points)}
-                                                    fill="url(#fg-tiles-grid)"
-                                                    stroke="none"
-                                                    style={{ pointerEvents: "none" }}
-                                                />
-                                            )
+                                            <path
+                                                d={objectPathD}
+                                                fillRule="evenodd"
+                                                fill="url(#fg-tiles-grid)"
+                                                stroke="none"
+                                                style={{ pointerEvents: "none" }}
+                                            />
                                         )}
 
                                         {/* Hover ring */}
                                         {(isHovById || isHovByType) && (
-                                            <>
-                                                {obj.holes?.length ? (
-                                                    <path
-                                                        d={makePathD(obj.points, obj.holes)}
-                                                        fill="none"
-                                                        fillRule="evenodd"
-                                                        stroke={isHovById ? COLORS.orange : COLORS.green}
-                                                        strokeWidth={2.5}
-                                                        strokeDasharray={isHovByType && !isHovById ? "6,4" : undefined}
-                                                        style={{ pointerEvents: "none" }}
-                                                    />
-                                                ) : (
-                                                    <polygon
-                                                        points={pointsToSvgString(obj.points)}
-                                                        fill="none"
-                                                        stroke={isHovById ? COLORS.orange : COLORS.green}
-                                                        strokeWidth={2.5}
-                                                        strokeDasharray={isHovByType && !isHovById ? "6,4" : undefined}
-                                                        style={{ pointerEvents: "none" }}
-                                                    />
-                                                )}
-                                            </>
+                                            <path
+                                                d={objectPathD}
+                                                fill="none"
+                                                fillRule="evenodd"
+                                                stroke={isHovById ? COLORS.orange : COLORS.green}
+                                                strokeWidth={2.5}
+                                                strokeDasharray={isHovByType && !isHovById ? "6,4" : undefined}
+                                                style={{ pointerEvents: "none" }}
+                                            />
                                         )}
 
                                         {/* Labels: number + area, fixed size, clipped to this object's shape */}
-                                        {centroid && (canvasLabel || areaText) && (
+                                        {labelPoint && (canvasLabel || areaText) && (
                                             <g
                                                 clipPath={`url(#fg-clip-${obj.id})`}
                                                 style={{ pointerEvents: "none" }}
                                             >
                                                 {canvasLabel && (
                                                     <text
-                                                        x={centroid.x}
-                                                        y={centroid.y - (areaText ? labelHalfGap : 0)}
+                                                        x={labelPoint.x}
+                                                        y={labelPoint.y - (areaText ? labelHalfGap : 0)}
                                                         textAnchor="middle"
                                                         dominantBaseline="central"
                                                         fontSize={numFontSize}
@@ -1272,8 +1319,8 @@ export default function FinalisatieDrawingBlock() {
                                                 )}
                                                 {areaText && (
                                                     <text
-                                                        x={centroid.x}
-                                                        y={centroid.y + (canvasLabel ? labelHalfGap : 0)}
+                                                        x={labelPoint.x}
+                                                        y={labelPoint.y + (canvasLabel ? labelHalfGap : 0)}
                                                         textAnchor="middle"
                                                         dominantBaseline="central"
                                                         fontSize={areaFontSize}

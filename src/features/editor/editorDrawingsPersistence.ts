@@ -47,6 +47,9 @@ export function clonePolyObject(obj: PolyObject): PolyObject {
         ...obj,
         points: [...obj.points],
         holes: obj.holes?.map((hole) => [...hole]),
+        bulges: obj.bulges ? [...obj.bulges] : undefined,
+        corners: obj.corners ? [...obj.corners] : undefined,
+        boundarySegments: obj.boundarySegments?.map((segment) => [...segment]),
         renderPieces: obj.renderPieces?.map((piece) => [...piece]),
     };
 }

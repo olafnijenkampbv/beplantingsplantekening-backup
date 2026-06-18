@@ -1963,11 +1963,13 @@ export default function HelloEditor() {
     }, []);
 
     const [isColorPanelOpen, setIsColorPanelOpen] = useState(false);
+    const [isObjectPanelOpen, setIsObjectPanelOpen] = useState(false);
 
     const autosaveTimerRef = useRef<number | null>(null);
     const lastAutoCenteredDrawingIdRef = useRef<string | null>(null);
 
     const shouldShowPlantSidebar = rightPanelMode === "plants";
+    const isEditorSideOverlayOpen = isColorPanelOpen || isObjectPanelOpen;
 
     const handleManualSaveActiveDrawing = useCallback(() => {
         if (!activeDrawingId) return;
@@ -3584,6 +3586,7 @@ export default function HelloEditor() {
         x2: number; y2: number;
         workingBulge: number;
         snapName: string | null;
+        beforeObjects: PolyObject[];
     } | null>(null);
     const bulgeHandleRefs = useRef<Record<string, Record<number, any>>>({});
     // ─────────────────────────────────────────────────────────────────────────
@@ -3599,6 +3602,7 @@ export default function HelloEditor() {
         nx: number; ny: number;
         workingRadius: number;
         snapName: string | null;
+        beforeObjects: PolyObject[];
     } | null>(null);
     const cornerHandleRefs = useRef<Record<string, Record<number, any>>>({});
     // ─────────────────────────────────────────────────────────────────────────
@@ -3608,25 +3612,25 @@ export default function HelloEditor() {
     // All handles have static opacity={1} in JSX → react-konva never resets them on re-render.
     const dimHandlesForDrag = useCallback((objectId: string, activeNode: any | null) => {
         for (const node of Object.values(vertexHandleRefs.current[objectId] ?? {})) {
-            if (node && node !== activeNode) node.to?.({ opacity: 0.25, duration: 0.12 });
+            if (node && node !== activeNode && node.getLayer?.()) node.to?.({ opacity: 0.25, duration: 0.12 });
         }
         for (const node of Object.values(bulgeHandleRefs.current[objectId] ?? {})) {
-            if (node && node !== activeNode) node.to?.({ opacity: 0.25, duration: 0.12 });
+            if (node && node !== activeNode && node.getLayer?.()) node.to?.({ opacity: 0.25, duration: 0.12 });
         }
         for (const node of Object.values(cornerHandleRefs.current[objectId] ?? {})) {
-            if (node && node !== activeNode) node.to?.({ opacity: 0.25, duration: 0.12 });
+            if (node && node !== activeNode && node.getLayer?.()) node.to?.({ opacity: 0.25, duration: 0.12 });
         }
     }, []);
 
     const restoreHandlesAfterDrag = useCallback((objectId: string) => {
         for (const node of Object.values(vertexHandleRefs.current[objectId] ?? {})) {
-            if (node) { node.fill?.('#ffffff'); node.to?.({ opacity: 1, duration: 0.18 }); }
+            if (node && node.getLayer?.()) { node.fill?.('#ffffff'); node.to?.({ opacity: 1, duration: 0.18 }); }
         }
         for (const node of Object.values(bulgeHandleRefs.current[objectId] ?? {})) {
-            if (node) { node.fill?.('white'); node.to?.({ opacity: 1, duration: 0.18 }); }
+            if (node && node.getLayer?.()) { node.fill?.('white'); node.to?.({ opacity: 1, duration: 0.18 }); }
         }
         for (const node of Object.values(cornerHandleRefs.current[objectId] ?? {})) {
-            if (node) { node.fill?.('white'); node.to?.({ opacity: 1, duration: 0.18 }); }
+            if (node && node.getLayer?.()) { node.fill?.('white'); node.to?.({ opacity: 1, duration: 0.18 }); }
         }
     }, []);
     // ─────────────────────────────────────────────────────────────────────────
@@ -4897,16 +4901,19 @@ export default function HelloEditor() {
                 const obj = (objectsRef.current as PolyObject[]).find((o: PolyObject) => o.id === edit.objectId);
                 if (obj) {
                     const workingBulges = normalizeBulges(obj.points, obj.bulges);
+                    const workingCorners = normalizeCorners(obj.points, obj.corners);
                     workingBulges[edit.segmentIndex] = edit.workingBulge;
                     selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(
                         obj.points,
                         obj.holes ?? [],
-                        workingBulges
+                        workingBulges,
+                        workingCorners
                     );
                     if (obj.type === "hedge") {
                         const liveOuterStroke =
-                            workingBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
-                                ? densifyBulgedRing(obj.points, workingBulges, 40)
+                            workingBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ||
+                                workingCorners.some((c) => (c || 0) > STRAIGHT_THRESHOLD)
+                                ? densifyBulgedRing(obj.points, workingBulges, 40, workingCorners)
                                 : obj.points;
                         selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(liveOuterStroke);
                     }
@@ -5086,10 +5093,12 @@ export default function HelloEditor() {
                     // setPointsAndHoles / setPoints each call batchDraw internally.
                     const workingHoles = edit.workingHoles ?? [];
                     const liveBulges = normalizeBulges(edit.workingPoints, editedObj?.bulges);
+                    const liveCorners = normalizeCorners(edit.workingPoints, editedObj?.corners);
                     selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(
                         edit.workingPoints,
                         workingHoles,
-                        liveBulges
+                        liveBulges,
+                        liveCorners
                     );
                     selectedHedgeStrokeRefs.current[`${edit.objectId}:h${edit.holeIndex}`]?.setPoints(ring);
 
@@ -5176,13 +5185,15 @@ export default function HelloEditor() {
                 // Update holes-branch fill (PolygonWithHoles) live.
                 const workingHoles = edit.workingHoles ?? (editedObj?.holes ?? []);
                 const liveBulges = normalizeBulges(nextPoints, editedObj?.bulges);
-                selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(nextPoints, workingHoles, liveBulges);
+                const liveCorners = normalizeCorners(nextPoints, editedObj?.corners);
+                selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(nextPoints, workingHoles, liveBulges, liveCorners);
 
                 // Update outer hedge stroke (both holes and no-holes branch).
                 if (editedObj?.type === "hedge") {
                     const liveOuterStroke =
-                        liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
-                            ? densifyBulgedRing(nextPoints, liveBulges, 40)
+                        liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ||
+                            liveCorners.some((c) => (c || 0) > STRAIGHT_THRESHOLD)
+                            ? densifyBulgedRing(nextPoints, liveBulges, 40, liveCorners)
                             : nextPoints;
                     selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(liveOuterStroke);
                 }
@@ -5244,16 +5255,19 @@ export default function HelloEditor() {
                 // Update hedge shapes imperatively so they follow the vertex drag live.
                 const vWorkingHoles = edit.workingHoles ?? (editedObj?.holes ?? []);
                 const liveBulges = normalizeBulges(edit.workingPoints, editedObj?.bulges);
+                const liveCorners = normalizeCorners(edit.workingPoints, editedObj?.corners);
                 selectedPolyWithHolesRefs.current[edit.objectId]?.setPointsAndHoles(
                     edit.workingPoints,
                     vWorkingHoles,
-                    liveBulges
+                    liveBulges,
+                    liveCorners
                 );
                 if (edit.holeIndex === null) {
                     if (editedObj?.type === "hedge") {
                         const liveOuterStroke =
-                            liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
-                                ? densifyBulgedRing(edit.workingPoints, liveBulges, 40)
+                            liveBulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD) ||
+                                liveCorners.some((c) => (c || 0) > STRAIGHT_THRESHOLD)
+                                ? densifyBulgedRing(edit.workingPoints, liveBulges, 40, liveCorners)
                                 : edit.workingPoints;
                         selectedHedgeStrokeRefs.current[edit.objectId]?.setPoints(liveOuterStroke);
                     }
@@ -5450,7 +5464,7 @@ export default function HelloEditor() {
 
                 if (edit) {
                     restoreHandlesAfterDrag(edit.objectId);
-                    useProjectStore.getState().setSegmentBulge(edit.objectId, edit.segmentIndex, edit.workingBulge);
+                    useProjectStore.getState().setSegmentBulge(edit.objectId, edit.segmentIndex, edit.workingBulge, edit.beforeObjects);
                 }
 
                 requestAnimationFrame(() => {
@@ -5471,7 +5485,7 @@ export default function HelloEditor() {
 
                 if (edit) {
                     restoreHandlesAfterDrag(edit.objectId);
-                    useProjectStore.getState().setCornerRadius(edit.objectId, edit.vertexIndex, edit.workingRadius);
+                    useProjectStore.getState().setCornerRadius(edit.objectId, edit.vertexIndex, edit.workingRadius, edit.beforeObjects);
                 }
 
                 requestAnimationFrame(() => {
@@ -6763,15 +6777,15 @@ export default function HelloEditor() {
                         />
                     </div>
 
-                    {shouldShowPlantSidebar && (
+                    {shouldShowPlantSidebar && !isEditorSideOverlayOpen && (
                         <EstimatedPlantingPriceBadge budget={activeDrawing?.budget} />
                     )}
 
                     <div className="relative z-20">
                         {shouldShowPlantSidebar ? (
-                            <PlantSidebar onLinkedPlantSelect={handleLinkedPlantPreviewSelect} hidden={isColorPanelOpen} />
+                            <PlantSidebar onLinkedPlantSelect={handleLinkedPlantPreviewSelect} hidden={isEditorSideOverlayOpen} />
                         ) : (
-                            <RightStepMenu hidden={isColorPanelOpen} />
+                            <RightStepMenu hidden={isEditorSideOverlayOpen} />
                         )}
                     </div>
 
@@ -7108,6 +7122,7 @@ export default function HelloEditor() {
                                             {/* =============== TOP LAYER (treebeds + selection + draft) =============== */}
                                             <EditorTopLayer
                                                 onColorPanelOpenChange={setIsColorPanelOpen}
+                                                onObjectPanelOpenChange={setIsObjectPanelOpen}
                                                 unselectedNonPlantbeds={unselectedNonPlantbeds}
                                                 dragOverPlantbedId={dragOverPlantbedId}
                                                 objects={objects}

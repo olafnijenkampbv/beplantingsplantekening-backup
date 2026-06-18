@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { useScrollLock } from "@/hooks/useScrollLock";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
 import type { ApiPlant } from "@/lib/db/plantTypes";
 
@@ -151,6 +152,7 @@ export default function LinkedPlantSpecificationsOverlay(props: {
 
     const [shouldRender, setShouldRender] = useState(open);
     const [isVisible, setIsVisible] = useState(false);
+    useScrollLock(open);
 
     const plantListItems = usePlantSelectionStore((s) => s.plantListItems);
 

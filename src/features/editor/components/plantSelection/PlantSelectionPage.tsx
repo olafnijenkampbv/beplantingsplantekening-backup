@@ -42,6 +42,15 @@ const STEP2_GRONDSOORT_TO_FILTER_OPTION: Record<string, string> = {
     "veengrond-nat":         "Veengrond",
 };
 
+const PLANTGROUP_TO_CATEGORY_FILTER: Record<string, string[]> = {
+    "Dak, lei- & vormbomen": ["Dak"],
+    "Mediterraan": ["Mediteraan", "Mediterraan"],
+};
+
+function mapPlantgroupFiltersToCategories(values: string[]): string[] {
+    return values.flatMap((value) => PLANTGROUP_TO_CATEGORY_FILTER[value] ?? [value]);
+}
+
 
 // Maps step4.heightStyle to the SQL exclusion boundaries.
 // Only the truly incompatible height range is excluded; primary vs secondary
@@ -267,7 +276,7 @@ export default function PlantSelectionPage() {
                 grondsoorten: advancedFilters.grondsoorten.map((g) => g.toLowerCase()),
                 bloeiperiodes: advancedFilters.bloeiperiodes.map((b) => b.toLowerCase()),
                 kleuren: advancedFilters.kleuren,
-                categories: advancedFilters.plantgroepen,
+                categories: mapPlantgroupFiltersToCategories(advancedFilters.plantgroepen),
                 // In zoek-zelf tonen we altijd ALLE planten, ook uitverkochte.
                 // De beschikbaarheidsstatus ("Op voorraad" / "Binnen een week leverbaar")
                 // is zichtbaar op elke variantkaart — de gebruiker beslist zelf.
@@ -576,6 +585,7 @@ export default function PlantSelectionPage() {
                                                 .map((g) => STEP2_GRONDSOORT_TO_FILTER_OPTION[g] ?? "")
                                                 .filter(Boolean)
                                                 .map((g) => g.toLowerCase()),
+                                            keurmerkFilter: step2.certificationPreference as ScoringInput["keurmerkFilter"],
                                         }}
                                         onChangeSort={setSortValue}
                                         onChangeViewMode={setViewMode}

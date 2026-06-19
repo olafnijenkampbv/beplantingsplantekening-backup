@@ -78,15 +78,6 @@ function AccessoryAdvicePopup({
                         {" voor."}
                     </div>
 
-                    {info.reason && (
-                        <div
-                            className="mt-4 rounded-[6px] px-4 py-3 text-[13px] leading-[1.45]"
-                            style={{ backgroundColor: "#EEF0ED", color: "#58694C" }}
-                        >
-                            {info.reason}
-                        </div>
-                    )}
-
                     <div
                         className="mt-5 rounded-[6px] px-4 py-3 text-[13px] leading-[1.45]"
                         style={{ backgroundColor: "#D9EDF7", color: "#31708F" }}

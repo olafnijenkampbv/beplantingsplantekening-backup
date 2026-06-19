@@ -8,8 +8,10 @@ import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
 import { usePlantVariantStore } from "@/features/editor/state/plantVariantStore";
 import { goToFinalisatie } from "@/features/editor/lib/editorWorkflowNavigation";
+import { getObjectAreaInSquareMeters, formatSquareMeters } from "@/state/areaMetrics";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 import ConfirmModal from "@/features/editor/components/ConfirmModal";
+import AutoFillModal from "@/features/editor/components/AutoFillModal";
 
 const COLORS = {
     orange: "#E94E1B",
@@ -528,13 +530,15 @@ function ChevronUpIcon() {
 export default function PlantSidebar(props: {
     onLinkedPlantSelect?: (plant: { id: string; latin: string; dutch: string; imageSrc: string } | null) => void;
     hidden?: boolean;
+    budget?: number;
 }) {
-    const { onLinkedPlantSelect, hidden = false } = props;
+    const { onLinkedPlantSelect, hidden = false, budget } = props;
 
     const [collapsed, setCollapsed] = React.useState(false);
     const [activeTab, setActiveTab] = React.useState<TabKey>("list");
     const [query, setQuery] = React.useState("");
     const [showEmptyBedsModal, setShowEmptyBedsModal] = React.useState(false);
+    const [showSuccessModal, setShowSuccessModal] = React.useState(false);
     const [openSections, setOpenSections] = React.useState<Record<string, boolean>>({});
     const [openLinkedGroups, setOpenLinkedGroups] = React.useState<Record<"plantbed" | "hedge" | "treebed", boolean>>({
         plantbed: true,
@@ -733,6 +737,7 @@ export default function PlantSidebar(props: {
                 }.stroke,
                 swatchShape: (obj.type === "treebed" ? "circle" : "square") as "circle" | "square",
                 treebedVariant: obj.type === "treebed" ? (obj.treebedVariant ?? "standard") as TreebedVariant : undefined,
+                area: formatSquareMeters(getObjectAreaInSquareMeters(obj as any)),
             }))
             .sort((a, b) => {
                 if (a.type !== b.type) {
@@ -1338,7 +1343,7 @@ export default function PlantSidebar(props: {
                                                 return;
                                             }
 
-                                            goToFinalisatie();
+                                            setShowSuccessModal(true);
                                         }}
                                     >
                                         {(() => {
@@ -1457,15 +1462,8 @@ export default function PlantSidebar(props: {
                 }
             `}</style>
         </div>
-        <ConfirmModal
+        <AutoFillModal
             open={showEmptyBedsModal}
-            title="Lege vakken in je tekening"
-            description={
-                <>
-                    De volgende plantvakken, boomvakken of haagvakken hebben nog geen planten gekoppeld.
-                    Wil je toch doorgaan naar de afrondpagina?
-                </>
-            }
             items={plantbeds
                 .filter((pb) => (plantbedLinks?.[pb.id]?.length ?? 0) === 0)
                 .map((pb) => {
@@ -1494,14 +1492,25 @@ export default function PlantSidebar(props: {
                                 : pb.type === "hedge"
                                     ? "Geen haagplanten gekoppeld"
                                     : "Geen planten gekoppeld",
+                        area: pb.area,
                     };
                 })}
-            listVariant="cards"
-            cancelText="Ga terug"
-            confirmText="Toch verder gaan"
-            onCancel={() => setShowEmptyBedsModal(false)}
-            onConfirm={() => {
+            budget={budget}
+            onClose={() => setShowEmptyBedsModal(false)}
+            onGoToFinalisatie={() => {
                 setShowEmptyBedsModal(false);
+                goToFinalisatie();
+            }}
+        />
+        <AutoFillModal
+            open={showSuccessModal}
+            initialView={4}
+            successTitle="Alle vakken zijn gekoppeld"
+            items={[]}
+            budget={budget}
+            onClose={() => setShowSuccessModal(false)}
+            onGoToFinalisatie={() => {
+                setShowSuccessModal(false);
                 goToFinalisatie();
             }}
         />

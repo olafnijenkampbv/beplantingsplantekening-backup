@@ -157,6 +157,25 @@ export function buildAdviceData(params: {
 
     const defaultDistribution = 100 / linkedPlantIds.length;
 
+    // Normalize overrides so they always sum to 100 (e.g. after a plant is removed)
+    let effectiveOverrides: Record<string, number> | undefined;
+    if (distributionOverrides) {
+        const relevantSum = linkedPlantIds.reduce(
+            (sum, id) => sum + (distributionOverrides[id] ?? defaultDistribution),
+            0
+        );
+        if (Math.abs(relevantSum - 100) > 0.5) {
+            effectiveOverrides = Object.fromEntries(
+                linkedPlantIds.map((id) => [
+                    id,
+                    ((distributionOverrides[id] ?? defaultDistribution) / relevantSum) * 100,
+                ])
+            );
+        } else {
+            effectiveOverrides = distributionOverrides;
+        }
+    }
+
     const isTreebed = currentType === "treebed";
 
     const rows: AdviceRow[] = linkedPlantIds.map((plantId) => {
@@ -164,7 +183,7 @@ export function buildAdviceData(params: {
         const quantityPerSquareMeter = getPlantQuantityPerSquareMeter(projectPlant, plantId);
 
         const distributionPercentage =
-            distributionOverrides?.[plantId] ?? defaultDistribution;
+            effectiveOverrides?.[plantId] ?? defaultDistribution;
 
         const assignedMeasureValue = totalMeasureValue * (distributionPercentage / 100);
 

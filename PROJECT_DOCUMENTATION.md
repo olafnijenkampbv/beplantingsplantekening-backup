@@ -1,7 +1,7 @@
 # Beplantingsplantekening - projectdocumentatie
 
 Technische projectdocumentatie voor de huidige versie van de applicatie.
-Bijgewerkt op 12 juni 2026.
+Bijgewerkt op 19 juni 2026.
 
 Deze applicatie is een teken- en adviesflow voor beplantingsplannen. De kern is
 een canvas-editor waarin gebruikers tuinobjecten tekenen, bewerken, knippen,
@@ -29,7 +29,10 @@ consistent terugkomen in de editor, de tekeningenpreview en de finalisatiepagina
 15. Undo en redo
 16. Preview en finalisatie rendering
 17. Plantenlijst en staffels
-18. Bekende aandachtspunten
+18. Tuinmaterialen catalogus
+19. AI-advies: Aanplantmateriaal (stap 7)
+20. AI Plantvoorstel voor lege vakken (AutoFillModal)
+21. Bekende aandachtspunten
 
 ---
 
@@ -81,7 +84,8 @@ npm run lint
 | `/beplantingsplan-afronden` | Finalisatiepagina met technische tekening |
 | `/api/plants` | Gefilterde plantencatalogus |
 | `/api/plants/[id]/variants` | Beschikbare maten/varianten van een plant |
-| `/api/garden-materials` | Tuinmaterialen |
+| `/api/garden-materials` | Tuinmaterialen (ondersteunt `subcategory`-filter) |
+| `/api/plant-advice/accessories` | AI-advies voor aanplantmaterialen (POST) |
 | `/api/admin/sync` | Feed sync starten |
 | `/api/admin/sync-status` | Laatste syncstatus |
 
@@ -96,13 +100,22 @@ src/
     plantenlijst/page.tsx
     beplantingsplan-afronden/page.tsx
     api/
+      garden-materials/route.ts
+      plant-advice/
+        accessories/route.ts   ← AI-advies voor aanplantmaterialen
+      admin/
+        sync/route.ts
+        sync-status/route.ts
   features/editor/
     HelloEditor.tsx
     editorDrawingsPersistence.ts
     components/
       editor/
       finalisatie/
+        FinalisatiePlantList.tsx        ← exporteert buildPlantAdviceInfoForList
+        FinalisatieAccessoryAdvice.tsx  ← "Aanplantmateriaal" AI-blok
       plantSelection/
+        GardenMaterialGrid.tsx         ← GardenMaterialGridCard hergebruikt in slider
       rightStepMenu/
     config/
       editorWorkflowConfig.ts
@@ -131,12 +144,15 @@ src/
       plantVariantStore.ts
       rightStepMenuStore.ts
       selectionDragStore.ts
-  lib/db/
-    feedParser.ts
-    feedSync.ts
-    plantDatabase.ts
-    plantQueries.ts
-    plantTypes.ts
+  lib/
+    accessoryCatalogMeta.ts   ← handmatige beschrijvingen van alle 83 tuinmaterialen
+    db/
+      feedParser.ts
+      feedSync.ts
+      gardenMaterialTypes.ts
+      plantDatabase.ts
+      plantQueries.ts
+      plantTypes.ts
   state/
     areaMetrics.ts
     projectStore.ts
@@ -156,6 +172,9 @@ Belangrijkste bestanden:
 | `src/features/editor/lib/svgObjectPath.ts` | SVG path generatie voor previews/finalisatie |
 | `src/features/editor/lib/alignmentGuides.ts` | Alignment guides tijdens draggen |
 | `src/features/editor/lib/boundarySystem.ts` | Schutting/hek/boundary band geometrie |
+| `src/lib/accessoryCatalogMeta.ts` | Handmatige beschrijvingen per materiaal-ID voor AI-prompt |
+| `src/app/api/plant-advice/accessories/route.ts` | OpenAI-integratie voor aanplantmateriaaladvies |
+| `src/features/editor/components/finalisatie/FinalisatieAccessoryAdvice.tsx` | UI voor AI-adviesblok stap 7 |
 
 ---
 
@@ -169,6 +188,7 @@ Tekeningdata wordt client-side opgeslagen in `localStorage`.
 | `hello-editor:drawings:v1::active-drawing` | Actieve tekening-ID |
 | `hello-editor:drawings:v1::plant-selection` | Plantselectie snapshots per tekening |
 | `hello-editor:drawings:v1::panel-mode` | Open wizard/panel state per tekening |
+| `finalisatie:accessory-advice:v5` | Gecachte AI-materiaalsuggesties (cache-key = hash van plantenlijst + vakken) |
 
 `editorDrawingsPersistence.ts` bevat cloning en serialisatie voor tekeningen.
 Belangrijk: `bulges`, `corners`, `holes` en `boundarySegments` worden diep gekloond,
@@ -187,11 +207,37 @@ Belangrijke tabellen:
 |---|---|
 | `plants` | Unieke planten/cultivars |
 | `plant_variants` | Verkoopbare maten/varianten per plant |
-| `garden_materials` | Tuinmaterialen |
+| `garden_materials` | Tuinmaterialen (incl. `subcategory`-kolom) |
 | `garden_material_variants` | Varianten van tuinmaterialen |
 | `sync_log` | Resultaat en duur van imports |
 
-De API ondersteunt filters op onder andere:
+De `garden_materials`-tabel heeft een `subcategory TEXT NOT NULL DEFAULT 'Overig'` kolom.
+Mogelijke waarden: `Potgrond`, `Daktuinen`, `Gazon`, `Meststoffen`, `Overig`.
+De kolom wordt toegevoegd via een migratiecheck bij opstart in `plantDatabase.ts`.
+
+### Feed-detectie tuinmaterialen
+
+`feedParser.ts` detecteert tuinmaterialen via drie signalen (in volgorde van betrouwbaarheid):
+
+1. `plant_groepen` bevat "Tuinmaterialen"
+2. `dealer_groepen` bevat een bekende merknaam (culvita, innogreen, potgronden, dungking, straightcurve, daktuinen, meststoffen, graszoden)
+3. Titelwoorden: daktuin, sedum, potgrond, tuinaarde, substraat, gazon, graszaad, mest, strooiwagen
+
+De subcategorie wordt bepaald via `dealer_groepen` (betrouwbaarst) met titelwoorden als fallback.
+
+### BTW-berekening
+
+Prijzen in de feed zijn inclusief BTW. De app toont prijzen exclusief BTW.
+
+- Standaard divisor: `1.09` (9% BTW, voor planten en vrijwel alle materialen)
+- Per-trefnaam uitzondering: `VIVIUNIV` (DCM Vivimus Universeel) gebruikt `1.21` (21% BTW)
+  omdat dit product in de feed per ongeluk met 21%-inkoopprijs staat (geverifieerd: €12,44 ÷ 1,21 = €10,28)
+
+De `PRICE_DIVISOR_OVERRIDE`-map in `feedParser.ts` regelt deze uitzonderingen.
+
+### Plants API filters
+
+De `/api/plants`-route ondersteunt filters op:
 
 - zoekterm
 - app group
@@ -205,6 +251,8 @@ De API ondersteunt filters op onder andere:
 - hoogte
 - keurmerk
 - sortering en paginering
+
+De `/api/garden-materials`-route ondersteunt een `subcategory`-queryparameter voor het filteren per subcategorie.
 
 ---
 
@@ -544,7 +592,168 @@ src/features/editor/components/plantSelection/ProductVariantSelectionModal.tsx
 
 ---
 
-## 18. Bekende aandachtspunten
+## 18. Tuinmaterialen catalogus
+
+De tuinmaterialen-catalogus bestaat uit ~83 producten die uit de feed worden geïmporteerd
+via `feedSync.ts`. De subcategorie-indeling wordt gebruikt voor de filterbalk op de
+Tuinmaterialen-pagina (stap 5) en voor de AI-adviesroute.
+
+### SubcategoryTabBar (stap 5 plantenlijst)
+
+Op de Tuinmaterialen-tab in `GardenMaterialGrid.tsx` staat een `SubcategoryTabBar` met
+de filteropties: Alle / Potgrond / Daktuinen / Gazon / Meststoffen / Overig.
+De volgorde is vastgelegd in `SUBCATEGORY_ORDER`.
+
+### accessoryCatalogMeta.ts
+
+`src/lib/accessoryCatalogMeta.ts` bevat handmatige beschrijvingen voor alle 83 materiaal-IDs.
+De functie `getAccessoryCatalogMeta(id)` geeft `{ category, description }` terug.
+Deze beschrijvingen worden meegegeven in de AI-prompt zodat het model goed kan beoordelen
+welk product bij welke plant past. Producten zonder beschrijving worden door de AI overgeslagen.
+
+### GardenMaterialGridCard
+
+`GardenMaterialGridCard` (geëxporteerd uit `GardenMaterialGrid.tsx`) wordt hergebruikt in
+zowel de tuinmaterialen-grid (stap 5) als de AI-adviesslider (stap 7).
+
+Props:
+- `material: ApiGardenMaterial`
+- `reason?: string` — optionele AI-adviesreden, getoond tussen maatlink en prijs
+- `onAddToPlantList?: (material, variant) => void`
+
+Kaartopbouw voor gelijke hoogte: outer div met `flex h-full flex-col`, afbeelding met `shrink-0`,
+tekst-blok met `flex flex-1 flex-col`, prijsrij met `mt-auto`.
+
+---
+
+## 19. AI-advies: Aanplantmateriaal (stap 7)
+
+Op de finalisatiepagina (`/beplantingsplan-afronden`) staat het **"Aanplantmateriaal"**-blok.
+Dit blok haalt AI-suggesties op voor tuinmaterialen die passen bij de definitieve plantenlijst.
+
+### Route: `POST /api/plant-advice/accessories`
+
+Bestand: `src/app/api/plant-advice/accessories/route.ts`
+
+**Request body:**
+```ts
+{ items: AccessoryAdviceInputItem[] }
+```
+
+`AccessoryAdviceInputItem` bevat per plant:
+- `botanicalName`, `dutchName`, `category`, `appGroup`, `size`, `quantity`
+- plantspecificaties: `volwassenHoogte`, `kleuren`, `kleurBlad`, `bloeiperiode`, `inheems`, `stikstofbehoefte`, `standplaatsen`, `grondsoorten`, `toelichting`
+- `vakken: AccessoryAdviceVakInfo[]` — per gekoppeld vak: vakType (plantbed/hedge/treebed), areaM2, adviceCount
+- `treebedCount` — aantal gekoppelde boomvakken (bepaalt hoeveelheid boompalen/boomband, nooit het stuksaantal planten)
+
+**Verwerking:**
+
+1. Daktuinen-producten worden uitgefilterd vóór de prompt (niet relevant als aanplantmateriaal, scheelt ook promptgrootte).
+2. OpenAI `gpt-4o-mini` genereert suggesties via structured output (`json_schema`, `strict: true`).
+3. `uniqueSuggestionsByMaterial()` dedupliceert: als de AI hetzelfde `materialId` meerdere keren teruggeeft (voor verschillende planten), worden de redenen samengevoegd en het hoogste aanbevolen aantal gehanteerd.
+4. `applyStandardAccessoryRules()` voegt vaste regels toe boven op de AI-output:
+   - **BOOMPALE / BOOOMBAN** — bij bomen (meerstammig, dakbomen, leibomen, vormbomen, bomen): hoeveelheid = totaal aantal boomvakken (`treebedCount`-som)
+   - **VIVIZUUR** — bij heesters, vaste planten, rhododendrons, rozen, bomen: hoeveelheid = 1
+   - **TUTURF40** — bij heesters, vaste planten, rozen e.d.: hoeveelheid = 1
+   Standaardsuggesties worden altijd bovenaan de lijst geplaatst.
+
+**OpenAI-instellingen:**
+- Model: `gpt-4o-mini`
+- `temperature: 0`, `max_tokens: 2048`
+- `timeout: 25_000`, `maxRetries: 1` (voorkomt 10-minuten hangup bij trage API)
+
+**Typisch gedrag:** ~5-10 seconden responstijd, 5-10 suggesties voor een gemiddelde plantenlijst.
+
+### UI-component: `FinalisatieAccessoryAdvice.tsx`
+
+- Haalt automatisch advies op bij het openen van stap 7.
+- Resultaat wordt gecacht in `localStorage` onder `finalisatie:accessory-advice:v5`.
+  Cache-key = hash van plantenlijst-items + vakken (zodat bij wijziging nieuwe fetch plaatsvindt).
+- **Weergave:**
+  - ≤ 3 suggesties → normaal grid (`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`)
+  - > 3 suggesties → horizontale slider met pijlknoppen (links/rechts chevron)
+- Slider: `overflow-x-auto` met `.app-hidden-scrollbar` (scrollbar volledig verborgen, alleen pijlknoppen zichtbaar). Kaartbreedte = 300px, scroll = 300px per klik.
+- Bij toevoegen van een suggestie aan de plantenlijst wordt een `PlantListItem` aangemaakt met:
+  - `addedFrom: "accessory-advice"`
+  - `adviceQuantity` en `adviceReason`
+- Toegevoegde materialen zijn zichtbaar in de plantenlijst (stap 5 en stap 7) en kunnen worden verwijderd via een confirmmodal.
+
+### PlantListItem-uitbreidingen
+
+```ts
+type PlantListItem = {
+    // ... bestaande velden
+    addedFrom?: "accessory-advice";
+    adviceQuantity?: number;
+    adviceReason?: string;
+};
+```
+
+In `FinalisatiePlantList.tsx` worden items met `addedFrom === "accessory-advice"` anders weergegeven:
+- Adviesaantal getoond als `{adviceCount} stuk/stuks`
+- Aparte popup (`AccessoryAdvicePopup`) met de adviesreden
+- Verwijderknop die een confirmmodal toont (dezelfde modal als stap 5)
+
+### CSS-utilities (globals.css)
+
+```css
+.app-thin-scrollbar   /* dunne scrollbar, 6px, grijs */
+.app-hidden-scrollbar /* scrollbar volledig verborgen (gebruikt in slider) */
+```
+
+### buildPlantAdviceInfoForList
+
+Geëxporteerde helperfunctie uit `FinalisatiePlantList.tsx`.
+Berekent per plantenlijst-item de gekoppelde vakken (vakType, areaM2, adviceCount).
+Wordt hergebruikt door `FinalisatieAccessoryAdvice.tsx` om de `AccessoryAdviceVakInfo[]`
+en `treebedCount` te berekenen voor de API-payload.
+
+---
+
+## 20. AI Plantvoorstel voor lege vakken (AutoFillModal)
+
+Wanneer een gebruiker na het koppelen van planten nog lege vakken overhoudt en op
+**"Zoek planten voor lege vakken"** klikt, opent `AutoFillModal.tsx`. Het laadscherm
+(view 2) stuurt een echte SSE-streaming aanvraag naar de server, die vervolgens
+OpenAI gpt-4o aanroept om botanisch verantwoorde plantcombinaties voor te stellen.
+
+Zie **[AI_PROPOSAL_DOCUMENTATION.md](AI_PROPOSAL_DOCUMENTATION.md)** voor de volledige
+technische documentatie (dataflow, SSE-events, promptstructuur, bed-type mapping,
+fallback-logica en testhandleiding).
+
+### Route: `POST /api/plants/ai-proposal`
+
+Bestand: `src/app/api/plants/ai-proposal/route.ts`
+
+Verwerkt in vier stappen via SSE:
+
+| Stap | SSE `step` | Progress |
+|---|---|---|
+| 1 | `querying_db` → `scoring_candidates` | 10 → 25% |
+| 2 | `building_prompt` | 40% |
+| 3 | `asking_openai` → `generating` | 50 → 85% |
+| 4 | `parsing_result` → resultaat | 90 → 98% |
+
+### Vaktype-naar-appgroup mapping
+
+| Vaktype | PlantAppGroups in kandidatenpool |
+|---|---|
+| `plantbed` | `vaste-planten`, `heesters-struiken`, `bodembedekkers` |
+| `hedge` | `hagen` |
+| `treebed` | `bomen` |
+
+`overig` is bewust uitgesloten (bevat groenten, materialen, bolmengsels).
+`bodembedekkers` staat in de mapping maar heeft nog geen DB-inhoud — wordt later gevuld.
+
+### Fallback
+
+Als OpenAI niet beschikbaar is of ongeldige JSON teruggeeft, valt de route terug
+op een score-sort van de kandidatenpool (geen AI). De client ontvangt dan hetzelfde
+`result`-event, met `fallback: true`.
+
+---
+
+## 21. Bekende aandachtspunten
 
 - De editorgeometrie is bewust centraal gehouden in `projectStore.ts` en
   `features/editor/lib/*`. Nieuwe features die objectvormen veranderen moeten
@@ -559,4 +768,15 @@ src/features/editor/components/plantSelection/ProductVariantSelectionModal.tsx
 - Bij nieuwe panel overlays controleren of `RightStepMenu`, `PlantSidebar` en
   `EstimatedPlantingPriceBadge` correct verborgen worden wanneer het panel focus
   moet krijgen.
+- De feed kan voor hetzelfde product meerdere items hebben met dezelfde `trefnaam`
+  en `maatomschrijving` (duplicate SKU-varianten). Dit resulteert in dubbele
+  size_label-rijen in `garden_material_variants`. Nog niet gefixed.
+- Bij het uitbreiden van `garden_materials` met nieuwe kolommen altijd een
+  migratiecheck toevoegen in `plantDatabase.ts` (patroon: `ALTER TABLE ... ADD COLUMN`
+  alleen als de kolom nog niet bestaat).
+- De AI-adviesroute stuurt alle tuinmaterialen (minus Daktuinen) mee in de prompt.
+  Bij groei van de catalogus de promptgrootte in de gaten houden; overweeg om
+  ook andere grote subcategorieën uit te filteren als de responstijd oploopt.
+- `accessoryCatalogMeta.ts` moet handmatig bijgehouden worden bij nieuwe producten
+  in de feed — de AI gebruikt de beschrijvingen als enige kennisbron.
 

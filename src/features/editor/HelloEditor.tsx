@@ -6783,7 +6783,7 @@ export default function HelloEditor() {
 
                     <div className="relative z-20">
                         {shouldShowPlantSidebar ? (
-                            <PlantSidebar onLinkedPlantSelect={handleLinkedPlantPreviewSelect} hidden={isEditorSideOverlayOpen} />
+                            <PlantSidebar onLinkedPlantSelect={handleLinkedPlantPreviewSelect} hidden={isEditorSideOverlayOpen} budget={activeDrawing?.budget} />
                         ) : (
                             <RightStepMenu hidden={isEditorSideOverlayOpen} />
                         )}

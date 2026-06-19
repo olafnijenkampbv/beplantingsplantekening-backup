@@ -214,7 +214,7 @@ export function queryPlants(params: PlantQueryParams): ApiPlantsResponse {
 
     const db = getPlantDb();
     const page = Math.max(1, params.page ?? 1);
-    const limit = Math.min(200, Math.max(1, params.limit ?? 48));
+    const limit = Math.min(9999, Math.max(1, params.limit ?? 48));
     const offset = (page - 1) * limit;
 
     const { sql: whereSql, bindings } = buildWhereClause(params);

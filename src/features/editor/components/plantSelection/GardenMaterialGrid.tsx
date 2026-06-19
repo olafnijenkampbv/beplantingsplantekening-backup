@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { PlantImg } from "@/features/editor/components/PlantImg";
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import type { ApiGardenMaterial, ApiGardenMaterialVariant } from "@/lib/db/gardenMaterialTypes";
@@ -368,18 +369,45 @@ function Pagination({ currentPage, totalPages, onPageChange }: {
 // GardenMaterialGridCard — gridweergave
 // ---------------------------------------------------------------------------
 
+function parseReasonParts(reason: string): { intro: string; plantNames: string[]; explanation: string } {
+    const lines = reason.split("\n");
+    const intro: string[] = [];
+    const plantNames: string[] = [];
+    const explanation: string[] = [];
+    let inPlants = false;
+    for (const line of lines) {
+        if (line.startsWith("- ")) {
+            inPlants = true;
+            plantNames.push(line.slice(2).trim());
+        } else if (inPlants) {
+            explanation.push(line);
+        } else {
+            intro.push(line);
+        }
+    }
+    return {
+        intro: intro.join("\n").trim(),
+        plantNames,
+        explanation: explanation.join("\n").trim(),
+    };
+}
+
 export function GardenMaterialGridCard(props: {
     material:       ApiGardenMaterial;
     onAddToPlantList: (material: ApiGardenMaterial, variant: ApiGardenMaterialVariant, fixedSize?: boolean) => void;
     reason?: string;
+    suggestedQuantity?: number;
+    plantNames?: string[];
 }) {
-    const { material, onAddToPlantList, reason } = props;
+    const { material, onAddToPlantList, reason, suggestedQuantity, plantNames: plantNamesProp } = props;
     const notify = useAppNotify();
     const [isAdded,       setIsAdded]       = useState(false);
     const [isCartHovered, setIsCartHovered] = useState(false);
     const [isModalOpen,   setIsModalOpen]   = useState(false);
     const [isReasonOpen,  setIsReasonOpen]  = useState(false);
+    const [popoverPos, setPopoverPos] = useState<{ top: number; right: number } | null>(null);
     const reasonPopoverRef = useRef<HTMLDivElement | null>(null);
+    const reasonBtnRef = useRef<HTMLButtonElement | null>(null);
 
     const variants        = material.variants;
     const isSingleVariant = variants.length === 1;
@@ -417,16 +445,27 @@ export function GardenMaterialGridCard(props: {
             const target = event.target;
             if (!(target instanceof Node)) return;
             if (reasonPopoverRef.current?.contains(target)) return;
+            if (reasonBtnRef.current?.contains(target)) return;
             setIsReasonOpen(false);
         };
 
+        const handleScroll = () => {
+            if (!reasonBtnRef.current) return;
+            const rect = reasonBtnRef.current.getBoundingClientRect();
+            setPopoverPos({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
+        };
+
         document.addEventListener("pointerdown", handlePointerDown);
-        return () => document.removeEventListener("pointerdown", handlePointerDown);
+        window.addEventListener("scroll", handleScroll, { passive: true, capture: true });
+        return () => {
+            document.removeEventListener("pointerdown", handlePointerDown);
+            window.removeEventListener("scroll", handleScroll, { capture: true });
+        };
     }, [isReasonOpen]);
 
     return (
         <>
-            <div className={`relative h-full ${isReasonOpen ? "z-30" : "z-0"}`}>
+            <div className="relative h-full">
                 <div
                     className="flex h-full flex-col overflow-hidden rounded-[8px] border"
                     style={{
@@ -518,41 +557,173 @@ export function GardenMaterialGridCard(props: {
                 </div>
 
                 {reason && (
-                    <div
-                        ref={reasonPopoverRef}
-                        className="absolute right-2 top-2 z-20"
-                    >
+                    <div className="absolute right-2 top-2 z-20">
                         <button
+                            ref={reasonBtnRef}
                             type="button"
                             aria-label="Waarom wordt dit product aangeboden?"
                             aria-expanded={isReasonOpen}
                             onClick={(e) => {
                                 e.stopPropagation();
+                                if (!isReasonOpen && reasonBtnRef.current) {
+                                    const rect = reasonBtnRef.current.getBoundingClientRect();
+                                    setPopoverPos({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
+                                }
                                 setIsReasonOpen((open) => !open);
                             }}
-                            className="flex cursor-pointer items-center justify-center rounded-full text-[17px] font-bold leading-none text-white shadow-md"
+                            className="flex cursor-pointer items-center justify-center rounded-full shadow-md"
                             style={{
                                 width: 32,
                                 height: 32,
                                 backgroundColor: COLORS.orange,
                             }}
                         >
-                            ?
+                            <img
+                                src="/icons/idea.svg"
+                                alt=""
+                                style={{ width: 16, height: 16, display: "block", filter: "brightness(0) invert(1)" }}
+                            />
                         </button>
-
-                        {isReasonOpen && (
-                            <div
-                                className="absolute right-0 top-10 w-[260px] whitespace-pre-line rounded-[8px] border bg-white p-3 text-[12px] leading-[1.45] shadow-lg"
-                                style={{
-                                    borderColor: COLORS.border,
-                                    color: COLORS.muted,
-                                }}
-                            >
-                                {reason}
-                            </div>
-                        )}
                     </div>
                 )}
+
+                {isReasonOpen && reason && popoverPos && typeof document !== "undefined" && createPortal((() => {
+                    const parsed = parseReasonParts(reason);
+                    const plantNames = (plantNamesProp && plantNamesProp.length > 0) ? plantNamesProp : parsed.plantNames;
+                    const intro = (plantNamesProp && plantNamesProp.length > 0) ? reason : parsed.intro;
+                    const explanation = (plantNamesProp && plantNamesProp.length > 0) ? "" : parsed.explanation;
+                    return (
+                        <div
+                            ref={reasonPopoverRef}
+                            style={{
+                                position: "fixed",
+                                top: popoverPos.top,
+                                right: popoverPos.right,
+                                width: 290,
+                                backgroundColor: "#FFFFFF",
+                                borderRadius: 10,
+                                boxShadow: "0 4px 24px rgba(0,0,0,0.14), 0 1px 4px rgba(0,0,0,0.08)",
+                                border: "1px solid #E3E2E2",
+                                overflow: "hidden",
+                                zIndex: 9999,
+                            }}
+                        >
+                            {/* Header */}
+                            <div
+                                style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 10,
+                                    padding: "14px 14px 10px",
+                                    borderBottom: "1px solid #E3E2E2",
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        width: 28,
+                                        height: 28,
+                                        borderRadius: "50%",
+                                        backgroundColor: COLORS.orange,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        flexShrink: 0,
+                                    }}
+                                >
+                                    <img
+                                        src="/icons/idea.svg"
+                                        alt=""
+                                        style={{ width: 15, height: 15, display: "block", filter: "brightness(0) invert(1)" }}
+                                    />
+                                </div>
+                                <span
+                                    style={{
+                                        flex: 1,
+                                        fontSize: 13,
+                                        fontWeight: 600,
+                                        color: "#111111",
+                                        lineHeight: "1.3",
+                                    }}
+                                >
+                                    Waarom is dit een goed voorstel?
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setIsReasonOpen(false); }}
+                                    aria-label="Sluit uitleg"
+                                    style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        width: 22,
+                                        height: 22,
+                                        borderRadius: 4,
+                                        background: "none",
+                                        border: "none",
+                                        cursor: "pointer",
+                                        flexShrink: 0,
+                                    }}
+                                >
+                                    <img src="/icons/cancel.svg" alt="" style={{ width: 13, height: 13, display: "block" }} />
+                                </button>
+                            </div>
+
+                            {/* Body */}
+                            <div style={{ padding: "12px 14px" }}>
+                                {intro ? (
+                                    <p style={{ fontSize: 13, color: "#111111", lineHeight: "1.5", margin: "0 0 10px 0" }}>
+                                        {intro}
+                                    </p>
+                                ) : null}
+
+                                {plantNames.length > 0 && (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: explanation ? 10 : 0 }}>
+                                        {plantNames.map((name) => (
+                                            <div key={name} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                                <img
+                                                    src="/icons/check-icon.svg"
+                                                    alt=""
+                                                    style={{ width: 18, height: 18, display: "block", flexShrink: 0 }}
+                                                />
+                                                <span style={{ fontSize: 13, fontWeight: 700, color: "#111111" }}>{name}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+
+                                {explanation ? (
+                                    <p style={{ fontSize: 13, color: "#111111", lineHeight: "1.5", margin: 0 }}>
+                                        {explanation}
+                                    </p>
+                                ) : null}
+
+                                {suggestedQuantity !== undefined && suggestedQuantity > 0 && (
+                                    <div
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 8,
+                                            marginTop: 12,
+                                            padding: "8px 12px",
+                                            backgroundColor: "#EEF0ED",
+                                            borderRadius: 8,
+                                        }}
+                                    >
+                                        <img
+                                            src="/icons/info.svg"
+                                            alt=""
+                                            style={{ width: 18, height: 18, display: "block", flexShrink: 0, filter: GREEN_ICON_FILTER }}
+                                        />
+                                        <span style={{ fontSize: 13, color: "#111111" }}>
+                                            Aanbevolen aantal:{" "}
+                                            <strong>{suggestedQuantity} {suggestedQuantity === 1 ? "stuk" : "stuks"}</strong>
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })(), document.body)}
             </div>
 
             {isModalOpen && (

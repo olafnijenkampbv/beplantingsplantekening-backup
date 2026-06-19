@@ -125,6 +125,8 @@ function buildApiUrl(
 // Store
 // ---------------------------------------------------------------------------
 
+let latestFetchRequestId = 0;
+
 export const usePlantCatalogStore = create<PlantCatalogState>((set, get) => ({
     // --- Initial data state ---
     plants: [],
@@ -145,10 +147,8 @@ export const usePlantCatalogStore = create<PlantCatalogState>((set, get) => ({
     // fetchPlants — call the API and store the result
     // ---------------------------------------------------------------------------
     fetchPlants: async () => {
-        const { filters, page, limit, isLoading } = get();
-
-        // Prevent duplicate parallel requests
-        if (isLoading) return;
+        const { filters, page, limit } = get();
+        const requestId = ++latestFetchRequestId;
 
         set({ isLoading: true, error: null });
 
@@ -161,6 +161,7 @@ export const usePlantCatalogStore = create<PlantCatalogState>((set, get) => ({
             }
 
             const data: ApiPlantsResponse = await response.json();
+            if (requestId !== latestFetchRequestId) return;
 
             set({
                 plants: data.plants,
@@ -173,6 +174,7 @@ export const usePlantCatalogStore = create<PlantCatalogState>((set, get) => ({
                 error: null,
             });
         } catch (err) {
+            if (requestId !== latestFetchRequestId) return;
             set({
                 isLoading: false,
                 error: err instanceof Error ? err.message : String(err),

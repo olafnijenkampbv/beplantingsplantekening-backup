@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { StaffelPopover, StaffelLink } from "@/features/editor/components/StaffelPopover";
 import { PlantImg } from "@/features/editor/components/PlantImg";
 import type { BulkPriceTier } from "@/lib/db/plantTypes";
@@ -15,7 +16,7 @@ import type {
 import type { ApiPlant } from "@/lib/db/plantTypes";
 import { matchesSearchQuery } from "@/features/editor/lib/plantSelectionSearch";
 import { usePlantVariantStore, type ApiPlantVariant } from "@/features/editor/state/plantVariantStore";
-import { scorePlant, getLabelForScore, type ScoringInput, type SuitabilityLabel } from "@/features/editor/lib/plantScoring";
+import { explainPlantScore, scorePlant, getLabelForScore, type ScoringInput, type SuitabilityLabel } from "@/features/editor/lib/plantScoring";
 import { usePlantCatalogStore } from "@/features/editor/state/plantCatalogStore";
 import ProductVariantSelectionModal from "@/features/editor/components/plantSelection/ProductVariantSelectionModal";
 
@@ -440,14 +441,30 @@ const SUITABILITY_CONFIG: Record<SuitabilityLabel, { text: string; icon: string;
     "goede-aanvulling": { text: "Goede aanvulling",  icon: "/icons/plus.svg",         green: false },
 };
 
-function SuitabilityBadge({ label }: { label: SuitabilityLabel }) {
+function SuitabilityBadge({
+    label,
+    isOpen,
+    onClick,
+}: {
+    label: SuitabilityLabel;
+    isOpen?: boolean;
+    onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
+}) {
     const { text, icon, green } = SUITABILITY_CONFIG[label];
     return (
-        <span
+        <button
+            type="button"
+            onClick={onClick}
+            onPointerDown={(event) => event.stopPropagation()}
+            aria-expanded={isOpen}
+            aria-haspopup="dialog"
+            title={`Waarom ${text.toLowerCase()}?`}
             className="inline-flex items-center gap-[5px] rounded-full px-3 py-[6px] text-[11px] font-semibold whitespace-nowrap"
             style={{
                 backgroundColor: green ? "#DEFFDE" : "#FDFFC6",
                 color: green ? "#008000" : "#807300",
+                border: "none",
+                cursor: "pointer",
             }}
         >
             {green ? (
@@ -468,7 +485,315 @@ function SuitabilityBadge({ label }: { label: SuitabilityLabel }) {
                 />
             )}
             {text}
-        </span>
+        </button>
+    );
+}
+
+function SuitabilityExplanationPopover(props: {
+    plant: ApiPlant;
+    label: SuitabilityLabel;
+    scoringInput: ScoringInput;
+    anchorRect: DOMRect | null;
+    onClose: () => void;
+}) {
+    const { plant, label, scoringInput, anchorRect, onClose } = props;
+    const popoverRef = useRef<HTMLDivElement | null>(null);
+    const explanation = useMemo(
+        () => explainPlantScore(plant, scoringInput),
+        [plant, scoringInput]
+    );
+
+    useEffect(() => {
+        const handlePointerDown = (event: PointerEvent) => {
+            const target = event.target;
+            if (!(target instanceof Node)) return;
+            if (popoverRef.current?.contains(target)) return;
+            onClose();
+        };
+        const handleEscape = (event: KeyboardEvent) => {
+            if (event.key === "Escape") onClose();
+        };
+        const handleScroll = () => onClose();
+
+        const timerId = window.setTimeout(() => document.addEventListener("pointerdown", handlePointerDown), 0);
+        document.addEventListener("keydown", handleEscape);
+        window.addEventListener("scroll", handleScroll, { passive: true, capture: true });
+        return () => {
+            window.clearTimeout(timerId);
+            document.removeEventListener("pointerdown", handlePointerDown);
+            document.removeEventListener("keydown", handleEscape);
+            window.removeEventListener("scroll", handleScroll, { capture: true });
+        };
+    }, [onClose]);
+
+    if (!anchorRect || typeof document === "undefined") return null;
+
+    const { text } = SUITABILITY_CONFIG[label];
+    const iconByLabel: Record<string, string> = {
+        Standplaats: "/icons/standplaats.svg",
+        Grondsoort: "/icons/grondsoort.svg",
+        Hoogtewerking: "/icons/volwassen-hoogte.svg",
+        Keurmerken: "/icons/keurmerk.svg",
+    };
+    const statusForScore = (score: number): { label: string; color: string; isMatch: boolean } => {
+        if (score >= 75) return { label: "Match", color: "#008000", isMatch: true };
+        if (score >= 40) return { label: "Goede aanvulling", color: "#FF8A00", isMatch: false };
+        return { label: "Geen match", color: "#B42318", isMatch: false };
+    };
+    const width = 400;
+    const margin = 12;
+    const left = Math.min(
+        Math.max(anchorRect.right - width, margin),
+        window.innerWidth - width - margin
+    );
+    const estimatedHeight = 380;
+    const openUpward = window.innerHeight - anchorRect.bottom < estimatedHeight + margin;
+    const top = openUpward
+        ? Math.max(margin, anchorRect.top - estimatedHeight - 8)
+        : anchorRect.bottom + 8;
+    const arrowLeft = Math.max(18, Math.min(anchorRect.left + anchorRect.width / 2 - left, width - 34));
+
+    return createPortal(
+        <div
+            ref={popoverRef}
+            role="dialog"
+            aria-label={`Uitleg ${text}`}
+            style={{
+                position: "fixed",
+                top,
+                left,
+                width,
+                backgroundColor: "#FFFFFF",
+                borderRadius: 10,
+                boxShadow: "0 4px 24px rgba(0,0,0,0.14), 0 1px 4px rgba(0,0,0,0.08)",
+                border: "1px solid #E3E2E2",
+                overflow: "hidden",
+                zIndex: 9999,
+            }}
+        >
+            <div
+                aria-hidden
+                style={{
+                    position: "absolute",
+                    left: arrowLeft,
+                    top: openUpward ? undefined : -7,
+                    bottom: openUpward ? -7 : undefined,
+                    width: 14,
+                    height: 7,
+                    overflow: "hidden",
+                }}
+            >
+                <div
+                    style={{
+                        position: "absolute",
+                        left: 0,
+                        top: openUpward ? undefined : 3,
+                        bottom: openUpward ? 3 : undefined,
+                        width: 14,
+                        height: 14,
+                        backgroundColor: "#FFFFFF",
+                        border: "1px solid #E3E2E2",
+                        transform: "rotate(45deg)",
+                        borderRadius: 2,
+                    }}
+                />
+            </div>
+
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "14px 16px 11px",
+                    borderBottom: "1px solid #E3E2E2",
+                }}
+            >
+                <div
+                    style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: "50%",
+                        backgroundColor: COLORS.orange,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                    }}
+                >
+                    <img
+                        src="/icons/idea.svg"
+                        alt=""
+                        style={{
+                            width: 15,
+                            height: 15,
+                            display: "block",
+                            filter: "brightness(0) invert(1)",
+                        }}
+                    />
+                </div>
+                <span style={{ flex: 1, fontSize: 15, fontWeight: 700, color: "#111111", lineHeight: "1.3" }}>
+                    Waarom is dit {text.toLowerCase()}?
+                </span>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    aria-label="Sluit uitleg"
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 22,
+                        height: 22,
+                        borderRadius: 4,
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        flexShrink: 0,
+                    }}
+                >
+                    <img src="/icons/cancel.svg" alt="" style={{ width: 13, height: 13, display: "block" }} />
+                </button>
+            </div>
+
+            <div style={{ padding: "18px 20px 20px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 20 }}>
+                    <p style={{ flex: 1, fontSize: 14, color: "#111111", lineHeight: "1.18", margin: 0 }}>
+                        De <span style={{ fontWeight: 600 }}>{plant.botanicalName}</span> sluit goed aan op jouw ingevulde wensen.
+                    </p>
+                    <div
+                        style={{
+                            display: "inline-flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            minWidth: 68,
+                            minHeight: 54,
+                            borderRadius: 8,
+                            padding: "8px 12px",
+                            backgroundColor: "#DEFFDE",
+                            flexShrink: 0,
+                        }}
+                    >
+                        <span
+                            style={{
+                                color: "#008000",
+                                fontSize: 18,
+                                fontWeight: 700,
+                                lineHeight: 1,
+                            }}
+                        >
+                            {Math.round(explanation.totalScore ?? 100)}%
+                        </span>
+                        <span style={{ marginTop: 3, fontSize: 13, fontWeight: 400, color: "#111111", lineHeight: 1 }}>
+                            match
+                        </span>
+                    </div>
+                </div>
+
+                <div style={{ height: 1, backgroundColor: "#111111", opacity: 0.65, margin: "18px 0" }} />
+
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#111111", marginBottom: 16 }}>
+                    Match op basis van jouw keuzes
+                </div>
+
+                {explanation.items.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                        {explanation.items.map((item) => {
+                            const status = statusForScore(item.score);
+                            return (
+                                <div
+                                    key={item.label}
+                                    style={{
+                                        display: "grid",
+                                        gridTemplateColumns: "38px minmax(150px, 1fr) auto",
+                                        alignItems: "center",
+                                        gap: 12,
+                                    }}
+                                >
+                                    <div
+                                        style={{
+                                            width: 38,
+                                            height: 38,
+                                            borderRadius: 5,
+                                            backgroundColor: "#F1F3EF",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                        }}
+                                    >
+                                        <img
+                                            src={iconByLabel[item.label] ?? "/icons/idea.svg"}
+                                            alt=""
+                                            style={{
+                                                width: 23,
+                                                height: 23,
+                                                display: "block",
+                                                filter: "brightness(0) saturate(100%) invert(37%) sepia(13%) saturate(650%) hue-rotate(57deg) brightness(91%) contrast(87%)",
+                                            }}
+                                        />
+                                    </div>
+
+                                    <div style={{ minWidth: 0 }}>
+                                        <div style={{ fontSize: 12, fontWeight: 700, color: "#111111", lineHeight: "1.2" }}>
+                                            {item.label === "Hoogtewerking" ? "Volwassen hoogte" : item.label}
+                                        </div>
+                                        <div style={{ marginTop: 1, fontSize: 12, color: "#111111", lineHeight: "1.25" }}>
+                                            {item.value}
+                                        </div>
+                                        {item.preference && !status.isMatch ? (
+                                            <div
+                                                style={{
+                                                    marginTop: 3,
+                                                    fontSize: 11,
+                                                    color: "#7B7B7B",
+                                                    lineHeight: "1.25",
+                                                    whiteSpace: "nowrap",
+                                                }}
+                                            >
+                                                Jouw voorkeur: {item.preference}
+                                            </div>
+                                        ) : null}
+                                    </div>
+
+                                    <div
+                                        style={{
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: 7,
+                                            color: status.color,
+                                            fontSize: 13,
+                                            fontWeight: 700,
+                                            whiteSpace: "nowrap",
+                                        }}
+                                    >
+                                        {status.isMatch ? (
+                                            <img
+                                                src="/icons/check-icon.svg"
+                                                alt=""
+                                                style={{ width: 13, height: 13, display: "block", flexShrink: 0 }}
+                                            />
+                                        ) : (
+                                            <span
+                                                aria-hidden
+                                                style={{
+                                                    width: 10,
+                                                    height: 10,
+                                                    borderRadius: "50%",
+                                                    border: `2px solid ${status.color}`,
+                                                    flexShrink: 0,
+                                                }}
+                                            />
+                                        )}
+                                        <span>{status.label}</span>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                ) : null}
+            </div>
+        </div>,
+        document.body
     );
 }
 
@@ -797,13 +1122,15 @@ function DefaultPlantCard(props: {
     plant: ApiPlant;
     viewMode: ViewMode;
     suitabilityLabel: SuitabilityLabel | null;
+    scoringInput: ScoringInput;
     onAddToPlantList: (plant: ApiPlant, size?: string, fixedSize?: boolean, bulkPrices?: BulkPriceTier[]) => void;
 }) {
-    const { plant, viewMode, suitabilityLabel, onAddToPlantList } = props;
+    const { plant, viewMode, suitabilityLabel, scoringInput, onAddToPlantList } = props;
     const notify = useAppNotify();
     const [isAdded, setIsAdded] = useState(false);
     const [isCartHovered, setIsCartHovered] = useState(false);
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [suitabilityAnchorRect, setSuitabilityAnchorRect] = useState<DOMRect | null>(null);
 
     // Haal varianten op voor deze plant (pre-fetch zodra de kaart verschijnt)
     const variantState = usePlantVariantStore((s) => s.cache[plant.id]);
@@ -856,6 +1183,12 @@ function DefaultPlantCard(props: {
             setIsModalOpen(true);
         }
     };
+
+    const handleToggleSuitability = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        setSuitabilityAnchorRect((prev) => prev ? null : rect);
+    }, []);
 
     // ── Maatvoering-blok (boven keurmerken) ─────────────────────────────────
     const renderSizeInfo = () => {
@@ -951,7 +1284,11 @@ function DefaultPlantCard(props: {
 
                         <div className="flex shrink-0 flex-col items-end justify-center gap-3">
                             {suitabilityLabel ? (
-                                <SuitabilityBadge label={suitabilityLabel} />
+                                <SuitabilityBadge
+                                    label={suitabilityLabel}
+                                    isOpen={!!suitabilityAnchorRect}
+                                    onClick={handleToggleSuitability}
+                                />
                             ) : null}
                             <button
                                 type="button"
@@ -998,6 +1335,15 @@ function DefaultPlantCard(props: {
                         onClose={() => setIsModalOpen(false)}
                     />
                 )}
+                {suitabilityLabel && suitabilityAnchorRect ? (
+                    <SuitabilityExplanationPopover
+                        plant={plant}
+                        label={suitabilityLabel}
+                        scoringInput={scoringInput}
+                        anchorRect={suitabilityAnchorRect}
+                        onClose={() => setSuitabilityAnchorRect(null)}
+                    />
+                ) : null}
             </>
         );
     }
@@ -1024,7 +1370,11 @@ function DefaultPlantCard(props: {
                     />
                     {suitabilityLabel ? (
                         <div className="absolute right-2 top-2">
-                            <SuitabilityBadge label={suitabilityLabel} />
+                            <SuitabilityBadge
+                                label={suitabilityLabel}
+                                isOpen={!!suitabilityAnchorRect}
+                                onClick={handleToggleSuitability}
+                            />
                         </div>
                     ) : null}
                 </div>
@@ -1095,6 +1445,15 @@ function DefaultPlantCard(props: {
                     onClose={() => setIsModalOpen(false)}
                 />
             )}
+            {suitabilityLabel && suitabilityAnchorRect ? (
+                <SuitabilityExplanationPopover
+                    plant={plant}
+                    label={suitabilityLabel}
+                    scoringInput={scoringInput}
+                    anchorRect={suitabilityAnchorRect}
+                    onClose={() => setSuitabilityAnchorRect(null)}
+                />
+            ) : null}
         </>
     );
 }
@@ -1397,17 +1756,31 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
         if (letterFetchedPlants !== null) {
             if (isSearchMode || !scoringResults) return letterFetchedPlants;
             // Score de server-gefetchte planten direct (scorePlant is een pure functie)
-            return letterFetchedPlants.filter((p) => {
+            let result = letterFetchedPlants.filter((p) => {
                 const score = scorePlant(p, scoringInput);
                 return getLabelForScore(score) !== null;
             });
+            if (sortValue === "meest-geschikt") {
+                result = [...result].sort((a, b) => {
+                    const scoreA = scorePlant(a, scoringInput) ?? 100;
+                    const scoreB = scorePlant(b, scoringInput) ?? 100;
+                    return scoreB - scoreA;
+                });
+            } else if (sortValue === "minst-geschikt") {
+                result = [...result].sort((a, b) => {
+                    const scoreA = scorePlant(a, scoringInput) ?? 100;
+                    const scoreB = scorePlant(b, scoringInput) ?? 100;
+                    return scoreA - scoreB;
+                });
+            }
+            return result;
         }
 
         // Fallback (tijdens laden): filter de al geladen batch
         return filteredPlants.filter(
             (p) => getLatinInitial(p.botanicalName) === initialLetterFilter
         );
-    }, [filteredPlants, initialLetterFilter, letterFetchedPlants, isSearchMode, scoringResults, scoringInput]);
+    }, [filteredPlants, initialLetterFilter, letterFetchedPlants, isSearchMode, scoringResults, scoringInput, sortValue]);
 
     // In search mode: one entry per plant×variant combination so each size gets its own card.
     const searchModeCombos = useMemo(() => {
@@ -1824,15 +2197,19 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
                                         />
                                     )
                                 )
-                                : visiblePlants.map((plant) => (
-                                    <DefaultPlantCard
-                                        key={plant.id}
-                                        plant={plant}
-                                        viewMode={viewMode}
-                                        suitabilityLabel={scoringResults?.labels.get(plant.id) ?? null}
-                                        onAddToPlantList={(p, size, fixedSize, bulkPrices) => onAddToPlantList(p, size, fixedSize, bulkPrices)}
-                                    />
-                                ))
+                                : visiblePlants.map((plant) => {
+                                    const score = scoringResults?.scores.get(plant.id) ?? scorePlant(plant, scoringInput);
+                                    return (
+                                        <DefaultPlantCard
+                                            key={plant.id}
+                                            plant={plant}
+                                            viewMode={viewMode}
+                                            suitabilityLabel={getLabelForScore(score)}
+                                            scoringInput={scoringInput}
+                                            onAddToPlantList={(p, size, fixedSize, bulkPrices) => onAddToPlantList(p, size, fixedSize, bulkPrices)}
+                                        />
+                                    );
+                                })
                             }
                         </div>
                     )}

@@ -25,6 +25,7 @@ type AccessorySuggestion = {
     material: ApiGardenMaterial;
     suggestedQuantity: number;
     reason: string;
+    plantNames: string[];
 };
 
 type CachedAccessoryAdvice = {
@@ -32,7 +33,7 @@ type CachedAccessoryAdvice = {
     suggestions: AccessorySuggestion[];
 };
 
-const ACCESSORY_ADVICE_CACHE_KEY = "finalisatie:accessory-advice:v5";
+const ACCESSORY_ADVICE_CACHE_KEY = "finalisatie:accessory-advice:v10";
 
 function buildAccessoryAdviceCacheKey(
     items: PlantListItem[],
@@ -332,11 +333,9 @@ export default function FinalisatieAccessoryAdvice() {
                             >
                                 <GardenMaterialGridCard
                                     material={suggestion.material}
-                                    reason={
-                                        suggestion.suggestedQuantity > 1
-                                            ? `${suggestion.reason} (aanbevolen aantal: ${suggestion.suggestedQuantity})`
-                                            : suggestion.reason
-                                    }
+                                    reason={suggestion.reason}
+                                    suggestedQuantity={suggestion.suggestedQuantity}
+                                    plantNames={suggestion.plantNames}
                                     onAddToPlantList={(material, variant) =>
                                         handleAddSuggestion(suggestion, material, variant)
                                     }
@@ -361,11 +360,9 @@ export default function FinalisatieAccessoryAdvice() {
                         <GardenMaterialGridCard
                             key={suggestion.material.id}
                             material={suggestion.material}
-                            reason={
-                                suggestion.suggestedQuantity > 1
-                                    ? `${suggestion.reason} (aanbevolen aantal: ${suggestion.suggestedQuantity})`
-                                    : suggestion.reason
-                            }
+                            reason={suggestion.reason}
+                            suggestedQuantity={suggestion.suggestedQuantity}
+                            plantNames={suggestion.plantNames}
                             onAddToPlantList={(material, variant) =>
                                 handleAddSuggestion(suggestion, material, variant)
                             }

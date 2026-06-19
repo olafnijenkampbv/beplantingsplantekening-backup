@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useScrollLock } from "@/hooks/useScrollLock";
 
-type ConfirmModalItem = {
+export type ConfirmModalItem = {
     id: string;
     nr?: number | string;
     nrBg?: string;
@@ -12,6 +12,7 @@ type ConfirmModalItem = {
     nrBorder?: string | null;
     title: string;
     subtitle?: string;
+    area?: string;
 };
 
 export type ConfirmModalProps = {

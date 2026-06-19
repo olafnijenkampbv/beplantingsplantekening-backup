@@ -52,6 +52,7 @@ export type AccessoryAdviceSuggestion = {
     material: ApiGardenMaterial;
     suggestedQuantity: number;
     reason: string;
+    plantNames: string[];
 };
 
 export type AccessoryAdviceResponse = {
@@ -142,6 +143,63 @@ function getTreeSupportStandardItems(items: AccessoryAdviceInputItem[]): Accesso
     return getItemsWithCategoryStartingWith(items, TREE_SUPPORT_STANDARD_CATEGORY_PREFIXES);
 }
 
+function estimateContainerVolumeLiters(size: string): number {
+    const s = size.toLowerCase().trim();
+
+    const explicitL = s.match(/(\d+(?:[,.]\d+)?)\s*l\b/);
+    if (explicitL) return parseFloat(explicitL[1].replace(",", "."));
+
+    if (/\bgm[\s-]?p9\b|\bp9\b|\bp10\b|\bplug\b/.test(s)) return 0.7;
+    if (/\bp11\b|\bp12\b/.test(s)) return 1.0;
+    if (/\bp13\b|\bp14\b/.test(s)) return 1.5;
+    if (/\bp15\b/.test(s)) return 2.0;
+    if (/\bp17\b|\bp18\b/.test(s)) return 3.0;
+    if (/\bc7\b|\bc8\b/.test(s)) return 6.0;
+    if (/\bc10\b/.test(s)) return 10.0;
+
+    if (/wortelgoed|kale\s*wortel/.test(s)) return 1.0;
+
+    // HO draadkluit: "6-8 ho", "8-10 ho", etc.
+    const hoMatch = s.match(/(\d+)-(\d+)\s*(?:ho|ha)/);
+    if (hoMatch) {
+        const avg = (parseInt(hoMatch[1]) + parseInt(hoMatch[2])) / 2;
+        if (avg <= 7) return 15;
+        if (avg <= 9) return 20;
+        if (avg <= 11) return 30;
+        if (avg <= 13) return 45;
+        if (avg <= 15) return 60;
+        if (avg <= 17) return 75;
+        if (avg <= 19) return 100;
+        if (avg <= 22.5) return 130;
+        return 160;
+    }
+
+    // Hoogte in cm
+    const cmMatch = s.match(/(\d+)(?:-(\d+))?\s*cm/);
+    if (cmMatch) {
+        const h = parseInt(cmMatch[2] || cmMatch[1]);
+        if (h <= 30) return 1;
+        if (h <= 60) return 2;
+        if (h <= 100) return 5;
+        if (h <= 150) return 10;
+        if (h <= 200) return 15;
+        return 25;
+    }
+
+    return 1;
+}
+
+function calculateSoilBagsNeeded(
+    items: AccessoryAdviceInputItem[],
+    bagVolumeLiters: number
+): number {
+    const totalLiters = items.reduce((sum, item) => {
+        const vol = estimateContainerVolumeLiters(item.size || "");
+        return sum + vol * 0.5 * Math.max(1, item.quantity);
+    }, 0);
+    return Math.max(1, Math.ceil(totalLiters / bagVolumeLiters));
+}
+
 function getVivimusStandardItems(items: AccessoryAdviceInputItem[]): AccessoryAdviceInputItem[] {
     return Array.from(
         new Map(
@@ -177,21 +235,21 @@ const STANDARD_ACCESSORY_RULES: StandardAccessoryRule[] = [
             ),
     },
     {
-        materialId: "VIVIZUUR",
+        materialId: "VIVIUNIV",
         shouldApply: (items) =>
             hasPlantingSoilStandardCategory(items) || hasTreeSupportStandardCategory(items),
-        getQuantity: () => 1,
+        getQuantity: (items) => calculateSoilBagsNeeded(getVivimusStandardItems(items), 60),
         getReason: (items) =>
             buildStandardReason(
-                "DCM Vivimus zuurminnend kan goed van pas komen bij deze planten:",
+                "Dcm Vivimus universeel kan goed van pas komen bij deze planten:",
                 getVivimusStandardItems(items),
-                "Deze beplanting kan profiteren van aanplantgrond die de bodemstructuur verbetert en de wortelaanslag ondersteunt, vooral bij soorten die een humusrijke of licht zure bodem waarderen."
+                "Deze beplanting kan profiteren van aanplantgrond die de bodemstructuur verbetert en de wortelaanslag ondersteunt."
             ),
     },
     {
         materialId: "TUTURF40",
         shouldApply: hasPlantingSoilStandardCategory,
-        getQuantity: () => 1,
+        getQuantity: (items) => calculateSoilBagsNeeded(getPlantingSoilStandardItems(items), 40),
         getReason: (items) =>
             buildStandardReason(
                 "Tuinturf 40 liter kan goed van pas komen bij deze planten:",
@@ -312,6 +370,23 @@ function sanitizeReason(value: unknown): string {
     return typeof value === "string" ? value.replace(/[\u2013\u2014]/g, ",").trim() : "";
 }
 
+// The AI sometimes returns all names as one string element like "name1','name2',...]".
+// This splits each element on "','" (the Python list separator) and strips surrounding
+// brackets and quotes so every entry ends up as a clean botanical name.
+function sanitizePlantNames(rawNames: string[]): string[] {
+    const result: string[] = [];
+    for (const raw of rawNames) {
+        const stripped = raw.replace(/^\[['"]?/, "").replace(/['"]?\]$/, "").trim();
+        const parts = stripped.split(/['"]\s*,\s*['"]/).map((p) =>
+            p.replace(/^['"]|['"]$/g, "").trim()
+        );
+        for (const part of parts) {
+            if (part.length > 0) result.push(part);
+        }
+    }
+    return result;
+}
+
 function combineReasons(reasons: string[]): string {
     const uniqueReasons = Array.from(
         new Set(reasons.map((reason) => reason.trim()).filter(Boolean))
@@ -345,6 +420,28 @@ function combineReasons(reasons: string[]): string {
     return `Past bij meerdere planten in je lijst. ${uniqueReasons.join(" ")}`;
 }
 
+function extractNamesFromStandardReason(reason: string): { cleanReason: string; plantNames: string[] } {
+    const lines = reason.split("\n");
+    const intro: string[] = [];
+    const names: string[] = [];
+    const explanation: string[] = [];
+    let inNames = false;
+    for (const line of lines) {
+        if (line.startsWith("- ")) {
+            inNames = true;
+            names.push(line.slice(2).trim());
+        } else if (inNames) {
+            explanation.push(line);
+        } else {
+            intro.push(line);
+        }
+    }
+    const cleanIntro = intro.join(" ").replace(/:$/, "").trim();
+    const cleanExplanation = explanation.join(" ").trim();
+    const cleanReason = [cleanIntro, cleanExplanation].filter(Boolean).join(" ").trim();
+    return { cleanReason, plantNames: names };
+}
+
 function uniqueSuggestionsByMaterial(
     rawSuggestions: unknown,
     materialsById: Map<string, ApiGardenMaterial>
@@ -353,7 +450,7 @@ function uniqueSuggestionsByMaterial(
 
     const byMaterialId = new Map<
         string,
-        { material: ApiGardenMaterial; suggestedQuantity: number; reasons: string[] }
+        { material: ApiGardenMaterial; suggestedQuantity: number; reasons: string[]; plantNames: string[] }
     >();
 
     for (const raw of rawSuggestions) {
@@ -369,16 +466,25 @@ function uniqueSuggestionsByMaterial(
                 ? Math.round(r.suggestedQuantity)
                 : 1;
         const reason = sanitizeReason(r.reason);
+        const plantNames = sanitizePlantNames(
+            Array.isArray(r.plantNames)
+                ? r.plantNames.filter((n): n is string => typeof n === "string" && n.length > 0)
+                : []
+        );
 
         const existing = byMaterialId.get(material.id);
         if (existing) {
             existing.suggestedQuantity = Math.max(existing.suggestedQuantity, quantity);
             if (reason) existing.reasons.push(reason);
+            for (const name of plantNames) {
+                if (!existing.plantNames.includes(name)) existing.plantNames.push(name);
+            }
         } else {
             byMaterialId.set(material.id, {
                 material,
                 suggestedQuantity: quantity,
                 reasons: reason ? [reason] : [],
+                plantNames: [...plantNames],
             });
         }
     }
@@ -387,6 +493,7 @@ function uniqueSuggestionsByMaterial(
         material: suggestion.material,
         suggestedQuantity: suggestion.suggestedQuantity,
         reason: combineReasons(suggestion.reasons),
+        plantNames: suggestion.plantNames,
     }));
 }
 
@@ -406,20 +513,23 @@ function applyStandardAccessoryRules(
 
         standardMaterialIds.push(material.id);
         const quantity = Math.max(1, Math.round(rule.getQuantity(items)));
-        const reason = rule.getReason(items);
+        const rawReason = rule.getReason(items);
+        const { cleanReason, plantNames } = extractNamesFromStandardReason(rawReason);
         const existing = byMaterialId.get(material.id);
 
         if (existing) {
             byMaterialId.set(material.id, {
                 ...existing,
                 suggestedQuantity: Math.max(existing.suggestedQuantity, quantity),
-                reason,
+                reason: cleanReason,
+                plantNames,
             });
         } else {
             byMaterialId.set(material.id, {
                 material,
                 suggestedQuantity: quantity,
-                reason,
+                reason: cleanReason,
+                plantNames,
             });
         }
     }
@@ -525,7 +635,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             temperature: 0,
-            max_tokens: 2048,
+            max_tokens: 4096,
             messages: [
                 {
                     role: "system",
@@ -545,9 +655,37 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                         "Negeer producten waarvan de beschrijving aangeeft dat het gereedschap/apparatuur voor de hovenier is. " +
                         "Stel niets voor bij twijfel of een onduidelijke/ontbrekende beschrijving. " +
                         "Stel elk relevant materiaal maximaal één keer voor in totaal, ook als het bij meerdere planten past. " +
-                        "Geef per voorstel een korte, concrete reden in het Nederlands die verwijst naar de specifieke plant(en) en/of vak-informatie waarop het voorstel is gebaseerd. " +
-                        "Wanneer je een specifieke plant noemt, gebruik dan exact het opgegeven naamgebruik in adviesreden: 'De [Latijnse naam]'. Gebruik geen Nederlandse plantnaam in de reden. " +
-                        "Wanneer één materiaal bij meerdere planten past, mag je die planten apart benoemen met alleen hun Latijnse naam. De server voegt dubbele materialen samen en maakt daar bulletpoints van. " +
+
+                        "HOEVEELHEID BEREKENEN (suggestedQuantity) — volg deze stappen:\n" +
+
+                        "Stap 1: bepaal het WORTELKLUITVOLUME per plant vanuit de maatvoering.\n" +
+                        "• Als de maatvoering een expliciet volume bevat (bijv. '40L', '20L', '15L', '2,0L'), gebruik dan dat getal als containervolume.\n" +
+                        "• Potcodevarianten zonder expliciet volume:\n" +
+                        "  GM P9 / P9 / P10 / P10,5 / plug → 0,7L ; P11 / P12 / C1,3 / C1,5 → 1L ; P13 / P14 / C2 → 1,5L ;\n" +
+                        "  P15 / C3 → 2L ; P17 / P18 / C5 → 3L ; C7 / C8 → 6L ; C10 → 10L.\n" +
+                        "• Wortelgoed / kale wortel (bosplantsoen, 0/1, 1/0, 1/1, 1/2 enz.) → 1L ongeacht hoogte.\n" +
+                        "• HO- of HA-draadkluit zonder expliciet volume (schatting op basis van stamomtrek):\n" +
+                        "  6-8 HO → 15L ; 8-10 HO → 20L ; 10-12 HO → 30L ; 12-14 HO → 45L ;\n" +
+                        "  14-16 HO → 60L ; 16-18 HO → 75L ; 18-20 HO → 100L ; 20-25 HO → 130L ; 25+ HO → 160L.\n" +
+                        "• HO- of HA-container zonder expliciet volume: gebruik dezelfde schatting als draadkluit.\n" +
+                        "• Alleen hoogte in cm (geen L, geen potcode) — schatting:\n" +
+                        "  10-30 cm → 1L ; 30-60 cm → 2L ; 60-100 cm → 5L ; 100-150 cm → 10L ; 150-200 cm → 15L ; 200+ cm → 25L.\n" +
+                        "• Haagelementformaten (bijv. 'Mobilane', 'Haagelement', '120x200') of bulk 'verpakt per X' → gebruik het vakoppervlak als basis, niet het wortelkluitvolume.\n" +
+
+                        "Stap 2: bereken het BENODIGDE AANPLANTGRONDVOLUME.\n" +
+                        "• Benodigde aanplantgrond per plant ≈ containervolume × 0,5 (mengverhouding 1:1 van aanplantgrond en bestaande grond).\n" +
+                        "• Totaalvolume = som van (containervolume × 0,5 × aantal) over alle relevante planten.\n" +
+                        "• Aantal zakken = ⌈ totaalvolume ÷ zakvolume_product ⌉ (zakvolume staat in de productbeschrijving).\n" +
+
+                        "Stap 3: OVERIGE PRODUCTEN.\n" +
+                        "• Boompalen / boomband: gebruik exact het opgegeven 'aantal boomvakken', nooit het stukaantal bomen.\n" +
+                        "• Meststoffen met dosering per m² of per plant: bereken op basis van vakoppervlak (m²) of plantaantal en de productdosering.\n" +
+                        "• Producten per toepassing (niet per plant/m²): gebruik 1.\n" +
+
+                        "Vermeld de berekening beknopt in de 'reason', bijv.: 'Totaal ~135L aanplantgrond nodig (85 P9-planten × 0,35L + 2 bomen × 37L). 3 zakken van 60L.'\n\n" +
+
+                        "Geef per voorstel een korte, concrete reden in het Nederlands (het 'reason'-veld) die uitlegt WAAROM dit product past en HOE het aantal is berekend. " +
+                        "Noem GEEN plantnamen in het 'reason'-veld. Zet de Latijnse plantnamen (zonder prefix zoals 'De') in het 'plantNames'-array. " +
                         "Gebruik in de reden nooit een gedachtestreepje (—); gebruik gewone punten of komma's.",
                 },
                 {
@@ -580,10 +718,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                                         },
                                         reason: {
                                             type: "string",
-                                            description: "Korte reden in het Nederlands, max 1 zin.",
+                                            description: "Korte uitleg in het Nederlands waarom dit product past. Noem GEEN plantnamen hier.",
+                                        },
+                                        plantNames: {
+                                            type: "array",
+                                            description: "Latijnse plantnamen (zonder 'De') waarvoor dit product relevant is.",
+                                            items: { type: "string" },
                                         },
                                     },
-                                    required: ["materialId", "suggestedQuantity", "reason"],
+                                    required: ["materialId", "suggestedQuantity", "reason", "plantNames"],
                                     additionalProperties: false,
                                 },
                             },

@@ -172,8 +172,4 @@ maar voor wortelgoed-producten is dat niet zo — die staan al
 zonder BTW in de feed, waardoor de app er onterecht nóg een
 keer BTW van afhaalt en de prijs te laag weergeeft.
 
-====================================================
-# OpenAI API key — voor AI-aanplant-hulpmiddelen-advies op de finalisatiepagina
-# Aanmaken op https://platform.openai.com/api-keys
-cassk-proj-IjAuucunYhC7xyOpgPpgkxPtW-TM8KOPqQZy-M-RRF4liZyFAUwwsuAlYEAycPtsTK27B_xC8XT3BlbkFJWol4se4NYPZqTwU4cplbD1FB7sjPRb8CPLxYiN9anxyj4Mv8fywf2Nh4CwO6n1i_QKQpyoIF0ACAS
 

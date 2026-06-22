@@ -9,7 +9,7 @@ import {
     getBoundaryBandShapeForObject,
     mergeConnectedBoundaryPolylines,
 } from "@/features/editor/lib/boundarySystem";
-import { densifyBulgedRing, STRAIGHT_THRESHOLD, arcCenterRadius, bulgeFromDraggedApex, normalizeCorners, cornerMaxRadius, remapCornersToRing, cornerFillet, normalizeBulges as normalizeBulgesFromMath } from "@/features/editor/lib/bulgeMath";
+import { cleanupIndexedRing, densifyBulgedRing, STRAIGHT_THRESHOLD, arcCenterRadius, bulgeFromDraggedApex, normalizeCorners, cornerMaxRadius, remapCornersToRing, cornerFillet, normalizeBulges as normalizeBulgesFromMath } from "@/features/editor/lib/bulgeMath";
 import { extractArcCirclesFromSources, recoverArcsFromOutput } from "@/features/editor/lib/arcBooleanGeometry";
 
 function rectsIntersect(
@@ -3398,9 +3398,12 @@ function recalcLinePiecesForWorld(objects: PolyObject[]): PolyObject[] {
             );
         }
 
+        const cleanedRing = cleanupIndexedRing(o.points, o.bulges, o.corners);
         return {
             ...o,
-            points: cleanupPointsKeepCollinear(o.points),
+            points: cleanedRing.points,
+            bulges: cleanedRing.bulges,
+            corners: cleanedRing.corners,
             holes: o.holes?.map((h) => cleanupPointsKeepCollinear(h)),
         };
     });
@@ -4149,11 +4152,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                     };
                 }
 
+                // Clean the ring and its indexed metadata as one unit. Removing
+                // a duplicate vertex without its bulge/corner shifts every slot
+                // that follows it and changes the rendered shape after rotation.
+                const cleanedRing = cleanupIndexedRing(o.points, o.bulges, o.corners);
                 return {
                     ...o,
                     geometry,
-                    points: cleanupPoints(o.points),
-                    holes: o.holes?.map((h) => cleanupPoints(h)),
+                    points: cleanedRing.points,
+                    bulges: cleanedRing.bulges,
+                    corners: cleanedRing.corners,
+                    holes: o.holes?.map((h) => cleanupPointsKeepCollinear(h)),
                 };
             }) as PolyObject[];
 
@@ -4778,18 +4787,38 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             const existing = state.objects.find((o) => o.id === id);
             if (!existing) return state;
 
-            const cmd: Command = { kind: "removeObject", object: existing };
+            const removesLinkedObject = isNumberedLinkableObjectType(existing.type);
+            const removedLinks: PlantbedLinksMap = removesLinkedObject
+                ? { [id]: [...(state.plantbedLinks[id] ?? [])] }
+                : {};
+            const removedCounts: Record<string, number> = removesLinkedObject
+                ? { [id]: state.plantbedLinkedCount[id] ?? removedLinks[id].length }
+                : {};
+            const cmd: Command = removesLinkedObject
+                ? {
+                    kind: "removeManyWithPlantbedLinks",
+                    objects: [existing],
+                    removedLinks,
+                    removedCounts,
+                }
+                : { kind: "removeObject", object: existing };
             const nextObjectsRaw = applyCommand(state as ProjectState, cmd);
             const nextObjects = recalcLinePiecesForWorld(nextObjectsRaw);
 
             const nextSelectedIds = state.selectedObjectIds.filter((sid) => sid !== id);
+            const nextLinks = { ...state.plantbedLinks };
+            const nextCounts = { ...state.plantbedLinkedCount };
+            if (removesLinkedObject) {
+                delete nextLinks[id];
+                delete nextCounts[id];
+            }
 
             return {
                 objects: nextObjects,
                 selectedObjectId: nextSelectedIds.length > 0 ? nextSelectedIds[0] : null,
                 selectedObjectIds: nextSelectedIds,
-                // ✅ linkedCount NIET deleten; zo blijft undo/redo correct
-                plantbedLinkedCount: state.plantbedLinkedCount,
+                plantbedLinks: nextLinks,
+                plantbedLinkedCount: nextCounts,
                 nextPlantbedNo: recalcNextPlantbedNo(nextObjects),
                 undoStack: [...state.undoStack, cmd],
                 redoStack: [],
@@ -6808,7 +6837,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 const objectsToRemove = state.objects.filter((o) => idSet.has(o.id));
                 if (objectsToRemove.length === 0) return { confirmModal: null };
 
-                const plantbedsToRemove = objectsToRemove.filter((o) => o.type === "plantbed");
+                const plantbedsToRemove = objectsToRemove.filter((o) =>
+                    isNumberedLinkableObjectType(o.type)
+                );
 
                 const removedLinks: PlantbedLinksMap = {};
                 const removedCounts: Record<string, number> = {};
@@ -6856,10 +6887,6 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         });
     },
 
-    /**
-     * ✅ Bestaande deleteSelected blijft zoals jij hem had
-     * (maar we gebruiken 'm straks niet meer direct bij plantvak met links)
-     */
     deleteSelected: () =>
         set((state) => {
             const ids =
@@ -6879,20 +6906,45 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 state.objects.filter((o) => !removeIds.has(o.id))
             );
 
-            const cmd: Command = {
-                kind: "replaceMany",
-                before: state.objects,
-                after: afterObjects,
-            };
+            const removedLinks: PlantbedLinksMap = {};
+            const removedCounts: Record<string, number> = {};
+            for (const object of objectsToRemove) {
+                if (!isNumberedLinkableObjectType(object.type)) continue;
+                const links = state.plantbedLinks[object.id] ?? [];
+                removedLinks[object.id] = [...links];
+                removedCounts[object.id] = state.plantbedLinkedCount[object.id] ?? links.length;
+            }
+
+            const cmd: Command = Object.keys(removedLinks).length > 0
+                ? {
+                    kind: "removeManyWithPlantbedLinks",
+                    objects: objectsToRemove,
+                    removedLinks,
+                    removedCounts,
+                }
+                : {
+                    kind: "replaceMany",
+                    before: state.objects,
+                    after: afterObjects,
+                };
 
             const nextObjectsRaw = applyCommand(state as ProjectState, cmd);
-            const nextObjects = recalcLinePiecesForWorld(nextObjectsRaw);
+            const nextObjects = recalcLinePiecesForWorld(
+                renumberPlantbedsSequential(nextObjectsRaw)
+            );
+            const nextLinks = { ...state.plantbedLinks };
+            const nextCounts = { ...state.plantbedLinkedCount };
+            for (const objectId of Object.keys(removedLinks)) {
+                delete nextLinks[objectId];
+                delete nextCounts[objectId];
+            }
 
             return {
                 objects: nextObjects,
                 selectedObjectId: null,
                 selectedObjectIds: [],
-                plantbedLinkedCount: state.plantbedLinkedCount,
+                plantbedLinks: nextLinks,
+                plantbedLinkedCount: nextCounts,
                 nextPlantbedNo: recalcNextPlantbedNo(nextObjects),
                 undoStack: [...state.undoStack, cmd],
                 redoStack: [],

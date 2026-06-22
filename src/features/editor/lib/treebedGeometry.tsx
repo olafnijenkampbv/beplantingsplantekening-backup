@@ -1,7 +1,8 @@
 import React, { useRef, useImperativeHandle, useEffect } from "react";
 import { Circle, Shape } from "react-konva";
 import type { PolyObject, TreebedVariant } from "@/state/projectStore";
-import { clamp, bboxFromPoints, snapToGrid } from "@/features/editor/lib/editorCanvasMath";
+import { clamp, bboxFromPoints } from "@/features/editor/lib/editorCanvasMath";
+import { cleanupIndexedRing } from "@/features/editor/lib/bulgeMath";
 
 const TREEBED_DYNAMIC_STROKE = {
     frequencyPercent: 100,
@@ -259,23 +260,21 @@ export function rotatePointQuarterTurnClockwise(
     x: number,
     y: number,
     cx: number,
-    cy: number,
-    gridSize: number
+    cy: number
 ) {
     const dx = x - cx;
     const dy = y - cy;
 
     return {
-        x: snapToGrid(cx - dy, gridSize),
-        y: snapToGrid(cy + dx, gridSize),
+        x: cx - dy,
+        y: cy + dx,
     };
 }
 
 export function rotatePointsQuarterTurnClockwise(
     points: number[],
     cx: number,
-    cy: number,
-    gridSize: number
+    cy: number
 ) {
     const next: number[] = [];
 
@@ -284,8 +283,7 @@ export function rotatePointsQuarterTurnClockwise(
             points[i],
             points[i + 1],
             cx,
-            cy,
-            gridSize
+            cy
         );
 
         next.push(rotated.x, rotated.y);
@@ -740,7 +738,7 @@ export function rotateObjectQuarterTurnClockwise(
     obj: PolyObject,
     cx: number,
     cy: number,
-    gridSize: number
+    _gridSize: number
 ): PolyObject {
     if (
         obj.type === "treebed" &&
@@ -751,8 +749,7 @@ export function rotateObjectQuarterTurnClockwise(
             visual.cx,
             visual.cy,
             cx,
-            cy,
-            gridSize
+            cy
         );
 
         const safeRadius =
@@ -777,14 +774,22 @@ export function rotateObjectQuarterTurnClockwise(
         };
     }
 
+    const rotatedRing = cleanupIndexedRing(
+        rotatePointsQuarterTurnClockwise(obj.points, cx, cy),
+        obj.bulges,
+        obj.corners
+    );
+
     return {
         ...obj,
-        points: rotatePointsQuarterTurnClockwise(obj.points, cx, cy, gridSize),
+        points: rotatedRing.points,
+        bulges: rotatedRing.bulges,
+        corners: rotatedRing.corners,
         holes: obj.holes?.map((hole) =>
-            rotatePointsQuarterTurnClockwise(hole, cx, cy, gridSize)
+            rotatePointsQuarterTurnClockwise(hole, cx, cy)
         ),
         renderPieces: obj.renderPieces?.map((piece) =>
-            rotatePointsQuarterTurnClockwise(piece, cx, cy, gridSize)
+            rotatePointsQuarterTurnClockwise(piece, cx, cy)
         ),
     };
 }

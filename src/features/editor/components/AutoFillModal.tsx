@@ -748,7 +748,7 @@ function ProposalPlantCard({ plant, animDelay, bedId, bedNr, onLinked, scoringIn
                 fixedSize: false,
                 bulkPrices: chosenBulkPrices ?? firstVariant?.bulkPrices ?? [],
                 note: "",
-                quantity: 1,
+                quantity: 0,
                 isSelected: false,
             };
             store.setPlantListItems([...currentItems, newItem]);

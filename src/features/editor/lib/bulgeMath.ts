@@ -198,6 +198,54 @@ export function normalizeCorners(points: number[], corners?: number[]): number[]
 }
 
 /**
+ * Removes consecutive/closing duplicate vertices while keeping per-vertex and
+ * per-segment metadata at the same indices as the retained vertices.
+ */
+export function cleanupIndexedRing(
+  points: number[],
+  bulges?: number[],
+  corners?: number[],
+  eps = 1e-6
+): { points: number[]; bulges?: number[]; corners?: number[] } {
+  if (points.length < 6) return { points, bulges, corners };
+
+  const eq = (a: number, b: number) => Math.abs(a - b) <= eps;
+  const cleanedPoints: number[] = [];
+  const cleanedBulges: number[] | undefined = bulges ? [] : undefined;
+  const cleanedCorners: number[] | undefined = corners ? [] : undefined;
+
+  for (let i = 0, vertexIndex = 0; i < points.length; i += 2, vertexIndex += 1) {
+    const x = points[i];
+    const y = points[i + 1];
+    const n = cleanedPoints.length;
+
+    if (n >= 2 && eq(cleanedPoints[n - 2], x) && eq(cleanedPoints[n - 1], y)) {
+      continue;
+    }
+
+    cleanedPoints.push(x, y);
+    cleanedBulges?.push(bulges?.[vertexIndex] ?? 0);
+    cleanedCorners?.push(corners?.[vertexIndex] ?? 0);
+  }
+
+  if (
+    cleanedPoints.length >= 4 &&
+    eq(cleanedPoints[0], cleanedPoints[cleanedPoints.length - 2]) &&
+    eq(cleanedPoints[1], cleanedPoints[cleanedPoints.length - 1])
+  ) {
+    cleanedPoints.splice(-2, 2);
+    cleanedBulges?.pop();
+    cleanedCorners?.pop();
+  }
+
+  return {
+    points: cleanedPoints,
+    bulges: cleanedBulges,
+    corners: cleanedCorners,
+  };
+}
+
+/**
  * Remap corner-stralen van een bronring naar een nieuwe ring.
  * Voor elk doelpunt wordt het dichtstbijzijnde bronpunt gezocht;
  * als dat binnen eps (0.5 editor-unit) ligt, wordt de straal overgenomen.

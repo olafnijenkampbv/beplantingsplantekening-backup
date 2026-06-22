@@ -163,7 +163,7 @@ function distanceToRing(px: number, py: number, ring: number[]): number {
     return best;
 }
 
-function getBestLabelPoint(outer: number[], holes: number[][] = []): { x: number; y: number } | null {
+function getBestLabelPoint(outer: number[], holes: number[][] = []): { x: number; y: number; r: number } | null {
     if (outer.length < 6) return null;
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -201,7 +201,7 @@ function getBestLabelPoint(outer: number[], holes: number[][] = []): { x: number
         }
     }
 
-    return best ? { x: best.x, y: best.y } : null;
+    return best ? { x: best.x, y: best.y, r: best.score } : null;
 }
 
 // Match editor's contrast-aware label colour for plantbed fills (ported from BaseFillLayer.tsx)
@@ -938,13 +938,7 @@ export default function FinalisatieDrawingBlock() {
     const canvasHeight = isFullscreen ? 720 : 540;
     const compassSrc = `/icons/compass-${compassDirection || "noord"}.svg`;
 
-    // CSS dot-grid that follows pan
-    const dotStep = 28;
-    const gridBgStyle = {
-        backgroundImage: `radial-gradient(circle, ${COLORS.gridDot} 1px, transparent 1px)`,
-        backgroundSize: `${dotStep}px ${dotStep}px`,
-        backgroundPosition: `${((panX % dotStep) + dotStep) % dotStep}px ${((panY % dotStep) + dotStep) % dotStep}px`,
-    };
+    // No dot-grid in finale drawing — plain background only
 
     // ─────────────────────────────────────────────────────────────────────────
     return (
@@ -999,7 +993,6 @@ export default function FinalisatieDrawingBlock() {
                         height: canvasHeight,
                         cursor: isPanning ? "grabbing" : "grab",
                         backgroundColor: COLORS.canvasBg,
-                        ...gridBgStyle,
                     }}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
@@ -1102,19 +1095,6 @@ export default function FinalisatieDrawingBlock() {
                                                     ) : (
                                                         <circle cx={v.cx} cy={v.cy} r={v.trunkR} fill={trunkColor} />
                                                     )}
-                                                    {/* Hover ring */}
-                                                    {(isHovById || isHovByType) && (
-                                                        <circle
-                                                            cx={v.cx}
-                                                            cy={v.cy}
-                                                            r={v.r + 3}
-                                                            fill="none"
-                                                            stroke={isHovById ? COLORS.orange : COLORS.green}
-                                                            strokeWidth={2}
-                                                            strokeDasharray={isHovByType && !isHovById ? "6,4" : undefined}
-                                                            style={{ pointerEvents: "none" }}
-                                                        />
-                                                    )}
                                                     {/* Labels: number above trunk, area below trunk */}
                                                     {canvasLabel && (
                                                         <>
@@ -1159,19 +1139,6 @@ export default function FinalisatieDrawingBlock() {
                                                         strokeWidth={2}
                                                     />
                                                     <circle cx={v.cx} cy={v.cy} r={v.trunkR} fill={trunkColor} />
-                                                    {(isHovById || isHovByType) && (
-                                                        <rect
-                                                            x={v.cx - v.w / 2 - 3}
-                                                            y={v.cy - v.h / 2 - 3}
-                                                            width={v.w + 6}
-                                                            height={v.h + 6}
-                                                            fill="none"
-                                                            stroke={isHovById ? COLORS.orange : COLORS.green}
-                                                            strokeWidth={2}
-                                                            strokeDasharray={isHovByType && !isHovById ? "6,4" : undefined}
-                                                            style={{ pointerEvents: "none" }}
-                                                        />
-                                                    )}
                                                     {canvasLabel && (
                                                         <>
                                                             <text
@@ -1224,16 +1191,6 @@ export default function FinalisatieDrawingBlock() {
                                                 fill={fill}
                                                 stroke="none"
                                             />
-                                            {(isHovById || isHovByType) && (
-                                                <path
-                                                    d={makePathD(band.outer, band.holes)}
-                                                    fillRule="evenodd"
-                                                    fill={isHovById ? COLORS.orange : COLORS.green}
-                                                    opacity={0.35}
-                                                    stroke="none"
-                                                    style={{ pointerEvents: "none" }}
-                                                />
-                                            )}
                                         </g>
                                     );
                                 }
@@ -1248,15 +1205,39 @@ export default function FinalisatieDrawingBlock() {
                                 const renderOuterPoints = getObjectOuterRenderPoints(obj);
                                 const objectPathD = makeSvgPathForObject(obj);
                                 const polyMinDim = getPolyMinDim(renderOuterPoints);
-                                const numFontSize = 12;
-                                const areaFontSize = 9;
+                                const numFontSize = 14;
+                                const areaFontSize = 11;
                                 const labelHalfGap = 8;
                                 const labelColor = isPlantbed
                                     ? getReadablePlantbedLabelColor(fill)
                                     : stroke;
-                                const labelPoint = polyMinDim >= 22 && renderOuterPoints.length >= 6
-                                    ? getBestLabelPoint(renderOuterPoints, obj.holes) ?? getCentroid(renderOuterPoints)
+                                const bestLabel = polyMinDim >= 22 && renderOuterPoints.length >= 6
+                                    ? getBestLabelPoint(renderOuterPoints, obj.holes)
                                     : null;
+                                const labelPoint = bestLabel
+                                    ?? (renderOuterPoints.length >= 6
+                                        ? { ...getCentroid(renderOuterPoints), r: polyMinDim / 2 }
+                                        : null);
+
+                                // Estimate text widths for orientation decision
+                                const numTextW = canvasLabel ? canvasLabel.length * (numFontSize * 0.65) : 0;
+                                const areaTextW = areaText ? areaText.length * (areaFontSize * 0.65) : 0;
+                                const stackedLabelW = Math.max(numTextW, areaTextW);
+
+                                // Rotate label if object is portrait-shaped and text would overflow its width
+                                let polyBboxW = polyMinDim, polyBboxH = polyMinDim;
+                                if (renderOuterPoints.length >= 4) {
+                                    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+                                    for (let i = 0; i + 1 < renderOuterPoints.length; i += 2) {
+                                        bx0 = Math.min(bx0, renderOuterPoints[i]);
+                                        bx1 = Math.max(bx1, renderOuterPoints[i]);
+                                        by0 = Math.min(by0, renderOuterPoints[i + 1]);
+                                        by1 = Math.max(by1, renderOuterPoints[i + 1]);
+                                    }
+                                    polyBboxW = bx1 - bx0;
+                                    polyBboxH = by1 - by0;
+                                }
+                                const shouldRotateLabel = polyBboxH > polyBboxW && stackedLabelW > polyBboxW * 0.85;
 
                                 const shapeProps = {
                                     fill: patFill,
@@ -1284,24 +1265,12 @@ export default function FinalisatieDrawingBlock() {
                                             />
                                         )}
 
-                                        {/* Hover ring */}
-                                        {(isHovById || isHovByType) && (
-                                            <path
-                                                d={objectPathD}
-                                                fill="none"
-                                                fillRule="evenodd"
-                                                stroke={isHovById ? COLORS.orange : COLORS.green}
-                                                strokeWidth={2.5}
-                                                strokeDasharray={isHovByType && !isHovById ? "6,4" : undefined}
-                                                style={{ pointerEvents: "none" }}
-                                            />
-                                        )}
 
-                                        {/* Labels: number + area, fixed size, clipped to this object's shape */}
+                                        {/* Labels: no clipPath (matches editor), getBestLabelPoint centres in widest area */}
                                         {labelPoint && (canvasLabel || areaText) && (
                                             <g
-                                                clipPath={`url(#fg-clip-${obj.id})`}
                                                 style={{ pointerEvents: "none" }}
+                                                transform={shouldRotateLabel ? `rotate(-90, ${labelPoint.x}, ${labelPoint.y})` : undefined}
                                             >
                                                 {canvasLabel && (
                                                     <text
@@ -1324,7 +1293,7 @@ export default function FinalisatieDrawingBlock() {
                                                         textAnchor="middle"
                                                         dominantBaseline="central"
                                                         fontSize={areaFontSize}
-                                                        fontWeight="400"
+                                                        fontWeight="700"
                                                         fill={labelColor}
                                                         style={{ userSelect: "none" }}
                                                     >
@@ -1334,6 +1303,71 @@ export default function FinalisatieDrawingBlock() {
                                             </g>
                                         )}
                                     </g>
+                                );
+                            })}
+                            {/* ── Hover rings — separate pass, always on top of every object ── */}
+                            {sortedObjects.map((obj) => {
+                                const def = OBJECT_LIBRARY[obj.type as ObjectType];
+                                if (!def) return null;
+                                const isHovById = hoveredObjectId === obj.id || hoveredRowObjectId === obj.id;
+                                const isHovByType = hoveredLegendType === (obj.type as ObjectType);
+                                if (!isHovById && !isHovByType) return null;
+
+                                const isBoundary = isBoundaryObjectType(obj.type as ObjectType);
+                                const isLine = def.geometry === "polyline";
+                                const isTb = obj.type === "treebed";
+
+                                if (isTb) {
+                                    const v = getTreebedSvgVisual(obj);
+                                    return v.shape === "circle" ? (
+                                        <path
+                                            key={`hr-${obj.id}`}
+                                            d={getBumpyCirclePath(v.cx, v.cy, v.r + 5)}
+                                            fill="none"
+                                            stroke={COLORS.orange}
+                                            strokeWidth={3}
+                                            style={{ pointerEvents: "none" }}
+                                        />
+                                    ) : (
+                                        <rect
+                                            key={`hr-${obj.id}`}
+                                            x={v.cx - v.w / 2 - 5} y={v.cy - v.h / 2 - 5}
+                                            width={v.w + 10} height={v.h + 10}
+                                            fill="none"
+                                            stroke={COLORS.orange}
+                                            strokeWidth={3}
+                                            style={{ pointerEvents: "none" }}
+                                        />
+                                    );
+                                }
+
+                                if (isBoundary || isLine) {
+                                    const band = boundaryBandShapes.get(obj.id);
+                                    if (!band || band.outer.length < 6) return null;
+                                    return (
+                                        <path
+                                            key={`hr-${obj.id}`}
+                                            d={makePathD(band.outer, band.holes)}
+                                            fillRule="evenodd"
+                                            fill={COLORS.orange}
+                                            opacity={0.45}
+                                            stroke="none"
+                                            style={{ pointerEvents: "none" }}
+                                        />
+                                    );
+                                }
+
+                                const objectPathD = makeSvgPathForObject(obj);
+                                return (
+                                    <path
+                                        key={`hr-${obj.id}`}
+                                        d={objectPathD}
+                                        fill="none"
+                                        fillRule="evenodd"
+                                        stroke={COLORS.orange}
+                                        strokeWidth={3.5}
+                                        style={{ pointerEvents: "none" }}
+                                    />
                                 );
                             })}
                         </g>
@@ -1461,7 +1495,7 @@ export default function FinalisatieDrawingBlock() {
                                                     type="button"
                                                     className="flex w-full cursor-pointer items-center gap-2 rounded-[4px] px-1.5 py-1 text-left"
                                                     style={{
-                                                        background: isHov ? COLORS.greenLight : "transparent",
+                                                        background: isHov ? COLORS.orangeLight : "transparent",
                                                         border: "none",
                                                     }}
                                                     onMouseEnter={() => setHoveredLegendType(item.id)}

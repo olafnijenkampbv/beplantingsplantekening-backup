@@ -244,9 +244,7 @@ export default React.memo(function BaseFillLayer({
                             {renderObjectPattern(
                                 obj,
                                 `fill-pattern-${obj.id}`,
-                                stageScale,
-                                outerRing,
-                                obj.holes
+                                stageScale
                             )}
                         </React.Fragment>
                     );

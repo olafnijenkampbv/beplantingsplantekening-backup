@@ -118,6 +118,7 @@ const COMPACT_AREA_FONT_SIZE = 13;
 const BUILDING_LABEL_PADDING_X = 10;
 const BUILDING_LABEL_PADDING_Y = 6;
 const BUILDING_LABEL_CORNER_RADIUS = 6;
+const MAX_DETAILED_HOLE_VERTICES = 12;
 
 function estimateTextWidth(text: string, fontSize: number) {
     return text.length * fontSize * 0.58;
@@ -1323,6 +1324,10 @@ function HoleDimensions({
         <>
             {holes.map((hole, holeIndex) => {
                 if (!hole || hole.length < 6) return null;
+                // Rounded/bulged boolean holes consist of sampled curve points,
+                // not user-authored straight segments. Labelling every sample
+                // creates unreadable dimensions around an otherwise smooth hole.
+                if (hole.length / 2 > MAX_DETAILED_HOLE_VERTICES) return null;
 
                 const pointCount = hole.length / 2;
 

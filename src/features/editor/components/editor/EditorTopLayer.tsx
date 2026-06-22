@@ -51,6 +51,10 @@ import {
     getBoundaryVertexPoints,
 } from "@/features/editor/lib/boundarySystem";
 
+// Boolean clipping approximates rounded/bulged hole contours with many sample
+// points. Those samples preserve the shape but are not meaningful edit handles.
+const MAX_EDITABLE_HOLE_VERTICES = 12;
+
 const cloneObjectsForEditSnapshot = (objects: PolyObject[]): PolyObject[] =>
     objects.map((object) => ({
         ...object,
@@ -2511,6 +2515,7 @@ function EditorTopLayerInner(props: any) {
                                             activeTool === "select" &&
                                             selected.length === 1 &&
                                             !lineOnly &&
+                                            (holeIndex === null || ringPoints.length / 2 <= MAX_EDITABLE_HOLE_VERTICES) &&
                                             Array.from({ length: ringPoints.length / 2 }).map((_, edgeIndex) => {
                                                 const pointCount = ringPoints.length / 2;
                                                 const aIdx = edgeIndex * 2;
@@ -2718,7 +2723,8 @@ function EditorTopLayerInner(props: any) {
                                                     stageScale,
                                                     livePolygonPoints,
                                                     livePolygonHoles,
-                                                    liveBulges
+                                                    liveBulges,
+                                                    liveCorners
                                                 )}
 
                                                 {!isLiveEditingThisPolygon &&
@@ -2918,7 +2924,8 @@ function EditorTopLayerInner(props: any) {
                                                         stageScale,
                                                         livePolygonPoints,
                                                         undefined,
-                                                        liveBulges
+                                                        liveBulges,
+                                                        liveCorners
                                                     )}
                                                 </>
 
@@ -3526,6 +3533,113 @@ function EditorTopLayerInner(props: any) {
                                                         />
                                                     );
                                                 })}
+
+                                                {(obj.holes ?? []).flatMap((holePts, holeIndex) => {
+                                                    if (holePts.length / 2 <= MAX_EDITABLE_HOLE_VERTICES) return [];
+
+                                                    const holeBox = bboxFromPoints(holePts);
+                                                    const source = objectsTyped
+                                                        .filter((candidate) =>
+                                                            candidate.id !== obj.id &&
+                                                            candidate.points.length >= 6 &&
+                                                            candidate.corners?.some((radius) => (radius || 0) > 0)
+                                                        )
+                                                        .map((candidate) => {
+                                                            const box = bboxFromPoints(candidate.points);
+                                                            const error =
+                                                                Math.abs(box.x - holeBox.x) +
+                                                                Math.abs(box.y - holeBox.y) +
+                                                                Math.abs(box.w - holeBox.w) +
+                                                                Math.abs(box.h - holeBox.h);
+                                                            return { candidate, error };
+                                                        })
+                                                        .filter(({ error }) => error <= 2)
+                                                        .sort((a, b) => a.error - b.error)[0]?.candidate;
+
+                                                    if (!source) return [];
+
+                                                    const sourceCorners = normalizeCorners(source.points, source.corners);
+                                                    const sourceCount = source.points.length / 2;
+                                                    if (!cornerHandleRefs.current[source.id]) cornerHandleRefs.current[source.id] = {};
+
+                                                    return Array.from({ length: sourceCount }).map((_, i) => {
+                                                        const p = (i - 1 + sourceCount) % sourceCount;
+                                                        const q = (i + 1) % sourceCount;
+                                                        const vx = source.points[i * 2], vy = source.points[i * 2 + 1];
+                                                        const px = source.points[p * 2], py = source.points[p * 2 + 1];
+                                                        const nx = source.points[q * 2], ny = source.points[q * 2 + 1];
+                                                        const g = cornerGeom(px, py, vx, vy, nx, ny);
+                                                        if (!g || cornerMaxRadius(source.points, i) <= 0) return null;
+
+                                                        const r = sourceCorners[i] ?? 0;
+                                                        const apexOff = r > 0 ? r * (1 / g.sinHalf - 1) : 0;
+                                                        const off = Math.max(restWorld, apexOff);
+                                                        const hx = vx + g.bx * off;
+                                                        const hy = vy + g.by * off;
+                                                        const isActive =
+                                                            isCornerDraggingRef.current &&
+                                                            cornerEditRef.current?.objectId === source.id &&
+                                                            cornerEditRef.current?.vertexIndex === i;
+
+                                                        return (
+                                                            <Rect
+                                                                key={`${obj.id}-hole-${holeIndex}-source-corner-${i}`}
+                                                                x={hx - handleSize / 2}
+                                                                y={hy - handleSize / 2}
+                                                                width={handleSize}
+                                                                height={handleSize}
+                                                                cornerRadius={handleCornerRadius}
+                                                                fill={isActive ? "#4488FF" : "white"}
+                                                                stroke="#4488FF"
+                                                                strokeWidth={handleStrokeWidth}
+                                                                opacity={1}
+                                                                perfectDrawEnabled={false}
+                                                                ref={(node) => {
+                                                                    if (node) cornerHandleRefs.current[source.id][i] = node;
+                                                                }}
+                                                                onMouseDown={(evt) => {
+                                                                    if (evt?.evt?.button === 1 || isPanning) {
+                                                                        evt.cancelBubble = true;
+                                                                        return;
+                                                                    }
+                                                                    evt.cancelBubble = true;
+                                                                    evt.evt?.preventDefault?.();
+                                                                    if (isVertexDraggingRef.current || isBulgeDraggingRef.current || isCornerDraggingRef.current || isEdgeResizingRef.current) return;
+
+                                                                    isCornerDraggingRef.current = true;
+                                                                    setIsCornerDragging(true);
+                                                                    cornerEditRef.current = {
+                                                                        objectId: source.id,
+                                                                        vertexIndex: i,
+                                                                        vx, vy, px, py, nx, ny,
+                                                                        workingRadius: r,
+                                                                        snapName: null,
+                                                                        beforeObjects: cloneObjectsForEditSnapshot(useProjectStore.getState().objects),
+                                                                    };
+
+                                                                    const selfNode = cornerHandleRefs.current[source.id]?.[i];
+                                                                    if (selfNode) selfNode.fill("#4488FF");
+                                                                    const st = stageRef.current;
+                                                                    if (st) st.container().style.cursor = "grabbing";
+                                                                }}
+                                                                onDblClick={(evt) => {
+                                                                    evt.cancelBubble = true;
+                                                                    useProjectStore.getState().setCornerRadius(source.id, i, 0);
+                                                                }}
+                                                                onMouseEnter={(evt) => {
+                                                                    evt.cancelBubble = true;
+                                                                    const st = stageRef.current;
+                                                                    if (st) st.container().style.cursor = "grab";
+                                                                }}
+                                                                onMouseLeave={(evt) => {
+                                                                    evt.cancelBubble = true;
+                                                                    const st = stageRef.current;
+                                                                    if (st && !isCornerDraggingRef.current) st.container().style.cursor = "default";
+                                                                }}
+                                                            />
+                                                        );
+                                                    });
+                                                })}
                                             </React.Fragment>
                                         );
                                     })()}
@@ -3583,6 +3697,61 @@ function EditorTopLayerInner(props: any) {
                                     const uniqueHoleHandles = liveHoles.map((holePts: number[], holeIdx: number) => {
                                         const seen = new Set<string>();
                                         const out: Array<{ i: number; x: number; y: number; holeIdx: number }> = [];
+
+                                        if (holePts.length / 2 > MAX_EDITABLE_HOLE_VERTICES) {
+                                            const holeBox = bboxFromPoints(holePts);
+                                            const matchingCutter = objectsTyped
+                                                .filter((candidate) => candidate.id !== obj.id && candidate.points.length >= 6)
+                                                .map((candidate) => {
+                                                    const box = bboxFromPoints(candidate.points);
+                                                    const error =
+                                                        Math.abs(box.x - holeBox.x) +
+                                                        Math.abs(box.y - holeBox.y) +
+                                                        Math.abs(box.w - holeBox.w) +
+                                                        Math.abs(box.h - holeBox.h);
+                                                    return { candidate, error };
+                                                })
+                                                .filter(({ error }) => error <= 2)
+                                                .sort((a, b) => a.error - b.error)[0]?.candidate;
+
+                                            const controlPoints = matchingCutter?.points;
+                                            const targetPoints = controlPoints && controlPoints.length >= 6
+                                                ? controlPoints
+                                                : [
+                                                    holeBox.x, holeBox.y,
+                                                    holeBox.x + holeBox.w, holeBox.y,
+                                                    holeBox.x + holeBox.w, holeBox.y + holeBox.h,
+                                                    holeBox.x, holeBox.y + holeBox.h,
+                                                ];
+                                            const usedIndices = new Set<number>();
+
+                                            for (let targetIndex = 0; targetIndex < targetPoints.length; targetIndex += 2) {
+                                                const tx = targetPoints[targetIndex];
+                                                const ty = targetPoints[targetIndex + 1];
+                                                let nearestIndex = -1;
+                                                let nearestDistance = Infinity;
+
+                                                for (let i = 0; i < holePts.length / 2; i++) {
+                                                    if (usedIndices.has(i)) continue;
+                                                    const distance = Math.hypot(holePts[i * 2] - tx, holePts[i * 2 + 1] - ty);
+                                                    if (distance < nearestDistance) {
+                                                        nearestDistance = distance;
+                                                        nearestIndex = i;
+                                                    }
+                                                }
+
+                                                if (nearestIndex < 0) continue;
+                                                usedIndices.add(nearestIndex);
+                                                out.push({
+                                                    i: nearestIndex,
+                                                    x: tx,
+                                                    y: ty,
+                                                    holeIdx,
+                                                });
+                                            }
+
+                                            return out;
+                                        }
 
                                         for (let i = 0; i < holePts.length / 2; i++) {
                                             const x = holePts[i * 2];

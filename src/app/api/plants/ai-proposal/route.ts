@@ -123,7 +123,7 @@ const STRUCTURE_DISTRIBUTIONS: Record<string, Partial<Record<PlantAppGroup, numb
     "met-bomen":        { "vaste-planten": 30, "heesters-struiken": 30, "bodembedekkers": 20 },
 };
 
-// Larger base pool per type — re-ranked per bed using neighbor context
+// Base pool size per type — scaled up in the main handler based on actual bed count
 const MAX_BASE_POOL = 60;
 // Final candidate list shown to AI per bed
 const MAX_CANDIDATES_PER_BED = 30;
@@ -160,6 +160,7 @@ function scoreAndShuffle(plants: ApiPlant[], scoringInput: ScoringInput): Scored
 function buildCandidatePool(
     scoringInput: ScoringInput,
     bedTypes: Set<string>,
+    maxBasePool: number = MAX_BASE_POOL,
 ): Map<string, ScoredCandidate[]> {
     const cleanStandplaatsen = (scoringInput.standplaatsen ?? []).filter(
         (s) => s !== "wisselend-onbekend",
@@ -179,6 +180,10 @@ function buildCandidatePool(
         const appGroups = APPGROUPS_FOR_TYPE[type] ?? ["vaste-planten"];
         // Bomen negeren de hoogtewerking filter — laag-horizontaal mag geen bomen uitsluiten
         const range = type === "treebed" ? {} : heightRange(scoringInput.heightStyle ?? null);
+        // Voor bomen ook de heightStyle uit de scoring halen, anders worden grote bomen alsnog weggefilterd
+        const effectiveScoringInput = type === "treebed"
+            ? { ...scoringInput, heightStyle: null as null }
+            : scoringInput;
 
         // Score all candidates per appGroup separately
         const scoredByGroup = new Map<PlantAppGroup, ScoredCandidate[]>();
@@ -192,7 +197,7 @@ function buildCandidatePool(
                 limit: 9999,
                 page: 1,
             });
-            scoredByGroup.set(appGroup as PlantAppGroup, scoreAndShuffle(result.plants, scoringInput));
+            scoredByGroup.set(appGroup as PlantAppGroup, scoreAndShuffle(result.plants, effectiveScoringInput));
         }
 
         // Resolve distribution for slot allocation per appGroup
@@ -221,8 +226,8 @@ function buildCandidatePool(
             for (const appGroup of appGroups) {
                 const weight = distribution[appGroup as PlantAppGroup] ?? 0;
                 const slots = totalWeight > 0
-                    ? Math.max(1, Math.round((weight / totalWeight) * MAX_BASE_POOL))
-                    : Math.ceil(MAX_BASE_POOL / appGroups.length);
+                    ? Math.max(1, Math.round((weight / totalWeight) * maxBasePool))
+                    : Math.ceil(maxBasePool / appGroups.length);
                 const candidates = scoredByGroup.get(appGroup as PlantAppGroup) ?? [];
                 let added = 0;
                 for (const c of candidates) {
@@ -249,7 +254,7 @@ function buildCandidatePool(
             }
             pool = merged
                 .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-                .slice(0, MAX_BASE_POOL);
+                .slice(0, maxBasePool);
         }
 
         poolByType.set(type, pool);
@@ -328,12 +333,32 @@ function buildPerBedPools(
 ): Map<string, ScoredCandidate[]> {
     const neighborMap = new Map(neighborContext.map((nc) => [nc.bedId, nc.neighborPlants]));
     const perBedPool = new Map<string, ScoredCandidate[]>();
+    // Per type: track how many no-neighbor beds we've seen, so we can stagger their pools
+    const noNeighborIdxByType = new Map<string, number>();
 
     for (const bed of emptyBeds) {
         const type = bed.type || bedTypeFromNr(bed.nr);
         const basePool = poolByType.get(type) ?? [];
         const neighborPlants = neighborMap.get(bed.id) ?? [];
-        perBedPool.set(bed.id, rankForBed(basePool, neighborPlants));
+
+        if (neighborPlants.length > 0) {
+            // Has neighbor context: re-rank the full base pool for this specific bed
+            perBedPool.set(bed.id, rankForBed(basePool, neighborPlants));
+        } else {
+            // No neighbor context: give each consecutive no-neighbor bed a different slice
+            // so the AI sees unique candidate sets and doesn't pick the same plants everywhere
+            const idx = noNeighborIdxByType.get(type) ?? 0;
+            noNeighborIdxByType.set(type, idx + 1);
+            const offset = idx * MAX_CANDIDATES_PER_BED;
+            const slice = basePool.slice(offset, offset + MAX_CANDIDATES_PER_BED);
+            if (slice.length < MAX_CANDIDATES_PER_BED) {
+                // Pool exhausted: top up from the start (different plants still lead the list)
+                const extra = basePool.slice(0, MAX_CANDIDATES_PER_BED - slice.length);
+                perBedPool.set(bed.id, [...slice, ...extra]);
+            } else {
+                perBedPool.set(bed.id, slice);
+            }
+        }
     }
 
     return perBedPool;
@@ -358,7 +383,10 @@ function buildPrompt(
     lines.push(
         `Grondsoort: ${scoringInput.groundTypes?.length ? scoringInput.groundTypes.join(", ") : "niet opgegeven"}`,
     );
-    if (scoringInput.heightStyle) lines.push(`Hoogtewerking: ${scoringInput.heightStyle}`);
+    if (scoringInput.heightStyle) {
+        lines.push(`Hoogtewerking: ${scoringInput.heightStyle}`);
+        lines.push("  (Let op: de hoogtewerking is NIET van toepassing op boomvakken — alle boomhoogten blijven beschikbaar)");
+    }
     if (scoringInput.keurmerkFilter && scoringInput.keurmerkFilter !== "maakt-niet-uit") {
         lines.push(`Keurmerk: ${scoringInput.keurmerkFilter}`);
     }
@@ -444,9 +472,10 @@ function buildPrompt(
 ## Instructies
 Kies voor elk leeg vak PRECIES 3 planten uit de kandidatenlijst VAN DAT SPECIFIEKE VAK.
 Gebruik uitsluitend plant-IDs die in de kandidatenlijst van dat vak staan — verzin geen IDs.
+BELANGRIJK: Elk plant-ID mag over alle vakken samen maar één keer voorkomen. Gebruik NOOIT hetzelfde plant-ID in meerdere vakken.
 Streef naar:
 - Botanische compatibiliteit met aangrenzende planten (visuele harmonie, complementaire soorten)
-- Variatie in hoogte voor gelaagdheid (tenzij hoogtewerking = laag-horizontaal)
+- Variatie in hoogte voor gelaagdheid (tenzij hoogtewerking = laag-horizontaal; voor boomvakken geldt de hoogtewerking NOOIT)
 - Spreiding in bloeiperiode voor seizoensbeleving
 - Ecologische match op standplaats en grondsoort
 - Respect voor de gewenste plantopbouw stijl
@@ -496,6 +525,8 @@ function buildSections(
     perBedPool: Map<string, ScoredCandidate[]>,
 ): ProposalSection[] {
     const recMap = new Map(recommendations.map((r) => [r.bedId, r.plants]));
+    // Enforce uniqueness across all beds: a plant chosen for bed A is not available for bed B
+    const globallyChosen = new Set<string>();
 
     return emptyBeds.map((bed) => {
         const pool = perBedPool.get(bed.id) ?? [];
@@ -505,22 +536,24 @@ function buildSections(
         const chosen: ScoredCandidate[] = [];
         const chosenIds = new Set<string>();
 
-        // AI-aanbevelingen (alleen geldige IDs uit de kandidatenpool)
+        // AI-aanbevelingen (alleen geldige IDs uit de kandidatenpool, nog niet globaal gekozen)
         for (const rec of recs) {
             if (chosen.length >= 3) break;
             const entry = poolById.get(rec.id);
-            if (entry && !chosenIds.has(rec.id)) {
+            if (entry && !chosenIds.has(rec.id) && !globallyChosen.has(rec.id)) {
                 chosen.push(entry);
                 chosenIds.add(rec.id);
+                globallyChosen.add(rec.id);
             }
         }
 
-        // Vul resterende plekken op met de volgende beste gescoorde kandidaten
+        // Vul resterende plekken op met de volgende beste gescoorde kandidaten (globaal uniek)
         for (const candidate of pool) {
             if (chosen.length >= 3) break;
-            if (!chosenIds.has(candidate.plant.id)) {
+            if (!chosenIds.has(candidate.plant.id) && !globallyChosen.has(candidate.plant.id)) {
                 chosen.push(candidate);
                 chosenIds.add(candidate.plant.id);
+                globallyChosen.add(candidate.plant.id);
             }
         }
 
@@ -553,9 +586,17 @@ function buildFallbackSections(
     emptyBeds: EmptyBedSpec[],
     perBedPool: Map<string, ScoredCandidate[]>,
 ): ProposalSection[] {
+    const globallyChosen = new Set<string>();
     return emptyBeds.map((bed) => {
         const pool = perBedPool.get(bed.id) ?? [];
-        const chosen = pool.slice(0, 3);
+        const chosen: ScoredCandidate[] = [];
+        for (const candidate of pool) {
+            if (chosen.length >= 3) break;
+            if (!globallyChosen.has(candidate.plant.id)) {
+                chosen.push(candidate);
+                globallyChosen.add(candidate.plant.id);
+            }
+        }
 
         const plants: ProposalPlant[] = chosen.map(({ plant, suitability }) => ({
             id: plant.id,
@@ -615,7 +656,12 @@ export async function POST(request: NextRequest): Promise<Response> {
             // Stap 1 — Kandidaten ophalen + scoren vanuit SQLite
             await send({ type: "progress", step: "querying_db", pct: 10 });
             const bedTypes = new Set(emptyBeds.map((b) => b.type || bedTypeFromNr(b.nr)));
-            const poolByType = buildCandidatePool(scoringInput, bedTypes);
+            // Scale pool size so each bed gets a unique slice of MAX_CANDIDATES_PER_BED candidates
+            const maxBedCount = Math.max(...[...bedTypes].map((t) =>
+                emptyBeds.filter((b) => (b.type || bedTypeFromNr(b.nr)) === t).length
+            ));
+            const maxBasePool = Math.max(MAX_BASE_POOL, maxBedCount * MAX_CANDIDATES_PER_BED);
+            const poolByType = buildCandidatePool(scoringInput, bedTypes, maxBasePool);
             await send({ type: "progress", step: "scoring_candidates", pct: 25 });
 
             // Per-bed pools: re-rank base pool met burencontext per bed
@@ -689,7 +735,11 @@ export async function POST(request: NextRequest): Promise<Response> {
             try {
                 const { scoringInput, emptyBeds = [], neighborContext: nc = [] } = body;
                 const bedTypes = new Set(emptyBeds.map((b) => b.type || bedTypeFromNr(b.nr)));
-                const poolByType = buildCandidatePool(scoringInput, bedTypes);
+                const maxBedCountFb = Math.max(...[...bedTypes].map((t) =>
+                    emptyBeds.filter((b) => (b.type || bedTypeFromNr(b.nr)) === t).length
+                ));
+                const maxBasePoolFb = Math.max(MAX_BASE_POOL, maxBedCountFb * MAX_CANDIDATES_PER_BED);
+                const poolByType = buildCandidatePool(scoringInput, bedTypes, maxBasePoolFb);
                 const perBedPool = buildPerBedPools(emptyBeds, poolByType, nc);
                 const sections = buildFallbackSections(emptyBeds, perBedPool);
                 await send({ type: "result", sections, fallback: true });

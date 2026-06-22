@@ -5004,6 +5004,9 @@ export default function HelloEditor() {
 
                 // ✅ Live m² update during corner drag
                 computeAndPublishLiveMeasurementRef.current?.();
+                if (obj?.type === "tiles") {
+                    requestLivePatternRerender();
+                }
 
                 return;
             }

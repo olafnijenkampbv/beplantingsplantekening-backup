@@ -4,7 +4,7 @@ import { OBJECT_STYLES, normalizeBulges } from "@/state/projectStore";
 import { EDITOR_GRID_SIZE } from "@/features/editor/constants/editorGeometry";
 import { bboxFromPoints } from "@/features/editor/lib/editorCanvasMath";
 import { formatSquareMeters, getObjectAreaInSquareMeters } from "@/state/areaMetrics";
-import { densifyBulgedRing, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
+import { densifyBulgedRing, normalizeCorners, STRAIGHT_THRESHOLD } from "@/features/editor/lib/bulgeMath";
 
 const GRID_SIZE = EDITOR_GRID_SIZE;
 
@@ -335,15 +335,19 @@ export function renderTilesPattern(
     stageScale: number,
     pointsOverride?: number[],
     holesOverride?: number[][],
-    bulgesOverride?: number[]
+    bulgesOverride?: number[],
+    cornersOverride?: number[]
 ) {
     if (stageScale < TILES_PATTERN_HIDE_SCALE) return null;
 
     const basePoints = pointsOverride ?? obj.points;
     const renderHoles = holesOverride ?? obj.holes ?? [];
     const bulges = normalizeBulges(basePoints, bulgesOverride ?? obj.bulges);
-    const renderPoints = bulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD)
-        ? densifyBulgedRing(basePoints, bulges, 48)
+    const corners = normalizeCorners(basePoints, cornersOverride ?? obj.corners);
+    const hasBulges = bulges.some((b) => Math.abs(b) > STRAIGHT_THRESHOLD);
+    const hasCorners = corners.some((corner) => (corner || 0) > 0);
+    const renderPoints = hasBulges || hasCorners
+        ? densifyBulgedRing(basePoints, bulges, 48, hasCorners ? corners : undefined)
         : basePoints;
     const spacing =
         stageScale < TILES_PATTERN_COMPACT_SCALE
@@ -466,10 +470,19 @@ export function renderObjectPattern(
     stageScale: number,
     pointsOverride?: number[],
     holesOverride?: number[][],
-    bulgesOverride?: number[]
+    bulgesOverride?: number[],
+    cornersOverride?: number[]
 ) {
     if (obj.type === "tiles") {
-        return renderTilesPattern(obj, keyPrefix, stageScale, pointsOverride, holesOverride, bulgesOverride);
+        return renderTilesPattern(
+            obj,
+            keyPrefix,
+            stageScale,
+            pointsOverride,
+            holesOverride,
+            bulgesOverride,
+            cornersOverride
+        );
     }
 
     if (obj.type === "parking") {

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { OBJECT_STYLES, useProjectStore } from "@/state/projectStore";
-import type { TreebedVariant } from "@/state/projectStore";
+import type { PolyObject, TreebedVariant } from "@/state/projectStore";
 import TreebedVariantSwatch from "@/features/editor/components/TreebedVariantSwatch";
 import { APP_NOTIFICATIONS, useAppNotify } from "@/state/allNotifications";
 import { usePlantSelectionStore } from "@/features/editor/state/plantSelectionStore";
@@ -628,6 +628,10 @@ export default function PlantSidebar(props: {
     const plantbedLinks = useProjectStore((s: any) => s.plantbedLinks) as Record<string, string[]>;
     const plantbedLinkedCountMap = useProjectStore((s: any) => s.plantbedLinkedCount) as Record<string, number>;
     const unlinkPlantFromPlantbedByPlantId = useProjectStore((s: any) => s.unlinkPlantFromPlantbedByPlantId);
+    const clearPlantbedLinksForPlantbed = useProjectStore((s: any) => s.clearPlantbedLinksForPlantbed);
+
+    // Plantvakken uit canvas (live, dus undo/redo werkt automatisch)
+    const objects = useProjectStore((s: any) => s.objects);
 
     const validPlantIds = useMemo(() => {
         return new Set(plants.map((plant) => plant.id));
@@ -636,30 +640,43 @@ export default function PlantSidebar(props: {
     useEffect(() => {
         setPlants(plants);
 
+        const validLinkedObjectIds = new Set(
+            (objects as PolyObject[])
+                .filter((object) => object?.type === "plantbed" || object?.type === "hedge" || object?.type === "treebed")
+                .map((object) => object.id as string)
+        );
+
         for (const [plantbedId, linkedPlantIds] of Object.entries(plantbedLinks ?? {})) {
+            if (!validLinkedObjectIds.has(plantbedId)) {
+                clearPlantbedLinksForPlantbed(plantbedId);
+                continue;
+            }
             for (const linkedPlantId of linkedPlantIds ?? []) {
                 if (!validPlantIds.has(linkedPlantId)) {
                     unlinkPlantFromPlantbedByPlantId(plantbedId, linkedPlantId);
                 }
             }
         }
-    }, [plants, plantbedLinks, setPlants, unlinkPlantFromPlantbedByPlantId, validPlantIds]);
+    }, [plants, objects, plantbedLinks, setPlants, unlinkPlantFromPlantbedByPlantId, clearPlantbedLinksForPlantbed, validPlantIds]);
 
     // ✅ hoe vaak elke plant gekoppeld is (plantId -> count)
     const plantLinkedCountMap = useMemo(() => {
         const counts: Record<string, number> = {};
+        const validLinkedObjectIds = new Set(
+            (objects as PolyObject[])
+                .filter((object) => object?.type === "plantbed" || object?.type === "hedge" || object?.type === "treebed")
+                .map((object) => object.id as string)
+        );
 
-        for (const plantIds of Object.values(plantbedLinks ?? {})) {
+        for (const [objectId, plantIds] of Object.entries(plantbedLinks ?? {})) {
+            if (!validLinkedObjectIds.has(objectId)) continue;
             for (const pid of plantIds ?? []) {
                 counts[pid] = (counts[pid] ?? 0) + 1;
             }
         }
 
         return counts;
-    }, [plantbedLinks]);
-
-    // ✅ Plantvakken uit canvas (live, dus undo/redo werkt automatisch)
-    const objects = useProjectStore((s: any) => s.objects);
+    }, [objects, plantbedLinks]);
 
     const plantLinkedLabelMap = useMemo(() => {
         const objectById = new Map(

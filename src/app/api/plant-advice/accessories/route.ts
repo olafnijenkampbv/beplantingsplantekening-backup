@@ -714,7 +714,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                                         },
                                         suggestedQuantity: {
                                             type: "integer",
-                                            minimum: 1,
                                         },
                                         reason: {
                                             type: "string",

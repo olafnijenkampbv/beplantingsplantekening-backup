@@ -1787,6 +1787,7 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
         if (!isSearchMode) return [];
         const normalizedSizeQuery = sizeQuery.trim().toLowerCase();
         const combos: Array<{ key: string; plant: ApiPlant; variant: ApiPlantVariant }> = [];
+        const seenComboKeys = new Set<string>();
 
         for (const plant of filteredPlants) {
             const cached = variantCache[plant.id];
@@ -1796,7 +1797,13 @@ export default function PlantProposalGrid(props: PlantProposalGridProps) {
                 if (normalizedSizeQuery && !variant.sizeLabel.toLowerCase().includes(normalizedSizeQuery)) {
                     continue;
                 }
-                combos.push({ key: `${plant.id}-${variant.id}`, plant, variant });
+
+                const variantKey = variant.id || `${variant.sizeLabel}-${variant.price}`;
+                const comboKey = `${plant.id}-${variantKey}`;
+                if (seenComboKeys.has(comboKey)) continue;
+                seenComboKeys.add(comboKey);
+
+                combos.push({ key: comboKey, plant, variant });
             }
         }
 

@@ -84,7 +84,7 @@ function computePriceData(params: {
     plantbedLinks: ReturnType<typeof useProjectStore.getState>["plantbedLinks"];
     projectPlants: ProjectPlantLike[];
     distributionOverrides: Record<string, Record<string, number>>;
-    variantsByPlantId: Record<string, { sizeLabel: string; bulkPrices?: BulkPriceTier[] }[]>;
+    variantsByPlantId: Record<string, { sizeLabel: string; price?: number; bulkPrices?: BulkPriceTier[] }[]>;
 }): PriceData {
     const { plantListItems, objects, plantbedLinks, projectPlants, distributionOverrides, variantsByPlantId } = params;
 
@@ -233,7 +233,7 @@ export default function EstimatedPlantingPriceBadge({ budget }: { budget?: numbe
     }, [plantListItems, fetchVariants]);
 
     const variantsByPlantId = useMemo(() => {
-        const map: Record<string, { sizeLabel: string; bulkPrices?: BulkPriceTier[] }[]> = {};
+        const map: Record<string, { sizeLabel: string; price?: number; bulkPrices?: BulkPriceTier[] }[]> = {};
         for (const item of plantListItems) {
             map[item.plant.id] = variantCache[item.plant.id]?.variants ?? [];
         }

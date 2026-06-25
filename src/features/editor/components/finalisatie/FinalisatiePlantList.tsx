@@ -1101,7 +1101,8 @@ export default function FinalisatiePlantList() {
             </h2>
 
             <p className="mt-2 text-[14px]" style={{ color: COLORS.text }}>
-                Pas hier je definitieve aantallen aan voor jou definitieve plantenlijst.
+                Pas hier je definitieve aantallen aan voor jou definitieve plantenlijst.<br />
+                Wil je een plant verwijderen? Ga dan terug naar stap 5 en verwijder de plant uit de plantenlijst.
             </p>
 
             {items.length === 0 ? (

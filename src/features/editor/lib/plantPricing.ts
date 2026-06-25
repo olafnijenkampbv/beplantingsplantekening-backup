@@ -11,6 +11,7 @@ export type PlantPricingLike = {
 
 export type PlantVariantPricingLike = {
     sizeLabel: string;
+    price?: number | null;
     bulkPrices?: BulkPriceTier[] | null;
 };
 
@@ -59,30 +60,46 @@ export function getResolvedBulkPrices(
     item: PlantPricingLike | null | undefined,
     variants: PlantVariantPricingLike[] | null | undefined
 ): BulkPriceTier[] {
-    if (!item) return [];
-    if (Array.isArray(item.bulkPrices) && item.bulkPrices.length > 0) {
-        return item.bulkPrices;
-    }
+    return getResolvedVariant(item, variants)?.bulkPrices ?? [];
+}
+
+function getResolvedVariant(
+    item: PlantPricingLike | null | undefined,
+    variants: PlantVariantPricingLike[] | null | undefined
+): PlantVariantPricingLike | null {
+    if (!item) return null;
 
     const size = item.size?.trim();
     if (!size || size.toLowerCase() === "geen maat geselecteerd" || !Array.isArray(variants)) {
-        return [];
+        return null;
     }
 
     const variant = variants.find((candidate) => candidate.sizeLabel === size);
-    return Array.isArray(variant?.bulkPrices) ? variant.bulkPrices : [];
+    return variant ?? null;
 }
 
 export function withResolvedBulkPrices<T extends PlantPricingLike>(
     item: T,
     variants: PlantVariantPricingLike[] | null | undefined
 ): T {
-    const bulkPrices = getResolvedBulkPrices(item, variants);
-    if (bulkPrices.length === 0 || item.bulkPrices === bulkPrices) {
+    const variant = getResolvedVariant(item, variants);
+    if (!variant) {
         return item;
     }
+
+    const bulkPrices = Array.isArray(variant.bulkPrices) ? variant.bulkPrices : [];
+    const resolvedPrice = isValidPrice(variant.price) ? variant.price : item.plant.pricePerPiece;
+    const hasPriceChange = resolvedPrice !== item.plant.pricePerPiece;
+    const hasBulkPriceChange = item.bulkPrices !== bulkPrices;
+
+    if (!hasPriceChange && !hasBulkPriceChange) return item;
+
     return {
         ...item,
+        plant: {
+            ...item.plant,
+            pricePerPiece: resolvedPrice,
+        },
         bulkPrices,
     };
 }

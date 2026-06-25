@@ -1,0 +1,8 @@
+body:has(li.is-parent.has-submenu-block:hover) {
+    .submenu-block {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0);
+        pointer-events: all;
+    }
+}

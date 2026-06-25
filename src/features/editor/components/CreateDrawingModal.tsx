@@ -32,6 +32,7 @@ const CreateDrawingModal: React.FC<Props> = ({
     const [budget, setBudget] = useState<string>("");
     const [showRequiredError, setShowRequiredError] = useState(false);
     const [showDuplicateError, setShowDuplicateError] = useState(false);
+    const [isSubmitHovered, setIsSubmitHovered] = useState(false);
     useScrollLock(isOpen);
 
     // Sync fields when modal opens (supports switching between different drawings in edit mode)
@@ -280,13 +281,23 @@ const CreateDrawingModal: React.FC<Props> = ({
                         justifyContent: "center",
                         gap: 8,
                     }}
+                    onMouseEnter={() => setIsSubmitHovered(true)}
+                    onMouseLeave={() => setIsSubmitHovered(false)}
                 >
                     {mode === "edit" ? "Opslaan" : (
                         <>
                             Begin met tekenen
                             <img
                                 src="/icons/chevron-right.svg"
-                                style={{ filter: "invert(1)", width: 16 }}
+                                alt=""
+                                style={{
+                                    filter: "brightness(0) invert(1)",
+                                    width: 16,
+                                    height: 16,
+                                    display: "block",
+                                    transform: isSubmitHovered ? "translateX(4px)" : "translateX(0)",
+                                    transition: "transform 180ms ease",
+                                }}
                             />
                         </>
                     )}

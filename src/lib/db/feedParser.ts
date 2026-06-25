@@ -203,11 +203,18 @@ const PRICE_DIVISOR_OVERRIDE: Record<string, number> = {
 // Helper: parse "127.53 EUR" → 117.00 (excl. BTW, met optionele per-product divisor)
 // ---------------------------------------------------------------------------
 
-function parsePrice(raw: string, trefnaam?: string): number {
+function parsePrice(
+    raw: string,
+    trefnaam?: string,
+    options?: { preserveFeedPrice?: boolean }
+): number {
     // Strip everything that is not a digit or decimal point
     const numeric = raw.replace(/[^\d.]/g, "");
     const value = parseFloat(numeric);
     if (!Number.isFinite(value) || value < 0) return 0;
+    if (options?.preserveFeedPrice) {
+        return Math.round(value * 100) / 100;
+    }
     const divisor = (trefnaam && PRICE_DIVISOR_OVERRIDE[trefnaam]) || BTW_DIVISOR;
     // Round to 2 decimals to avoid floating-point drift
     return Math.round((value / divisor) * 100) / 100;
@@ -261,14 +268,18 @@ function parsePlanthoeveelheid(raw: string | undefined): number {
 // Lege of ongeldige elementen worden overgeslagen.
 // ---------------------------------------------------------------------------
 
-function parseBulkPrices(raw: unknown, trefnaam?: string): BulkPriceTier[] {
+function parseBulkPrices(
+    raw: unknown,
+    trefnaam?: string,
+    options?: { preserveFeedPrice?: boolean }
+): BulkPriceTier[] {
     if (!Array.isArray(raw)) return [];
     const tiers: BulkPriceTier[] = [];
     for (const bp of raw) {
         if (typeof bp !== "object" || bp === null) continue;
         const bpObj = bp as Record<string, unknown>;
         const minQty = parseInt(str(bpObj["min_quantity"]), 10);
-        const price = parsePrice(str(bpObj["price"]), trefnaam);
+        const price = parsePrice(str(bpObj["price"]), trefnaam, options);
         if (Number.isFinite(minQty) && minQty > 0 && price > 0) {
             tiers.push({ minQty, price });
         }
@@ -331,13 +342,16 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
             str(item["g:availability"]) === "in_stock"
                 ? "in_stock"
                 : "out_of_stock";
+        const hasBulkPrices =
+            Array.isArray(item["g:bulk_price"]) && item["g:bulk_price"].length > 0;
+        const priceParseOptions = { preserveFeedPrice: hasBulkPrices };
 
         results.push({
             // Variant level
             productId,
             trefnaam,
             sizeLabel: str(item["maatomschrijving"]),
-            price: parsePrice(str(item["g:price"]), trefnaam),
+            price: parsePrice(str(item["g:price"]), trefnaam, priceParseOptions),
             availability,
 
             // Plant level
@@ -370,7 +384,7 @@ export function parseFeedXml(xml: string): ParsedFeedItem[] {
                 : [],
 
             // Staffelprijzen uit <g:bulk_price> blokken
-            bulkPrices: parseBulkPrices(item["g:bulk_price"], trefnaam),
+            bulkPrices: parseBulkPrices(item["g:bulk_price"], trefnaam, priceParseOptions),
 
             // Subcategorie voor UI-filters (alleen relevant voor tuinmaterialen)
             subcategory: isTuinmateriaal ? detectGardenMaterialSubcategory(title, dealerGroepen) : "",

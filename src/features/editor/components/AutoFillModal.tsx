@@ -250,7 +250,7 @@ function BudgetRow({ budget }: { budget?: number }) {
     }, [plantListItems, fetchVariants]);
 
     const variantsByPlantId = useMemo(() => {
-        const map: Record<string, { sizeLabel: string; bulkPrices?: BulkPriceTier[] }[]> = {};
+        const map: Record<string, { sizeLabel: string; price?: number; bulkPrices?: BulkPriceTier[] }[]> = {};
         for (const item of plantListItems) map[item.plant.id] = variantCache[item.plant.id]?.variants ?? [];
         return map;
     }, [plantListItems, variantCache]);
@@ -928,7 +928,7 @@ function BedAdviceTable({ bedId, bedNr }: BedAdviceTableProps) {
     const currentType = bedObjectType(bedNr);
 
     const variantsByPlantId = useMemo(() => {
-        const map: Record<string, { sizeLabel: string; bulkPrices?: BulkPriceTier[] }[]> = {};
+        const map: Record<string, { sizeLabel: string; price?: number; bulkPrices?: BulkPriceTier[] }[]> = {};
         for (const item of plantListItems) map[item.plant.id] = variantCache[item.plant.id]?.variants ?? [];
         return map;
     }, [plantListItems, variantCache]);

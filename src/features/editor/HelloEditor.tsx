@@ -281,23 +281,21 @@ function rotatePointQuarterTurnClockwise(
     x: number,
     y: number,
     cx: number,
-    cy: number,
-    gridSize: number
+    cy: number
 ) {
     const dx = x - cx;
     const dy = y - cy;
 
     return {
-        x: snapToGrid(cx - dy, gridSize),
-        y: snapToGrid(cy + dx, gridSize),
+        x: cx - dy,
+        y: cy + dx,
     };
 }
 
 function rotatePointsQuarterTurnClockwise(
     points: number[],
     cx: number,
-    cy: number,
-    gridSize: number
+    cy: number
 ) {
     const next: number[] = [];
 
@@ -306,8 +304,7 @@ function rotatePointsQuarterTurnClockwise(
             points[i],
             points[i + 1],
             cx,
-            cy,
-            gridSize
+            cy
         );
 
         next.push(rotated.x, rotated.y);
@@ -319,8 +316,7 @@ function rotatePointsQuarterTurnClockwise(
 function rotateBoundaryPointsQuarterTurnClockwise(
     points: number[],
     cx: number,
-    cy: number,
-    gridSize: number
+    cy: number
 ) {
     const next: number[] = [];
 
@@ -335,13 +331,7 @@ function rotateBoundaryPointsQuarterTurnClockwise(
         const dx = source[i] - cx;
         const dy = source[i + 1] - cy;
 
-        const snapped = getBoundarySnapPoint(
-            cx - dy,
-            cy + dx,
-            gridSize
-        );
-
-        next.push(snapped.x, snapped.y);
+        next.push(cx - dy, cy + dx);
     }
 
     if (wasClosed && next.length >= 2) {
@@ -349,6 +339,73 @@ function rotateBoundaryPointsQuarterTurnClockwise(
     }
 
     return next;
+}
+
+function translateFlatPoints(points: number[] | undefined, dx: number, dy: number) {
+    if (!points) return points;
+    const next: number[] = [];
+    for (let i = 0; i < points.length; i += 2) {
+        next.push(points[i] + dx, points[i + 1] + dy);
+    }
+    return next;
+}
+
+function translateEditorObject(obj: PolyObject, dx: number, dy: number): PolyObject {
+    return {
+        ...obj,
+        points: translateFlatPoints(obj.points, dx, dy) ?? obj.points,
+        holes: obj.holes?.map((hole) => translateFlatPoints(hole, dx, dy) ?? hole),
+        boundarySegments: obj.boundarySegments?.map((segment) =>
+            translateFlatPoints(segment, dx, dy) ?? segment
+        ),
+        renderPieces: obj.renderPieces?.map((piece) =>
+            translateFlatPoints(piece, dx, dy) ?? piece
+        ),
+    };
+}
+
+function getRotatedCanvasGridOffset(objects: PolyObject[], gridSize: number) {
+    const gridAnchoredObject = objects.find(
+        (obj) =>
+            !isUnifiedBoundaryType(obj.type) &&
+            obj.type !== "treebed" &&
+            Array.isArray(obj.points) &&
+            obj.points.length >= 2
+    );
+
+    if (gridAnchoredObject) {
+        return {
+            dx: snapToGrid(gridAnchoredObject.points[0], gridSize) - gridAnchoredObject.points[0],
+            dy: snapToGrid(gridAnchoredObject.points[1], gridSize) - gridAnchoredObject.points[1],
+        };
+    }
+
+    const boundaryAnchoredObject = objects.find(
+        (obj) =>
+            isUnifiedBoundaryType(obj.type) &&
+            Array.isArray(obj.points) &&
+            obj.points.length >= 2
+    );
+
+    if (boundaryAnchoredObject) {
+        const snapped = getBoundarySnapPoint(
+            boundaryAnchoredObject.points[0],
+            boundaryAnchoredObject.points[1],
+            gridSize
+        );
+        return {
+            dx: snapped.x - boundaryAnchoredObject.points[0],
+            dy: snapped.y - boundaryAnchoredObject.points[1],
+        };
+    }
+
+    const worldBounds = getObjectsBoundingBox(objects);
+    if (!worldBounds) return { dx: 0, dy: 0 };
+
+    return {
+        dx: snapToGrid(worldBounds.x, gridSize) - worldBounds.x,
+        dy: snapToGrid(worldBounds.y, gridSize) - worldBounds.y,
+    };
 }
 
 function rotateEditorObjectQuarterTurnClockwise(
@@ -364,11 +421,10 @@ function rotateEditorObjectQuarterTurnClockwise(
             points: rotateBoundaryPointsQuarterTurnClockwise(
                 obj.points,
                 cx,
-                cy,
-                gridSize
+                cy
             ),
             boundarySegments: obj.boundarySegments?.map((seg) =>
-                rotateBoundaryPointsQuarterTurnClockwise(seg, cx, cy, gridSize)
+                rotateBoundaryPointsQuarterTurnClockwise(seg, cx, cy)
             ),
         };
     }
@@ -5912,9 +5968,16 @@ export default function HelloEditor() {
         const centerX = worldBounds.x + worldBounds.w / 2;
         const centerY = worldBounds.y + worldBounds.h / 2;
 
-        const nextObjects = currentObjects.map((obj) =>
+        const rotatedObjects = currentObjects.map((obj) =>
             rotateEditorObjectQuarterTurnClockwise(obj, centerX, centerY, GRID_SIZE)
         );
+        const gridOffset = getRotatedCanvasGridOffset(rotatedObjects, GRID_SIZE);
+        const nextObjects =
+            Math.abs(gridOffset.dx) > 1e-6 || Math.abs(gridOffset.dy) > 1e-6
+                ? rotatedObjects.map((obj) =>
+                    translateEditorObject(obj, gridOffset.dx, gridOffset.dy)
+                )
+                : rotatedObjects;
 
         const nextSelectedIds =
             selectedObjectIds.length > 0
@@ -7119,7 +7182,6 @@ export default function HelloEditor() {
 
                                                 {/* BoxSelectRect: isolated — only re-renders when selectionBox changes.
                                                     HelloEditor does NOT re-render on box-select mouse moves. */}
-                                                <BoxSelectRect />
                                             </Layer>
 
                                             {/* =============== TOP LAYER (treebeds + selection + draft) =============== */}
@@ -7216,6 +7278,12 @@ export default function HelloEditor() {
                                                 dimHandlesForDrag={dimHandlesForDrag}
                                                 restoreHandlesAfterDrag={restoreHandlesAfterDrag}
                                             />
+
+                                            {/* BoxSelectRect is isolated and rendered after EditorTopLayer,
+                                                so the drag-selection box stays visible above objects. */}
+                                            <Layer listening={false}>
+                                                <BoxSelectRect />
+                                            </Layer>
 
                                             {/* ── Crosshair: imperative Konva refs, zero React re-renders on cursor movement ── */}
                                             <Layer listening={false}>
